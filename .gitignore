@@ -1,0 +1,28 @@
+# Secrets — never commit real credentials
+.env
+*.env.local
+!*.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.venv-build/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Logs & runtime artifacts
+*.log
+logs/
+client_secret_*.json
+
+# Internal ops log — contains test-build detail; kept local only
+SESSION_LOG.md

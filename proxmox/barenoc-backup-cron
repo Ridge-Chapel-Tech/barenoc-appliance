@@ -1,0 +1,4 @@
+# BareNOC VM backup schedule (Proxmox host)
+# Daily snapshot 1 AM; weekly full USB 2 AM Sunday
+0 1 * * * root /usr/local/bin/barenoc-daily-backup.sh
+0 2 * * 0 root /usr/local/bin/backup-to-usb.sh

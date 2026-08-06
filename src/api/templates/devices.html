@@ -1,0 +1,754 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — Devices{% endblock %}
+{% block inner_content %}
+<div id="devices-app">
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-semibold text-gray-900">Devices</h1>
+    <div class="flex gap-2 items-center">
+      <button id="scan-btn" onclick="discoverNetwork()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Scan Network</button>
+      <button onclick="syncNow()" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700" title="Pull the latest devices + clients from the UniFi controller">🔄 Sync Now</button>
+      <button onclick="showAddDeviceModal()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">+ Add Device</button>
+      <span id="sync-msg" class="text-sm text-gray-500"></span>
+    </div>
+  </div>
+
+  <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-lg font-medium text-gray-900">Onboarded Devices
+      <span class="ml-2 text-xs font-normal text-gray-400">
+        <button id="view-btn-list" onclick="setDevicesView('list')" class="rounded-md bg-barenoc-600 px-2 py-1 text-white">List</button>
+        <button id="view-btn-topology" onclick="setDevicesView('topology')" class="rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200">Topology</button>
+      </span>
+    </h2>
+    <p class="text-sm text-gray-500">Devices BareNOC can control — SSH or UniFi controller access. <b>🔔</b> = email alerts on down/recovery (opt-in per device).</p>
+  </div>
+
+  <!-- LIST VIEW -->
+  <div id="devices-list-view">
+  <!-- Filters -->
+  <div class="mt-6 flex flex-wrap gap-4">
+    <input id="filter-search" type="text" placeholder="Search name, IP, vendor..." onkeyup="if(event.key==='Enter')fetchDevices(0)" class="rounded-md border-gray-300 text-sm border px-3 py-2 w-64">
+    <select id="filter-type" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
+      <option value="">All Types</option><option value="gateway">Gateway</option><option value="switch">Switch</option>
+      <option value="ap">Access Point</option><option value="server">Server</option><option value="workstation">Workstation</option>
+    </select>
+    <select id="filter-status" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
+      <option value="">All Statuses</option><option value="online">Online</option><option value="offline">Offline</option>
+      <option value="warning">Warning</option><option value="pending">Pending</option><option value="unreachable">Unreachable</option>
+    </select>
+    <select id="filter-group" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
+      <option value="">All Groups</option>
+    </select>
+    <span id="device-count" class="text-sm text-gray-500 self-center"></span>
+  </div>
+
+  <div id="devices-grid" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"></div>
+
+  <!-- Monitoring Only (no admin control) -->
+  <div id="monitoring-section" class="mt-8 hidden">
+    <h2 class="text-lg font-medium text-gray-900">Monitoring Only <span class="text-gray-400 font-normal">(no admin control)</span></h2>
+    <p class="text-sm text-gray-500">Claimed, but BareNOC can't control these — no SSH admin credentials and not UniFi-managed (they're ping/SNMP monitored only). Add SSH, or let them come in through the UniFi controller, to move them into Onboarded.</p>
+    <div id="monitoring-list" class="mt-3 space-y-2"></div>
+  </div>
+
+  <!-- Pagination -->
+  <div class="mt-4 flex items-center justify-between">
+    <button id="prev-page" onclick="fetchDevices(currentOffset - currentLimit)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50 disabled:opacity-50" disabled>&larr; Previous</button>
+    <span id="page-info" class="text-sm text-gray-500"></span>
+    <button id="next-page" onclick="fetchDevices(currentOffset + currentLimit)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50 disabled:opacity-50">Next &rarr;</button>
+  </div>
+
+  <div id="loading-devices" class="mt-4 text-center text-gray-500">Loading devices...</div>
+  </div><!-- /devices-list-view -->
+
+  <!-- TOPOLOGY VIEW (adopted UniFi gear) -->
+  <div id="devices-topology-view" class="hidden mt-4">
+    <div id="topology-empty" class="hidden text-center text-gray-500 py-12">No adopted UniFi gear to map yet. Adopted UniFi devices (gateway / switches / APs) appear here as a live topology.</div>
+    <div class="bg-white shadow rounded-lg p-6 overflow-x-auto">
+      <div id="topology-mermaid" class="mermaid"></div>
+    </div>
+  </div>
+
+  <!-- Unclaimed Devices -->
+  <div id="unclaimed-section" class="mt-6 hidden">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-lg font-medium text-gray-900">Unclaimed Devices</h2>
+        <p class="text-sm text-gray-500">Devices found on the network. Click Claim to configure them, or Fingerprint to identify unknown hosts with nmap.</p>
+      </div>
+      <button onclick="fingerprintAll()" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">🔎 Identify All</button>
+    </div>
+    <div id="unclaimed-grid" class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"></div>
+  </div>
+</div><!-- /devices-app -->
+
+<!-- Claim Device Modal -->
+<div id="claim-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Claim Device</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <p class="text-sm text-gray-500">IP: <span id="claim-ip" class="font-mono"></span></p>
+      <div class="grid grid-cols-2 gap-4">
+        <div><label class="block text-sm font-medium text-gray-700">Name *</label><input id="claim-name" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Type</label>
+          <select id="claim-type" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2">
+            <option value="gateway">Gateway</option><option value="switch">Switch</option>
+            <option value="ap">Access Point</option><option value="server">Server</option><option value="workstation">Workstation</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div><label class="block text-sm font-medium text-gray-700">Vendor</label><input id="claim-vendor" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Model</label><input id="claim-model" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+      </div>
+      <details class="text-sm">
+        <summary class="cursor-pointer text-barenoc-600 font-medium">Credentials (optional)</summary>
+        <div class="mt-3 space-y-3">
+          <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="claim-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="claim-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="claim-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea><p class="text-xs text-gray-500 mt-1">Device becomes <strong>SSH-controlled</strong> when a key is set — the agent can then patch/reboot/collect logs on it.</p></div>
+        </div>
+      </details>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideClaimModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
+      <button onclick="claimDevice()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Claim Device</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Device Modal -->
+<div id="add-device-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Add Device</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div><label class="block text-sm font-medium text-gray-700">Name *</label><input id="new-device-name" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+        <div><label class="block text-sm font-medium text-gray-700">IP Address *</label><input id="new-device-ip" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div><label class="block text-sm font-medium text-gray-700">Type</label>
+          <select id="new-device-type" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2">
+            <option value="gateway">Gateway</option><option value="switch">Switch</option>
+            <option value="ap">Access Point</option><option value="server">Server</option><option value="workstation">Workstation</option>
+          </select>
+        </div>
+        <div><label class="block text-sm font-medium text-gray-700">Device Group</label><select id="new-device-group" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></select><p class="text-xs text-gray-500 mt-1">Controls who can manage this device (mirrors Pocket ID groups).</p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Vendor</label><input id="new-device-vendor" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+      </div>
+      <details class="text-sm">
+        <summary class="cursor-pointer text-barenoc-600 font-medium">Credentials (optional)</summary>
+        <div class="mt-3 space-y-3">
+          <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="new-device-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="new-device-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="new-device-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+          <p class="text-xs text-gray-500">A device is <strong>onboarded</strong> when BareNOC has admin control — via SSH credentials <em>or</em> through the UniFi controller for adopted UniFi gear (gateways, switches, APs auto-adopt once the controller connection works). Without either, the device is <em>monitoring only</em> (ping/SNMP), not part of the managed fleet.</p>
+        </div>
+      </details>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideAddDeviceModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
+      <button onclick="addDevice()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Add Device</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage Credentials Modal (claimed devices) -->
+<div id="creds-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Manage Credentials</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <p class="text-sm text-gray-500">Device: <span id="creds-device" class="font-medium"></span> (<span id="creds-ip" class="font-mono"></span>)</p>
+      <p class="text-xs text-gray-500">With SSH set, BareNOC has <strong>admin control</strong> of this device — the AI Tech can run SSH actions (patch check, collect logs, reboot). Without it, the device is ping/SNMP monitoring only.</p>
+      <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="creds-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public (leave blank to keep/clear)"></div>
+      <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="creds-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+      <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="creds-ssh-key" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY----- (leave blank to keep existing)"></textarea></div>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideCredsModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
+      <button onclick="saveCreds()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Credentials</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function loadMonitoring() {
+  try {
+    var resp = await fetch('/api/v1/devices?claimed=true&controlled=false&limit=200', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var data = await resp.json();
+    var list = document.getElementById('monitoring-list');
+    var section = document.getElementById('monitoring-section');
+    var devs = data.devices || [];
+    if (!devs.length) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    list.innerHTML = '';
+    devs.forEach(function(d) {
+      var cls = statusClasses(d.status);
+      var creds = [];
+      if (d.snmp_configured) creds.push('SNMP');
+      if (d.ssh_configured) creds.push('SSH');
+      var badge = creds.length ? ' <span class="text-xs text-gray-400">(' + creds.join('+') + ')</span>' : '';
+      list.innerHTML +=
+        '<div class="bg-white shadow rounded-lg p-4 flex items-center justify-between border-t-4 ' + cls.border + '">'
+        + '<div><div class="font-medium text-gray-900">' + esc(d.name) + badge + '</div>'
+        + '<div class="text-sm text-gray-500">' + esc(d.ip_address) + ' · ' + esc(d.device_type || 'unknown') + '</div></div>'
+        + '<div class="flex items-center gap-3">'
+        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\')" class="text-xs text-barenoc-600 hover:text-barenoc-800" title="Add SSH/SNMP credentials to move this device into Onboarded">Add SSH/SNMP</button>'
+        + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + cls.badge + '">' + d.status + '</span>'
+        + '</div>'
+        + '</div>';
+    });
+  } catch (e) { /* ignore */ }
+}
+
+async function loadDeviceGroups() {
+  try {
+    var resp = await fetch('/api/v1/devices/groups', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await resp.json();
+    var groups = d.groups || ['default'];
+    var sel = document.getElementById('new-device-group');
+    sel.innerHTML = '';
+    groups.forEach(function(g) {
+      var o = document.createElement('option');
+      o.value = g; o.textContent = g;
+      sel.appendChild(o);
+    });
+    var flt = document.getElementById('filter-group');
+    groups.forEach(function(g) {
+      var o = document.createElement('option');
+      o.value = g; o.textContent = g;
+      flt.appendChild(o);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function getToken() { return localStorage.getItem('access_token'); }
+function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+var currentOffset = 0;
+var currentLimit = 24;
+var currentTotal = 0;
+
+function statusClasses(s) {
+  var border = s === 'online' ? 'border-green-500' : s === 'offline' ? 'border-red-500' : s === 'warning' ? 'border-yellow-500' : 'border-gray-300';
+  var badge = s === 'online' ? 'bg-green-100 text-green-700' : s === 'offline' ? 'bg-red-100 text-red-700' : s === 'warning' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600';
+  return { border: border, badge: badge };
+}
+
+function metricBadge(label, value) {
+  if (!value || value === '?') return '';
+  return '<div class="bg-gray-50 rounded p-2 text-center"><div class="text-xs text-gray-500">' + label + '</div><div class="text-sm font-semibold text-gray-900">' + esc(value) + '</div></div>';
+}
+
+async function loadUnclaimed() {
+  try {
+    var resp = await fetch('/api/v1/devices?claimed=false&limit=200', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var data = await resp.json();
+    var devices = data.devices || [];
+    var section = document.getElementById('unclaimed-section');
+    if (devices.length === 0) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+
+    function ipSort(a, b) {
+      var pa = a.ip_address.split('.').map(Number), pb = b.ip_address.split('.').map(Number);
+      for (var i = 0; i < 4; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0); }
+      return 0;
+    }
+    function onlineFirst(a, b) { return (a.status === 'online' ? 0 : 1) - (b.status === 'online' ? 0 : 1) || ipSort(a, b); }
+    // Endpoints sorted by device type first (servers -> workstations -> printers -> unknown)
+    var TYPE_ORDER = { 'server': 0, 'workstation': 1, 'printer': 2, 'gateway': 3, 'switch': 4, 'ap': 5 };
+    function typeFirst(a, b) {
+      var ta = TYPE_ORDER.hasOwnProperty(a.device_type) ? TYPE_ORDER[a.device_type] : 8;
+      var tb = TYPE_ORDER.hasOwnProperty(b.device_type) ? TYPE_ORDER[b.device_type] : 8;
+      if (ta !== tb) return ta - tb;
+      return onlineFirst(a, b);
+    }
+
+    var groups = [
+      { label: 'Network Infrastructure', hint: 'UniFi-managed gateways, switches, APs', sort: onlineFirst,
+        list: devices.filter(function(d) { return d.unifi_managed === true; }) },
+      { label: 'Endpoints (UniFi clients)', hint: 'Computers, servers, phones, IoT seen on the network', sort: typeFirst,
+        list: devices.filter(function(d) { return d.unifi_managed !== true && (d.tags || []).indexOf('unifi-client') >= 0; }) },
+      { label: 'Identified — ready to claim', hint: 'Fingerprinted (OS/ports known); click Claim to onboard', sort: onlineFirst,
+        list: devices.filter(function(d) { return d.unifi_managed !== true && (d.tags || []).indexOf('unifi-client') < 0 && d.fingerprint && d.fingerprint.count > 0; }) },
+      { label: 'Discovered — unexamined', hint: 'Ping-scan finds; fingerprint for identity', sort: onlineFirst,
+        list: devices.filter(function(d) { return d.unifi_managed !== true && (d.tags || []).indexOf('unifi-client') < 0 && !(d.fingerprint && d.fingerprint.count > 0); }) }
+    ];
+
+    var grid = document.getElementById('unclaimed-grid');
+    grid.innerHTML = '';
+    var any = false;
+    groups.forEach(function(g) {
+      if (!g.list.length) return;
+      any = true;
+      var online = g.list.filter(function(d) { return d.status === 'online'; }).length;
+      grid.innerHTML += '<div class="col-span-full mt-4 first:mt-0">'
+        + '<div class="flex items-center justify-between gap-2">'
+        + '<div class="min-w-0"><h3 class="text-xs font-medium text-gray-500">' + esc(g.label) + '</h3>'
+        + '<p class="text-[11px] text-gray-400">' + esc(g.hint) + '</p></div>'
+        + '<span class="text-xs text-gray-400 whitespace-nowrap">' + g.list.length + ' · ' + online + ' online</span>'
+        + '</div>'
+        + '<div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">';
+      g.list.sort(g.sort || onlineFirst).forEach(function(d) { grid.innerHTML += unclaimedCard(d); });
+      grid.innerHTML += '</div></div>';
+    });
+    if (!any) section.classList.add('hidden');
+  } catch (e) { console.error(e); }
+}
+
+function unclaimedCard(d) {
+  var fp = d.fingerprint || null;
+  var fpHtml = '';
+  if (fp && fp.count > 0) {
+    var ports = (fp.open_ports || []).slice(0, 6).map(function(p) {
+      return '<span class="inline-block bg-gray-100 text-gray-700 text-xs px-1.5 py-0.5 rounded mr-1">' + p.port + '/' + p.service + '</span>';
+    }).join('');
+    fpHtml = '<div class="text-xs text-gray-600 mt-1">'
+      + (fp.os_guess ? '<span class="font-medium">' + esc(fp.os_guess) + '</span><br>' : '')
+      + ports
+      + '</div>';
+  } else if (fp && fp.error) {
+    fpHtml = '<div class="text-xs text-red-500 mt-1">' + esc(fp.error) + '</div>';
+  } else if (fp) {
+    fpHtml = '<div class="text-xs text-gray-600 mt-1">' + (fp.os_guess ? esc(fp.os_guess) : 'No open TCP ports found') + '</div>';
+  }
+  var dot = d.status === 'online'
+    ? '<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>'
+    : '<span class="inline-block w-2 h-2 rounded-full bg-gray-300 mr-1"></span>';
+  var meta = [];
+  if (d.vendor) meta.push('<span class="text-indigo-700 font-medium">' + esc(d.vendor) + '</span>');
+  if (d.unifi_managed) meta.push('<span class="text-amber-700 font-medium">UniFi managed</span>');
+  if (d.device_type && d.device_type !== 'unknown') meta.push('<span class="text-gray-600">' + esc(d.device_type) + '</span>');
+  (d.tags || []).forEach(function(t) { meta.push('<span class="text-gray-400">' + esc(t) + '</span>'); });
+  return '<div class="bg-white border border-dashed border-gray-300 rounded-lg p-4">'
+    + '<div class="flex justify-between items-start">'
+    + '<div><div class="font-semibold text-gray-900 font-mono">' + dot + esc(d.ip_address) + '</div>'
+    + '<div class="text-xs text-gray-500 mt-0.5">' + esc(d.name || 'unknown') + '</div>'
+    + (meta.length ? '<div class="text-xs mt-1 space-x-1.5">' + meta.join('') + '</div>' : '')
+    + fpHtml + '</div>'
+    + '<div class="flex flex-col gap-1">'
+    + '<button onclick="fingerprintDevice(' + d.id + ')" class="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700">Fingerprint</button>'
+    + '<button onclick="openClaim(' + d.id + ',\'' + d.ip_address + '\')" class="px-3 py-1 bg-barenoc-600 text-white text-xs rounded hover:bg-barenoc-700">Claim</button>'
+    + '<button onclick="deleteDevice(' + d.id + ')" class="px-3 py-1 bg-gray-200 text-gray-700 text-xs rounded hover:bg-gray-300">Dismiss</button>'
+    + '</div></div></div>';
+}
+
+// Scan Network is only useful WITHOUT a UniFi controller: when UniFi
+// credentials are present, or auto-sync is enabled, the controller is the
+// authoritative discovery source and the ping-scan button is hidden.
+var scanVisibilityChecked = false;
+async function refreshScanButton() {
+  var btn = document.getElementById('scan-btn');
+  if (!btn || scanVisibilityChecked) return;
+  scanVisibilityChecked = true;
+  var show = true;
+  try {
+    var r = await fetch('/api/v1/unifi/config', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    show = !(d.password_configured || d.api_key_configured) && !d.autosync_enabled;
+  } catch (e) { /* keep scan visible if we can't reach the API */ }
+  btn.style.display = show ? '' : 'none';
+}
+
+async function fingerprintDevice(id) {
+  try {
+    var r = await fetch('/api/v1/devices/' + id + '/fingerprint', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    alert(d.message || (d.detail || 'Queued'));
+    loadUnclaimed();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function fingerprintAll() {
+  try {
+    var r = await fetch('/api/v1/devices/fingerprint/unclaimed', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    alert(d.message || (d.detail || 'Started'));
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function fetchDevices(offset) {
+  if (offset === undefined) offset = currentOffset;
+  currentOffset = offset;
+  document.getElementById('loading-devices').style.display = 'block';
+  var params = [];
+  var s = document.getElementById('filter-search').value;
+  var t = document.getElementById('filter-type').value;
+  var st = document.getElementById('filter-status').value;
+  var grp = document.getElementById('filter-group').value;
+  if (s) params.push('search=' + encodeURIComponent(s));
+  if (t) params.push('device_type=' + t);
+  if (st) params.push('status=' + st);
+  if (grp) params.push('group=' + grp);
+  params.push('claimed=true');
+  params.push('controlled=true');
+  params.push('limit=' + currentLimit);
+  params.push('offset=' + offset);
+  try {
+    var resp = await fetch('/api/v1/devices?' + params.join('&'), { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var data = await resp.json();
+    var devices = data.devices || [];
+    currentTotal = data.total || 0;
+    var grid = document.getElementById('devices-grid');
+    grid.innerHTML = '';
+    document.getElementById('device-count').textContent = currentTotal + ' total';
+    devices.forEach(function(d) {
+      var cls = statusClasses(d.status);
+      var pd = d.last_poll_data || {};
+      var latency = pd.ping && pd.ping.latency_ms ? pd.ping.latency_ms + ' ms' : '';
+      var cpu = pd.cpu_load && pd.cpu_load !== '?' ? pd.cpu_load + '%' : '';
+      var mem = pd.mem_used_pct && pd.mem_used_pct !== '?' ? pd.mem_used_pct + '%' : '';
+      var uptime = pd.uptime_days ? pd.uptime_days + 'd' : '';
+      var creds = [];
+      if (d.snmp_configured) creds.push('SNMP');
+      if (d.ssh_configured) creds.push('SSH');
+      if (d.unifi_managed) creds.push('UniFi');
+      var credBadge = creds.length ? '<span class="text-xs text-gray-400 ml-1">(' + creds.join('+') + ')</span>' : '';
+      grid.innerHTML +=
+        '<div id="card-' + d.id + '" class="bg-white shadow rounded-lg p-5 border-t-4 ' + cls.border + '">'
+        + '<div class="flex justify-between items-start"><div>'
+        + '<h3 class="font-semibold text-gray-900">' + esc(d.name) + credBadge + '</h3>'
+        + '<p class="text-sm text-gray-500">' + esc(d.ip_address) + '</p></div>'
+        + '<div class="flex flex-col items-end gap-1">'
+        + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + cls.badge + '">' + d.status + '</span>'
+        + ((d.device_group && d.device_group !== 'default') ? '<span class="text-xs text-barenoc-700 bg-barenoc-50 border border-barenoc-200 rounded px-1.5 py-0.5">' + esc(d.device_group) + '</span>' : '')
+        + '</div></div>'
+        + '<div class="mt-2 text-sm text-gray-500">'
+        + (d.device_type ? '<span class="font-medium">' + esc(d.device_type) + '</span>' : '')
+        + (d.vendor ? ' · ' + esc(d.vendor) : '')
+        + (d.model ? ' · ' + esc(d.model) : '')
+        + '</div>'
+        + '<div class="mt-3 grid grid-cols-3 gap-2">'
+        + metricBadge('Latency', latency)
+        + metricBadge('CPU', cpu)
+        + metricBadge('Memory', mem)
+        + metricBadge('Uptime', uptime)
+        + '</div>'
+        + '<div class="mt-3 flex gap-2 text-xs">'
+        + '<button onclick="toggleDetail(' + d.id + ')" class="text-barenoc-600 hover:text-barenoc-800">Details</button>'
+        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\')" class="text-gray-500 hover:text-barenoc-700" title="Set SSH/SNMP credentials for control">Creds</button>'
+        + (d.status === 'pending' || d.status === 'unreachable' ? '<button onclick="verifyDevice(' + d.id + ')" class="text-green-600 hover:text-green-800">Verify</button>' : '')
+        + '<button onclick="toggleNotify(' + d.id + ',' + (d.notify_state_changes ? 'true' : 'false') + ')" class="' + (d.notify_state_changes ? 'text-amber-600' : 'text-gray-400') + ' hover:text-amber-700" title="Email me when this device goes down / recovers">' + (d.notify_state_changes ? '🔔' : '🔕') + '</button>'
+        + '<button onclick="deleteDevice(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\')" class="text-red-600 hover:text-red-800">Delete</button>'
+        + '</div></div>';
+    });
+    if (devices.length === 0) {
+      grid.innerHTML = '<div class="col-span-full text-center text-gray-500 py-12">No devices found. Click "Scan Network" or "Add Device" to get started.</div>';
+    }
+    var totalPages = Math.ceil(currentTotal / currentLimit) || 1;
+    var currentPage = Math.floor(offset / currentLimit) + 1;
+    document.getElementById('page-info').textContent = 'Page ' + currentPage + ' of ' + totalPages;
+    document.getElementById('prev-page').disabled = (offset <= 0);
+    document.getElementById('next-page').disabled = (offset + currentLimit >= currentTotal);
+  } catch (err) { console.error(err); }
+  document.getElementById('loading-devices').style.display = 'none';
+}
+
+var detailOpen = null;
+async function toggleDetail(id) {
+  if (detailOpen === id) { detailOpen = null; return; }
+  detailOpen = id;
+  try {
+    var resp = await fetch('/api/v1/devices/' + id, { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await resp.json();
+    var card = document.getElementById('card-' + id);
+    var old = document.getElementById('detail-' + id);
+    if (old) old.remove();
+    var pd = d.last_poll_data || {};
+    var pollText = JSON.stringify(pd, null, 2) || 'Not polled yet';
+    var html = '<div id="detail-' + id + '" class="col-span-full bg-gray-50 border rounded-lg p-4 text-sm">'
+      + '<div class="grid grid-cols-3 gap-4">'
+      + '<div><span class="font-medium">Hostname:</span> ' + esc(d.hostname || '-') + '</div>'
+      + '<div><span class="font-medium">MAC:</span> ' + esc(d.mac_address || '-') + '</div>'
+      + '<div><span class="font-medium">SNMP:</span> ' + (d.snmp_configured ? 'Configured' : 'Not set') + '</div>'
+      + '<div><span class="font-medium">SSH:</span> ' + (d.ssh_configured ? 'Configured' : 'Not set') + '</div>'
+      + '<div><span class="font-medium">Created:</span> ' + esc(d.created_at || '-') + '</div>'
+      + '<div><span class="font-medium">Tags:</span> ' + esc((d.tags || []).join(', ') || 'None') + '</div>'
+      + '</div>'
+      + '<div class="mt-2"><span class="font-medium">Last Poll Data:</span><pre class="text-xs bg-white p-2 rounded border mt-1 overflow-x-auto">' + esc(pollText) + '</pre></div>'
+      + '<div class="mt-2 flex gap-2">'
+      + '<button onclick="verifyDevice(' + d.id + ')" class="px-2 py-1 bg-barenoc-600 text-white text-xs rounded hover:bg-barenoc-700">Re-check Connectivity</button>'
+      + '<button onclick="deleteDevice(' + d.id + ')" class="px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700">Delete Device</button>'
+      + '</div></div>';
+    card.insertAdjacentHTML('afterend', html);
+  } catch (err) { alert('Failed to load details'); }
+}
+
+async function verifyDevice(id) {
+  try {
+    await fetch('/api/v1/devices/' + id + '/verify', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    setTimeout(function() { fetchDevices(currentOffset); loadUnclaimed(); }, 3000);
+  } catch (err) { alert('Verify failed: ' + err.message); }
+}
+
+async function deleteDevice(id, name) {
+  name = name || 'this device';
+  if (!confirm('Delete ' + name + ' from inventory? This cannot be undone.')) return;
+  try {
+    var resp = await fetch('/api/v1/devices/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    if (!resp.ok) throw new Error('API error');
+    fetchDevices(currentOffset);
+    loadUnclaimed();
+  } catch (err) { alert('Delete failed: ' + err.message); }
+}
+
+async function discoverNetwork() {
+  document.getElementById('loading-devices').textContent = 'Scanning network...';
+  try {
+    var resp = await fetch('/api/v1/devices/discover', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var data = await resp.json();
+    document.getElementById('loading-devices').textContent = 'Loading devices...';
+    alert('Scan started. Unclaimed devices will appear here in a minute.');
+    setTimeout(function() { loadUnclaimed(); }, 15000);
+  } catch (err) { alert('Discovery failed: ' + err.message); }
+}
+
+// Claim flow
+var claimDeviceId = null;
+function openClaim(id, ip) {
+  claimDeviceId = id;
+  document.getElementById('claim-ip').textContent = ip;
+  document.getElementById('claim-name').value = '';
+  document.getElementById('claim-vendor').value = '';
+  document.getElementById('claim-model').value = '';
+  document.getElementById('claim-snmp').value = '';
+  document.getElementById('claim-ssh-user').value = '';
+  document.getElementById('claim-ssh-key').value = '';
+  document.getElementById('claim-modal').classList.remove('hidden');
+}
+function hideClaimModal() { document.getElementById('claim-modal').classList.add('hidden'); }
+
+// Manage credentials for a claimed device (add SSH/SNMP control)
+var credsDeviceId = null;
+function openCreds(id, name, ip) {
+  credsDeviceId = id;
+  document.getElementById('creds-device').textContent = name;
+  document.getElementById('creds-ip').textContent = ip;
+  document.getElementById('creds-snmp').value = '';
+  document.getElementById('creds-ssh-user').value = '';
+  document.getElementById('creds-ssh-key').value = '';
+  document.getElementById('creds-modal').classList.remove('hidden');
+}
+function hideCredsModal() { document.getElementById('creds-modal').classList.add('hidden'); }
+
+async function saveCreds() {
+  var snmp = document.getElementById('creds-snmp').value.trim();
+  var sshUser = document.getElementById('creds-ssh-user').value.trim();
+  var sshKey = document.getElementById('creds-ssh-key').value.trim();
+  var body = {};
+  if (snmp) body.snmp_community = snmp;
+  if (sshUser) body.ssh_user = sshUser;
+  if (sshKey) body.ssh_key = sshKey;
+  if (!Object.keys(body).length) { hideCredsModal(); return; }
+  try {
+    var resp = await fetch('/api/v1/devices/' + credsDeviceId, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || 'Failed'); }
+    hideCredsModal();
+    fetchDevices(currentOffset);
+    loadUnclaimed();
+    loadMonitoring();
+  } catch (err) { alert('Failed to save credentials: ' + err.message); }
+}
+
+async function claimDevice() {
+  var name = document.getElementById('claim-name').value.trim();
+  var type = document.getElementById('claim-type').value;
+  var vendor = document.getElementById('claim-vendor').value.trim();
+  var model = document.getElementById('claim-model').value.trim();
+  var snmp = document.getElementById('claim-snmp').value.trim();
+  var sshUser = document.getElementById('claim-ssh-user').value.trim();
+  var sshKey = document.getElementById('claim-ssh-key').value.trim();
+  if (!name) { alert('Name is required'); return; }
+  var body = { name: name, ip_address: document.getElementById('claim-ip').textContent, device_type: type };
+  if (vendor) body.vendor = vendor;
+  if (model) body.model = model;
+  if (snmp) body.snmp_community = snmp;
+  if (sshUser) body.ssh_user = sshUser;
+  if (sshKey) body.ssh_key = sshKey;
+  try {
+    var resp = await fetch('/api/v1/devices/' + claimDeviceId + '/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || 'Failed'); }
+    hideClaimModal();
+    loadUnclaimed();
+    fetchDevices(0);
+  } catch (err) { alert('Claim failed: ' + err.message); }
+}
+
+// Add device flow
+function showAddDeviceModal() { document.getElementById('add-device-modal').classList.remove('hidden'); }
+function hideAddDeviceModal() { document.getElementById('add-device-modal').classList.add('hidden'); }
+
+async function addDevice() {
+  var name = document.getElementById('new-device-name').value.trim();
+  var ip = document.getElementById('new-device-ip').value.trim();
+  var type = document.getElementById('new-device-type').value;
+  var vendor = document.getElementById('new-device-vendor').value.trim();
+  var grp = document.getElementById('new-device-group').value || 'default';
+  var snmp = document.getElementById('new-device-snmp').value.trim();
+  var sshUser = document.getElementById('new-device-ssh-user').value.trim();
+  var sshKey = document.getElementById('new-device-ssh-key').value.trim();
+  if (!name || !ip) { alert('Name and IP are required'); return; }
+  var body = { name: name, ip_address: ip, device_type: type, device_group: grp };
+  if (vendor) body.vendor = vendor;
+  if (snmp) body.snmp_community = snmp;
+  if (sshUser) body.ssh_user = sshUser;
+  if (sshKey) body.ssh_key = sshKey;
+  try {
+    var resp = await fetch('/api/v1/devices', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) { var e = await resp.json(); throw new Error(e.detail || 'Failed'); }
+    document.getElementById('new-device-name').value = '';
+    document.getElementById('new-device-ip').value = '';
+    document.getElementById('new-device-vendor').value = '';
+    document.getElementById('new-device-snmp').value = '';
+    document.getElementById('new-device-ssh-user').value = '';
+    document.getElementById('new-device-ssh-key').value = '';
+    hideAddDeviceModal();
+    fetchDevices(0);
+  } catch (err) { alert('Failed: ' + err.message); }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadUnclaimed(); loadMonitoring(); loadDeviceGroups(); fetchDevices(0); refreshScanButton();
+  // Default to the topology view when adopted UniFi gear exists (user preference)
+  loadTopology().then(function(n) { if (n > 0) setDevicesView('topology'); });
+});
+
+async function syncNow() {
+  var msg = document.getElementById('sync-msg');
+  msg.textContent = 'Syncing with UniFi controller…';
+  msg.className = 'text-sm text-gray-500';
+  try {
+    var r = await fetch('/api/v1/unifi/sync', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var d = await r.json();
+    if (r.ok) {
+      msg.textContent = '✅ Synced — ' + (d.adopted || 0) + ' adopted, ' + (d.added || 0) + ' added, ' + (d.updated || 0) + ' updated, ' + (d.clients_added || 0) + ' clients added.';
+      msg.className = 'text-sm text-green-600';
+      fetchDevices(0); loadUnclaimed(); loadTopology();
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'Sync failed');
+      msg.className = 'text-sm text-red-600';
+    }
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'text-sm text-red-600';
+  }
+}
+
+async function toggleNotify(id, current) {
+  try {
+    var r = await fetch('/api/v1/devices/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ notify_state_changes: !current })
+    });
+    if (r.ok) fetchDevices(currentOffset);
+  } catch (e) { console.error(e); }
+}
+
+// ── Topology view (adopted UniFi gear) ──
+function buildTopologyMermaid(t) {
+  var devs = t.devices || [], clients = t.clients || [], links = t.links || [];
+  var ids = {}, lines = ['graph TD'];
+  function prettyType(ty) {
+    return { 'gateway': 'Gateway', 'switch': 'Switch', 'ap': 'Access Point' }[ty] || ty;
+  }
+  function labelOf(name, d) {
+    // name on top, then TYPE · MAKE · MODEL (no IPs)
+    var sub = [prettyType(d.type), d.vendor, d.model].filter(function(x) { return x; }).join(' · ');
+    return (esc(name || '?') + '<br/>' + esc(sub || '')).replace(/"/g, '&quot;');
+  }
+  devs.forEach(function(d, i) {
+    var id = 'd' + i; ids[d.mac] = id;
+    var cls = d.type === 'gateway' ? 'gw' : d.type === 'switch' ? 'sw' : d.type === 'ap' ? 'ap' : 'dev';
+    lines.push(id + '["' + labelOf(d.name, d) + '"]:::' + cls);
+  });
+  clients.forEach(function(c, i) {
+    var id = 'c' + i; ids[c.mac] = id;
+    lines.push(id + '["' + labelOf(c.name, c) + '"]:::client');
+  });
+  links.forEach(function(l) {
+    if (ids[l.from] && ids[l.to]) {
+      lines.push(ids[l.from] + ' -->' + (l.port ? '|' + l.port + '|' : '') + ' ' + ids[l.to]);
+    }
+  });
+  lines.push('classDef gw fill:#eef2ff,stroke:#6366f1,stroke-width:2px');
+  lines.push('classDef sw fill:#ecfeff,stroke:#0891b2,stroke-width:2px');
+  lines.push('classDef ap fill:#fdf4ff,stroke:#c026d3,stroke-width:2px');
+  lines.push('classDef dev fill:#f5f5f4,stroke:#78716c');
+  lines.push('classDef client fill:#f0fdf4,stroke:#16a34a');
+  return lines.join('\n');
+}
+
+function loadMermaidScript(cb) {
+  if (window.mermaid) { cb(); return; }
+  var s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+  s.onload = cb;
+  s.onerror = function() {
+    document.getElementById('topology-mermaid').innerHTML =
+      '<p class="text-sm text-gray-500 py-8">Could not load the diagram renderer (mermaid CDN unreachable). ' +
+      'The topology data is still live — check connectivity and reload.</p>';
+  };
+  document.head.appendChild(s);
+}
+
+function renderMermaid(el) {
+  if (!window.mermaid || !mermaid.render) {
+    el.textContent = 'Diagram renderer not available yet — retrying…';
+    setTimeout(function() { renderMermaid(el); }, 800);
+    return;
+  }
+  // mermaid.render is promise-based and reports errors reliably (mermaid.run
+  // rejects asynchronously — uncaught rejections left the raw text on screen).
+  var id = 'topo-' + Date.now();
+  mermaid.render(id, el.textContent).then(function(res) {
+    el.innerHTML = res.svg;
+  }).catch(function(e) {
+    el.textContent = 'Topology render failed: ' + ((e && e.message) || e);
+  });
+}
+
+async function loadTopology() {
+  try {
+    var r = await fetch('/api/v1/unifi/topology', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var t = await r.json();
+    var devs = t.devices || [];
+    document.getElementById('topology-empty').classList.toggle('hidden', devs.length > 0);
+    if (!devs.length) return 0;
+    var el = document.getElementById('topology-mermaid');
+    el.textContent = buildTopologyMermaid(t);
+    loadMermaidScript(function() {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: 'default' });
+      renderMermaid(el);
+    });
+    return devs.length;
+  } catch (e) {
+    document.getElementById('topology-empty').classList.remove('hidden');
+    return 0;
+  }
+}
+
+function setDevicesView(mode) {
+  var topo = mode === 'topology';
+  document.getElementById('devices-list-view').classList.toggle('hidden', topo);
+  document.getElementById('devices-topology-view').classList.toggle('hidden', !topo);
+  var lb = document.getElementById('view-btn-list');
+  var tb = document.getElementById('view-btn-topology');
+  lb.className = topo ? 'rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200' : 'rounded-md bg-barenoc-600 px-2 py-1 text-white';
+  tb.className = topo ? 'rounded-md bg-barenoc-600 px-2 py-1 text-white' : 'rounded-md bg-gray-100 px-2 py-1 text-gray-700 hover:bg-gray-200';
+  if (topo) loadTopology();
+}
+</script>
+{% endblock %}

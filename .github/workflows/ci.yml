@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet -r src/api/requirements.txt -r src/worker/requirements.txt
+
+      - name: Prepare /opt/barenoc skeleton (tests write secrets/jobs)
+        run: |
+          sudo mkdir -p /opt/barenoc/volumes/{db,secrets/ssh} /opt/barenoc/jobs
+          sudo chmod -R 777 /opt/barenoc
+
+      - name: Run test gates
+        run: bash scripts/run_tests.sh

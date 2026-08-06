@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — System{% endblock %}
+{% block inner_content %}
+<div id="system-app">
+  <h1 class="text-2xl font-semibold text-gray-900">System Dashboard</h1>
+  <p class="mt-1 text-sm text-gray-500">BareNOC's own resources and health. Auto-refreshes every 15s.</p>
+
+  <!-- Host Resource Cards -->
+  <div id="host-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
+  <div id="unifi-firmware" class="mt-4 bg-white shadow rounded-lg p-5 hidden"></div>
+
+  <!-- Resource Bars -->
+  <div class="mt-6 bg-white shadow rounded-lg p-5">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Host Resources</h2>
+    <div id="resource-bars" class="space-y-3"></div>
+  </div>
+
+  <!-- Containers -->
+  <div class="mt-6 bg-white shadow rounded-lg p-5">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Containers</h2>
+    <div id="container-list" class="space-y-2"></div>
+  </div>
+
+  <!-- App Stats -->
+  <div class="mt-6 bg-white shadow rounded-lg p-5">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Application Stats</h2>
+    <div id="app-stats" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"></div>
+  </div>
+
+  <!-- Backups & Recovery -->
+  <div class="mt-6 bg-white shadow rounded-lg p-5">
+    <h2 class="text-lg font-medium text-gray-900 mb-3">Backups &amp; Recovery</h2>
+    <div id="backup-status" class="grid grid-cols-1 sm:grid-cols-3 gap-4"></div>
+  </div>
+
+  <div id="loading-system" class="mt-4 text-center text-gray-500">Loading system status...</div>
+</div>
+
+<script>
+function getToken() { return localStorage.getItem('access_token'); }
+function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function cpuColor(p) {
+  if (p < 50) return 'bg-green-500';
+  if (p < 80) return 'bg-yellow-500';
+  return 'bg-red-500';
+}
+
+async function loadSystem() {
+  try {
+    var resp = await fetch('/api/v1/system/status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await resp.json();
+
+    // UniFi controller firmware (from the controller, read-only)
+    try {
+      var fr = await fetch('/api/v1/unifi/firmware-status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+      if (fr.ok) {
+        var f = await fr.json();
+        var el = document.getElementById('unifi-firmware');
+        if (el && f.gateway) {
+          var list = (f.devices || []).map(function(x) {
+            return '<div class="flex justify-between text-sm"><span>' + esc(x.name) + ' <span class="text-gray-400">(' + esc(x.model) + ')</span></span><span class="font-mono">' + esc(x.version) + '</span></div>';
+          }).join('');
+          el.classList.remove('hidden');
+          el.innerHTML =
+            '<div class="flex justify-between items-center"><div class="text-sm font-medium text-gray-700">UniFi Controller</div>' +
+            '<div class="text-sm font-mono">' + esc(f.gateway.version) + '</div></div>' +
+            '<p class="text-xs text-gray-400 mt-1">' + esc(f.gateway.name) + ' (gateway) · firmware updates are applied in the UniFi UI. Newer UniFi OS may fix API VLAN tagging.</p>' +
+            '<div class="mt-2 space-y-1">' + list + '</div>';
+        }
+      }
+    } catch (e) { /* unifi not configured — ignore */ }
+
+    // Host cards
+    var mem = d.host.memory;
+    document.getElementById('host-cards').innerHTML = `
+      <div class="bg-white shadow rounded-lg p-5">
+        <div class="text-sm text-gray-500">CPU Usage</div>
+        <div class="text-2xl font-semibold mt-1 ${d.host.cpu_percent > 80 ? 'text-red-600' : d.host.cpu_percent > 50 ? 'text-yellow-600' : 'text-green-600'}">${d.host.cpu_percent}%</div>
+        <div class="text-xs text-gray-400 mt-1">Host</div>
+      </div>
+      <div class="bg-white shadow rounded-lg p-5">
+        <div class="text-sm text-gray-500">Memory</div>
+        <div class="text-2xl font-semibold mt-1">${mem.used_gb}<span class="text-sm font-normal text-gray-400">/${mem.total_gb} GB</span></div>
+        <div class="text-xs text-gray-400 mt-1">${mem.percent}% used</div>
+      </div>
+      <div class="bg-white shadow rounded-lg p-5">
+        <div class="text-sm text-gray-500">Disk</div>
+        <div class="text-2xl font-semibold mt-1">${d.host.disk.percent}<span class="text-sm font-normal text-gray-400">%</span></div>
+        <div class="text-xs text-gray-400 mt-1">${d.host.disk.used} / ${d.host.disk.total}</div>
+      </div>
+      <div class="bg-white shadow rounded-lg p-5">
+        <div class="text-sm text-gray-500">Uptime</div>
+        <div class="text-2xl font-semibold mt-1">${d.host.uptime}</div>
+        <div class="text-xs text-gray-400 mt-1">Host up</div>
+      </div>
+    `;
+
+    // Resource bars
+    var bars = document.getElementById('resource-bars');
+    bars.innerHTML = `
+      <div>
+        <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">CPU</span><span class="font-medium">${d.host.cpu_percent}%</span></div>
+        <div class="bg-gray-100 rounded h-4 overflow-hidden"><div class="h-full ${cpuColor(d.host.cpu_percent)} rounded" style="width:${Math.min(d.host.cpu_percent, 100)}%"></div></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">Memory</span><span class="font-medium">${mem.percent}% (${mem.used_gb}/${mem.total_gb} GB)</span></div>
+        <div class="bg-gray-100 rounded h-4 overflow-hidden"><div class="h-full ${cpuColor(mem.percent)} rounded" style="width:${Math.min(mem.percent, 100)}%"></div></div>
+      </div>
+      <div>
+        <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">Disk</span><span class="font-medium">${d.host.disk.percent}% (${d.host.disk.used} used)</span></div>
+        <div class="bg-gray-100 rounded h-4 overflow-hidden"><div class="h-full ${cpuColor(parseFloat(d.host.disk.percent))} rounded" style="width:${Math.min(d.host.disk.percent, 100)}%"></div></div>
+      </div>
+    `;
+
+    // Containers
+    var cont = document.getElementById('container-list');
+    cont.innerHTML = '';
+    (d.containers || []).forEach(function(c) {
+      var ok = c.up;
+      cont.innerHTML += `<div class="flex justify-between items-center py-1 border-b">
+        <span class="font-mono text-sm">${esc(c.name)}</span>
+        <span class="text-xs ${ok ? 'text-green-600' : 'text-red-600'}">${ok ? '● Up' : '● Down'} · ${esc(c.status)}</span>
+      </div>`;
+    });
+    if (!d.containers || !d.containers.length) {
+      cont.innerHTML = '<p class="text-sm text-gray-400">Container status unavailable (docker CLI not in container)</p>';
+    }
+
+    // App stats
+    var a = d.app;
+    document.getElementById('app-stats').innerHTML = `
+      <div><div class="text-sm text-gray-500">Version</div><div class="text-lg font-semibold">${a.version}</div></div>
+      <div><div class="text-sm text-gray-500">Devices</div><div class="text-lg font-semibold">${a.total_devices} <span class="text-xs font-normal text-green-600">(${a.online_devices} up)</span></div></div>
+      <div><div class="text-sm text-gray-500">Open Tickets</div><div class="text-lg font-semibold">${a.open_tickets}</div></div>
+      <div><div class="text-sm text-gray-500">Total Tickets</div><div class="text-lg font-semibold">${a.total_tickets}</div></div>
+      <div><div class="text-sm text-gray-500">Users</div><div class="text-lg font-semibold">${a.total_users}</div></div>
+      <div><div class="text-sm text-gray-500">LLM Spend</div><div class="text-lg font-semibold">$${a.llm_total_cost_usd.toFixed(4)}</div></div>
+    `;
+
+    // Backups & Recovery
+    var b = d.backups || { app: {}, vm: {} };
+    var bApp = b.app || {};
+    var bVm = b.vm || {};
+    var ageText = (bApp.age_h === null || bApp.age_h === undefined) ? '—' :
+                  (bApp.age_h < 1 ? Math.round(bApp.age_h * 60) + ' min ago' : bApp.age_h + ' h ago');
+    var appFresh = (bApp.age_h !== null && bApp.age_h !== undefined && bApp.age_h < 7);
+    var vmLast = (bVm.vm_snapshot_last && bVm.vm_snapshot_last !== 'none') ? esc(bVm.vm_snapshot_last) : 'none yet';
+    var usbHtml = bVm.usb_present
+      ? '<span class="text-green-600">● Plugged in</span>'
+      : '<span class="text-red-600">○ Not detected</span>';
+    document.getElementById('backup-status').innerHTML = `
+      <div class="border rounded-lg p-4">
+        <div class="text-sm text-gray-500">App Data Backup</div>
+        <div class="text-lg font-semibold mt-1 ${appFresh ? 'text-green-600' : 'text-red-600'}">${ageText}</div>
+        <div class="text-xs text-gray-400 mt-1">${bApp.count || 0} archive(s) · ${bApp.size_mb || 0} MB</div>
+        <div class="text-xs mt-1 ${appFresh ? 'text-green-600' : 'text-red-600'}">${appFresh ? '✓ fresh (every 6h)' : '⚠ stale — check cron'}</div>
+      </div>
+      <div class="border rounded-lg p-4">
+        <div class="text-sm text-gray-500">VM Snapshot (host)</div>
+        <div class="text-sm font-semibold mt-1">${vmLast}</div>
+        <div class="text-xs text-gray-400 mt-1">daily vzdump · 7-day retention</div>
+      </div>
+      <div class="border rounded-lg p-4">
+        <div class="text-sm text-gray-500">Recovery USB</div>
+        <div class="text-lg font-semibold mt-1">${usbHtml}</div>
+        <div class="text-xs text-gray-400 mt-1">weekly · LUKS · last: ${esc(bVm.usb_last_backup || '—')}</div>
+      </div>
+    `;
+
+    document.getElementById('loading-system').style.display = 'none';
+  } catch (err) {
+    console.error(err);
+    document.getElementById('loading-system').textContent = 'Failed to load system status';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadSystem();
+  setInterval(loadSystem, 15000);
+});
+</script>
+{% endblock %}

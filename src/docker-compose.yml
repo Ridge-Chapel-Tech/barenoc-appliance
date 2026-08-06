@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: barenoc-api
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /opt/barenoc/volumes/db:/opt/barenoc/volumes/db
+      - /opt/barenoc/volumes/logs/api:/opt/barenoc/volumes/logs/api
+      - /opt/barenoc/volumes/secrets:/opt/barenoc/volumes/secrets
+      - /opt/barenoc/volumes/branding:/opt/barenoc/volumes/branding
+      - /opt/barenoc/jobs:/opt/barenoc/jobs
+      - /opt/barenoc/.env:/opt/barenoc/.env
+      - /opt/barenoc/backups:/opt/barenoc/backups:ro
+      - /opt/barenoc/volumes/backup_status:/opt/barenoc/volumes/backup_status
+      - /opt/barenoc/volumes/remote_access:/opt/barenoc/volumes/remote_access:ro
+      - /opt/barenoc/client:/opt/barenoc/client:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - SERVICE_NAME=api
+    expose:
+      - "8000"
+    depends_on:
+      - nginx
+    networks:
+      - barenoc-net
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: barenoc-worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /opt/barenoc/volumes/db:/opt/barenoc/volumes/db
+      - /opt/barenoc/volumes/logs/worker:/opt/barenoc/volumes/logs/worker
+      - /opt/barenoc/jobs:/opt/barenoc/jobs
+      - /opt/barenoc/volumes/secrets:/opt/barenoc/volumes/secrets:ro
+      - /opt/barenoc/.env:/opt/barenoc/.env:ro
+    environment:
+      - SERVICE_NAME=worker
+    networks:
+      - barenoc-net
+
+  scheduler:
+    build:
+      context: ./scheduler
+      dockerfile: Dockerfile
+    container_name: barenoc-scheduler
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /opt/barenoc/volumes/db:/opt/barenoc/volumes/db
+      - /opt/barenoc/volumes/logs/scheduler:/opt/barenoc/volumes/logs/scheduler
+      - /opt/barenoc/jobs:/opt/barenoc/jobs
+      - /opt/barenoc/.env:/opt/barenoc/.env:ro
+      - /opt/barenoc/agent/credentials:/opt/barenoc/agent/credentials:ro
+    environment:
+      - SERVICE_NAME=scheduler
+    networks:
+      - barenoc-net
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: barenoc-nginx
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "8443:8443"   # Pocket ID at root (SPA needs root-absolute paths)
+    volumes:
+      - ./nginx/barenoc.conf:/etc/nginx/conf.d/barenoc.conf:ro
+      - /opt/barenoc/volumes/nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - barenoc-net
+
+  pocket-id:
+    image: pocketid/pocket-id:v2
+    container_name: barenoc-pocket-id
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # v2.12 reads APP_URL (PUBLIC_APP_URL is ignored) — this is the issuer/RP
+      # for OIDC + WebAuthn; without it the wizard defaults to localhost and
+      # passkey setup fails with "configured domain is invalid".
+      - APP_URL=https://pocket-id.barenoc.local:8443
+    volumes:
+      - /opt/barenoc/volumes/pocket-id/data:/app/data
+    healthcheck:
+      test: ["CMD", "/app/pocket-id", "healthcheck"]
+      interval: 1m30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    networks:
+      - barenoc-net
+    # No published ports — reached only via nginx /auth/pocket-id/ (UFW stays 443-only)
+
+networks:
+  barenoc-net:
+    driver: bridge

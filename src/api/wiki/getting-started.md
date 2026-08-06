@@ -1,0 +1,92 @@
+# Getting Started
+
+## First login
+
+1. Open the portal URL (your admin gave you `https://<appliance>/`).
+2. Log in with your BareNOC account.
+3. If you were sent to a **change-password** screen, set a new password first.
+
+```mermaid
+flowchart LR
+    LOGIN[Log in] --> PW{Password change required?}
+    PW -->|yes| CH[Set new password]
+    PW -->|no| DASH[Dashboard]
+    CH --> DASH
+```
+
+## Roles
+
+| Role | Can do |
+|------|--------|
+| **Admin** | Everything: settings, users, integrations (UniFi, email, Pocket ID), approvals |
+| **Operator** | Manage devices/tickets, approve actions, run diagnostics |
+| **Read-only** | View dashboards, tickets, and device status |
+
+## The three-way flow
+
+- **Queue Manager (Juniper)** (chat persona) — handles tickets and the queue; answers
+  ticket questions, opens/assigns/prioritizes/closes tickets. Anything else →
+  a ticket.
+- **AI Technician** — the worker that reads tickets, decides if a request is
+  legal/doable, runs approved actions, and asks you to verify results.
+- **Lily** (autonomous, experimental) — in Autonomous mode, tickets
+  can be dispatched to the on-appliance coding agent, which works them with
+  full tools and writes the outcome into the ticket (see the
+  [Autonomy Policy](/wiki/autonomy)).
+- **Human Tech** — approves or closes escalated tickets (that's you or your
+  team).
+
+```mermaid
+flowchart LR
+    U[You] -->|"message"| QM[Queue Manager (Juniper)]
+    QM -->|"not a queue question"| TK[Ticket]
+    TK --> AI[AI Technician]
+    AI -->|"needs approval"| HT[Human Tech]
+    HT -->|"approve"| AI
+    AI -->|"done — confirm?"| U
+    U -->|"confirmed"| DONE[Closed]
+```
+
+## Remote access (Tailscale)
+
+BareNOC and its Proxmox hosts join a **Tailscale** tailnet for remote
+management — no open ports, works from anywhere. See the **Remote Access**
+card in Settings → General: it shows each node (appliance + Proxmox host),
+its `100.x` tailnet IP, and an **Approve this node** link when a node still
+needs your Tailscale login. Once online:
+
+```bash
+# from anywhere on your tailnet
+ssh ops@<host-100.x-ip>          # Proxmox host (key-only)
+ssh barenoc@<vm-100.x-ip>        # BareNOC VM
+# web UIs are reachable on the tailnet too (Proxmox 8006, BareNOC 443)
+```
+
+## First things to try
+
+- **Ask the chat**: "what tickets are open?" (ticket questions are answered
+  directly).
+- **Open a ticket**: tell the Queue Manager the problem — it opens one and
+  confirms with the ID.
+- **Look at your network**: UniFi sync runs automatically (Settings → UniFi →
+  Auto-sync, 5–60 min) and auto-adopts the gateways/switches/APs; unclaimed
+  devices get grouped (Infrastructure / Endpoints / Discovered) and can be
+  **fingerprinted** with nmap to identify them before you **Claim** them.
+- **Adopt an endpoint with control**: Claim a device and paste its SSH
+  private key (plus user) in the credentials section — it becomes
+  **Onboarded**, and the AI Technician can run SSH actions on it (patch
+  check, collect logs, reboot).
+- **Track it**: "status of TKT-…" in chat, or the Tickets page.
+
+## Where things live
+
+| URL | Purpose |
+|-----|---------|
+| `/` → `/dashboard` | Portal home |
+| `/tickets` | Ticket queue |
+| `/devices` | Device inventory + onboarding |
+| `/settings` | Settings (UniFi, email, identity, users) |
+| `/wiki` | This wiki |
+
+> **Tip:** if you ever see "Invalid or expired token", your session (60 min)
+> expired — log back in; the app redirects you automatically.

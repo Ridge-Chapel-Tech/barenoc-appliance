@@ -1,0 +1,646 @@
+{
+ "updated": "2026-08-02",
+ "stages": [
+  {
+   "key": "m1",
+   "name": "M1 \u2014 Application Core",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "M1-T1",
+     "name": "Web UI accessible",
+     "status": "done"
+    },
+    {
+     "id": "M1-T2",
+     "name": "Login works",
+     "status": "done"
+    },
+    {
+     "id": "M1-T3",
+     "name": "Unauthenticated access blocked",
+     "status": "done"
+    },
+    {
+     "id": "M1-T4",
+     "name": "Dashboard loads",
+     "status": "done"
+    },
+    {
+     "id": "M1-T5",
+     "name": "Device list populated",
+     "status": "done"
+    },
+    {
+     "id": "M1-T6",
+     "name": "Ticket CRUD",
+     "status": "done"
+    },
+    {
+     "id": "M1-T7",
+     "name": "All containers healthy",
+     "status": "done"
+    },
+    {
+     "id": "M1-T8",
+     "name": "Database initialized",
+     "status": "done"
+    }
+   ]
+  },
+  {
+   "key": "m2",
+   "name": "M2 \u2014 LLM Integration",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "M2-T1",
+     "name": "Ticket \u2192 LLM \u2192 job file created",
+     "status": "done"
+    },
+    {
+     "id": "M2-T2",
+     "name": "Prompt injection blocked",
+     "status": "done"
+    },
+    {
+     "id": "M2-T3",
+     "name": "Unknown action rejected",
+     "status": "done"
+    },
+    {
+     "id": "M2-T4",
+     "name": "Unknown target rejected",
+     "status": "done"
+    },
+    {
+     "id": "M2-T5",
+     "name": "P1 auto-executes (conf \u2265 0.95)",
+     "status": "done"
+    },
+    {
+     "id": "M2-T6",
+     "name": "Low confidence escalates",
+     "status": "done"
+    },
+    {
+     "id": "M2-T7",
+     "name": "Audit per LLM call",
+     "status": "done"
+    },
+    {
+     "id": "M2-T8",
+     "name": "Token cost tracked",
+     "status": "done"
+    },
+    {
+     "id": "M2-T9",
+     "name": "Rate limiting enforced",
+     "status": "pending",
+     "notes": "M2-T9 / SAT-069 \u2014 not implemented"
+    }
+   ]
+  },
+  {
+   "key": "m3a",
+   "name": "M3a \u2014 Device Onboarding & Discovery",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "M3a-T1",
+     "name": "Manual device add via web UI",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T2",
+     "name": "Connectivity verification on add",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T3",
+     "name": "Unreachable device flagged",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T4",
+     "name": "Duplicate device rejected",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T5",
+     "name": "Device credentials encrypted at rest",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T6",
+     "name": "Device list filters work",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T7",
+     "name": "Device detail page loads",
+     "status": "done"
+    },
+    {
+     "id": "M3a-T8",
+     "name": "UniFi auto-discovery",
+     "status": "done",
+     "notes": "LIVE 2026-08-01: UCG-Max sync verified (infra + clients), 5-min auto-sync"
+    }
+   ]
+  },
+  {
+   "key": "m3b",
+   "name": "M3b \u2014 Pi Agent Bridge",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "M3b-T1",
+     "name": "Agent service running",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T2",
+     "name": "Job file picked up and executed",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T3",
+     "name": "Ping check script works",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T4",
+     "name": "Unknown action rejected at agent",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T5",
+     "name": "Target not in inventory rejected",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T6",
+     "name": "Concurrent job limit",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T7",
+     "name": "Job timeout",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T8",
+     "name": "Retry on failure",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T9",
+     "name": "Scheduler fires SNMP poll",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T10",
+     "name": "Agent runs as restricted user",
+     "status": "done"
+    },
+    {
+     "id": "M3b-T11",
+     "name": "Onboarded device actionable by agent",
+     "status": "done"
+    }
+   ]
+  },
+  {
+   "key": "m4",
+   "name": "M4 \u2014 Admin & Operations",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "M4-T1",
+     "name": "Tailscale SSH works",
+     "status": "pending",
+     "notes": "SAT-160 \u2014 PENDING FEATURE"
+    },
+    {
+     "id": "M4-T2",
+     "name": "Update script (barenoc-update)",
+     "status": "pending",
+     "notes": "SAT-161 \u2014 PENDING FEATURE"
+    },
+    {
+     "id": "M4-T3",
+     "name": "SQLite backup created",
+     "status": "done",
+     "notes": "6-hourly cron, 30-day retention, verified"
+    },
+    {
+     "id": "M4-T4",
+     "name": "Proxmox snapshot created",
+     "status": "done",
+     "notes": "daily 1 AM vzdump keep-last=7, verified"
+    },
+    {
+     "id": "M4-T5",
+     "name": "Backup rotation works",
+     "status": "done",
+     "notes": "native --prune-backups, verified"
+    },
+    {
+     "id": "M4-T6",
+     "name": "Factory reset restores clean state",
+     "status": "pending",
+     "notes": "SAT-162 \u2014 PENDING FEATURE"
+    },
+    {
+     "id": "M4-T7",
+     "name": "Health endpoint responds",
+     "status": "done"
+    },
+    {
+     "id": "M4-T8",
+     "name": "Restore from backup",
+     "status": "done",
+     "notes": "safe-mode + full --apply + qmrestore drills PASSED"
+    },
+    {
+     "id": "M4-T9",
+     "name": "Remote KVM access (NanoKVM)",
+     "status": "pending",
+     "notes": "SAT-163 \u2014 PENDING HARDWARE"
+    }
+   ]
+  },
+  {
+   "key": "m5",
+   "name": "M5 \u2014 Hardware Build & Trial",
+   "status": "pending",
+   "tasks": [
+    {
+     "id": "M5-T1",
+     "name": "Cold boot < 10 min",
+     "status": "pending"
+    },
+    {
+     "id": "M5-T2",
+     "name": "Thermal \u2014 no component > 75\u00b0C",
+     "status": "pending"
+    },
+    {
+     "id": "M5-T3",
+     "name": "Power-loss recovery",
+     "status": "pending"
+    },
+    {
+     "id": "M5-T4",
+     "name": "Customer setup simulation",
+     "status": "pending"
+    },
+    {
+     "id": "M5-T5",
+     "name": "Pre-ship snapshot",
+     "status": "pending"
+    },
+    {
+     "id": "M5-T6",
+     "name": "Factory reset + reprovision",
+     "status": "pending"
+    }
+   ]
+  },
+  {
+   "key": "netarch",
+   "name": "Network Architecture (Phases A/B)",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "NA-1",
+     "name": "VLANs + SSIDs (Management 8, Kids 9, RCTF 10, Guest 11)",
+     "status": "done",
+     "notes": "2026-08-01/02 \u2014 all provisioned, SSIDs moved"
+    },
+    {
+     "id": "NA-2",
+     "name": "Firewall rules \u2014 guest + automation isolated, legacy\u2192mgmt (temp)",
+     "status": "done",
+     "notes": "Created in UniFi UI (API blocked \u2014 see runbook); verified via API"
+    },
+    {
+     "id": "NA-3",
+     "name": "Admin-terminal allow rule (DHCP-reserve + address-group)",
+     "status": "in_progress",
+     "notes": "Group created; deferred to onboarding build (Phase D)"
+    },
+    {
+     "id": "NA-4",
+     "name": "WiFi\u2192Production/Storage allows (formalize)",
+     "status": "pending",
+     "notes": "Default-allow today; explicit rules when lockdown lands"
+    }
+   ]
+  },
+  {
+   "key": "mgmt",
+   "name": "Management Plane (Phase C)",
+   "status": "pending",
+   "tasks": [
+    {
+     "id": "C-1",
+     "name": "Proxmox #1 mgmt NIC \u2192 Mgmt VLAN",
+     "status": "pending"
+    },
+    {
+     "id": "C-2",
+     "name": "Proxmox #2 mgmt link \u2192 Mgmt VLAN",
+     "status": "pending"
+    },
+    {
+     "id": "C-3",
+     "name": "Port-7 trunk (Production + Storage) to .64",
+     "status": "pending",
+     "notes": "unifi_port_config action built; dry-run verified"
+    },
+    {
+     "id": "C-4",
+     "name": "BareNOC VM \u2192 Mgmt VLAN (new IP + refs)",
+     "status": "pending"
+    },
+    {
+     "id": "C-5",
+     "name": "OMV VM on Proxmox .64 (Storage VLAN)",
+     "status": "pending"
+    }
+   ]
+  },
+  {
+   "key": "onboard",
+   "name": "Onboarding Lockdown (Phase D)",
+   "status": "pending",
+   "tasks": [
+    {
+     "id": "D-1",
+     "name": "Admin-terminal designation (DHCP-reserve + group + rule)",
+     "status": "pending"
+    },
+    {
+     "id": "D-2",
+     "name": "management_access open\u2192locked state + UI banner",
+     "status": "pending"
+    },
+    {
+     "id": "D-3",
+     "name": "Firewall write automation (v2 zone schema capture)",
+     "status": "blocked",
+     "notes": "BLOCKED on UniFi v2 firewall-policies create schema (browser devtools capture needed)"
+    },
+    {
+     "id": "D-4",
+     "name": "Legacy device retirement (remove temp legacy\u2192mgmt rule)",
+     "status": "blocked",
+     "notes": "BLOCKED on UniFi AP install for full coverage"
+    }
+   ]
+  },
+  {
+   "key": "sec",
+   "name": "Security Hardening (P0 + open)",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "S-1",
+     "name": "API docs disabled",
+     "status": "done"
+    },
+    {
+     "id": "S-2",
+     "name": ".env perms 0600",
+     "status": "done"
+    },
+    {
+     "id": "S-3",
+     "name": "Fernet key file (not passphrase-derived)",
+     "status": "done"
+    },
+    {
+     "id": "S-4",
+     "name": "User edit UI",
+     "status": "done"
+    },
+    {
+     "id": "S-5",
+     "name": "Session gate: all pages redirect on expiry",
+     "status": "done",
+     "notes": "server-side require_page_session + global 401 guard"
+    },
+    {
+     "id": "S-6",
+     "name": "Token revocation",
+     "status": "pending"
+    },
+    {
+     "id": "S-7",
+     "name": "CSRF review",
+     "status": "pending"
+    },
+    {
+     "id": "S-8",
+     "name": "JWT fail-closed default secret",
+     "status": "pending",
+     "notes": "code default is a placeholder \u2014 fails open if .env missing"
+    }
+   ]
+  },
+  {
+   "key": "email",
+   "name": "Email & Alerting",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "E-1",
+     "name": "Emailer module + multi-recipient",
+     "status": "done"
+    },
+    {
+     "id": "E-2",
+     "name": "Gmail OAuth2 (REST API) transport",
+     "status": "done",
+     "notes": "GOOGLE_* env flow, mock-tested; SMTP fallback kept"
+    },
+    {
+     "id": "E-3",
+     "name": "Alert engine (device down/recovery + daily digest)",
+     "status": "done",
+     "notes": "ACTIVE \u2014 device-down/recovery + daily digest sending"
+    },
+    {
+     "id": "E-4",
+     "name": "P1/P2 ticket alerts",
+     "status": "done"
+    },
+    {
+     "id": "E-5",
+     "name": "Live email delivery (GCP client + refresh token)",
+     "status": "done",
+     "notes": "2026-08-02 \u2014 Gmail OAuth2 live: test email + P1/P2 immediate alerts verified (logs confirm sends)"
+    },
+    {
+     "id": "E-6",
+     "name": "Customer-via-email ticket updates",
+     "status": "pending",
+     "notes": "future \u2014 customer_action tickets email the customer, replies feed the loop"
+    }
+   ]
+  },
+  {
+   "key": "pocketid",
+   "name": "Pocket ID / Passkeys",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "P-1",
+     "name": "Container + nginx + backup (Phase A)",
+     "status": "done"
+    },
+    {
+     "id": "P-2",
+     "name": "OIDC flow + group\u2192role (Phase B)",
+     "status": "done"
+    },
+    {
+     "id": "P-3",
+     "name": "Settings UI (Phase C)",
+     "status": "done"
+    },
+    {
+     "id": "P-4",
+     "name": "Docs + backup (Phase D)",
+     "status": "done"
+    },
+    {
+     "id": "P-5",
+     "name": "Device groups + group auth (Phase F)",
+     "status": "done"
+    },
+    {
+     "id": "P-6",
+     "name": "First-run provisioning + app registration (Phase E)",
+     "status": "in_progress",
+     "notes": "served at :8443 (root \u2014 SPA subpath fixed); wizard + OIDC app registration + enrollment pending in browser"
+    }
+   ]
+  },
+  {
+   "key": "backup",
+   "name": "Backup & Recovery",
+   "status": "in_progress",
+   "tasks": [
+    {
+     "id": "B-1",
+     "name": "Layer 1: app data (6h cron, 30d)",
+     "status": "done"
+    },
+    {
+     "id": "B-2",
+     "name": "Layer 2: VM snapshot (daily, keep 7)",
+     "status": "done"
+    },
+    {
+     "id": "B-3",
+     "name": "Restore drills",
+     "status": "done",
+     "notes": "app --apply + qmrestore PASSED"
+    },
+    {
+     "id": "B-4",
+     "name": "System-page backup indicators",
+     "status": "done"
+    },
+    {
+     "id": "B-5",
+     "name": "Layer 3: USB tier (LUKS)",
+     "status": "blocked",
+     "notes": "BLOCKED on USB drive (64\u2013128 GB recommended) + LUKS setup"
+    },
+    {
+     "id": "B-6",
+     "name": "Offsite backup",
+     "status": "pending",
+     "notes": "Tailscale push or USB staging"
+    }
+   ]
+  },
+  {
+   "key": "chat",
+   "name": "Chat Client",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "CH-1",
+     "name": "AIM-style client (login, buddy list, chat)",
+     "status": "done"
+    },
+    {
+     "id": "CH-2",
+     "name": "Queue Manager answer-or-escalate flow",
+     "status": "done"
+    },
+    {
+     "id": "CH-3",
+     "name": "Installers + icons (Linux/Win/macOS) + PyInstaller build",
+     "status": "done"
+    },
+    {
+     "id": "CH-4",
+     "name": "GUI visual pass on real machine",
+     "status": "in_progress",
+     "notes": "helpers E2E-tested; tkinter GUI not visually verified yet"
+    }
+   ]
+  },
+  {
+   "key": "wiki",
+   "name": "Wiki & Docs",
+   "status": "done",
+   "tasks": [
+    {
+     "id": "W-1",
+     "name": "User wiki workflow coverage + Mermaid",
+     "status": "done"
+    },
+    {
+     "id": "W-2",
+     "name": "UniFi API runbook (captured knowledge)",
+     "status": "done"
+    },
+    {
+     "id": "W-3",
+     "name": "SAT doc + MILESTONES maintained",
+     "status": "done"
+    }
+   ]
+  },
+  {
+   "key": "resilience",
+   "name": "Crash-Resilience / Delivery",
+   "status": "pending",
+   "tasks": [
+    {
+     "id": "R-1",
+     "name": "Git remote + push cadence",
+     "status": "pending"
+    },
+    {
+     "id": "R-2",
+     "name": "deploy.sh runner-sync loud-failure fix",
+     "status": "pending",
+     "notes": "agent runner update silently skips without sudo"
+    },
+    {
+     "id": "R-3",
+     "name": "Off-host backups",
+     "status": "pending"
+    }
+   ]
+  }
+ ]
+}

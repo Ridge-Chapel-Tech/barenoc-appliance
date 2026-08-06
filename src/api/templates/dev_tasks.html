@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — Build Board{% endblock %}
+{% block inner_content %}
+<div class="max-w-6xl">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <div>
+      <h1 class="text-2xl font-semibold text-gray-900">Build Board — Tasks by Stage</h1>
+      <p class="text-sm text-gray-500">Snapshot updated {{ updated }} · <a href="/dev/sat" class="text-barenoc-600 hover:underline">View SAT checks →</a></p>
+    </div>
+    <div id="board-summary" class="text-xs text-gray-500"></div>
+  </div>
+
+  <div class="mt-4 flex gap-1 flex-wrap text-xs">
+    <span class="px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">done</span>
+    <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">in progress</span>
+    <span class="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">blocked</span>
+    <span class="px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 font-medium">pending</span>
+  </div>
+
+  {% for stage in stages %}
+  <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
+      <h2 class="font-semibold text-gray-800">{{ stage.name }}</h2>
+      <span class="text-xs text-gray-500">{{ stage.tasks|length }} task(s)</span>
+    </div>
+    <table class="w-full text-sm">
+      <tbody>
+        {% for t in stage.tasks %}
+        <tr class="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+          <td class="px-4 py-2.5 align-top w-40">
+            <div class="font-mono text-xs text-barenoc-700">{{ t.id }}</div>
+            <div class="mt-1">
+              {% set c = {'done':'bg-green-100 text-green-700','in_progress':'bg-amber-100 text-amber-700','blocked':'bg-red-100 text-red-700','pending':'bg-gray-200 text-gray-600'} %}
+              <span class="px-1.5 py-0.5 rounded text-[11px] font-medium {{ c.get(t.status, c['pending']) }}">{{ t.status }}</span>
+            </div>
+          </td>
+          <td class="px-4 py-2.5">
+            <div class="font-medium text-gray-800">{{ t.name }}</div>
+            {% if t.notes %}<div class="text-xs text-gray-500 mt-0.5">{{ t.notes }}</div>{% endif %}
+            {% set sats = sat_map.get(t.id, []) %}
+            {% if sats %}
+            <div class="mt-1.5 flex flex-wrap gap-1">
+              {% for s in sats %}
+              <a href="/dev/sat" class="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100 hover:bg-blue-100">{{ s }}</a>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+</div>
+<script>
+  // live summary counts
+  (function () {
+    var counts = { done: 0, in_progress: 0, blocked: 0, pending: 0 };
+    document.querySelectorAll('table span[class*="rounded"]').forEach(function (s) {
+      var label = s.textContent.trim();
+      if (label in counts) counts[label] = (counts[label] || 0) + 1;
+    });
+    var total = Object.values(counts).reduce(function (a, b) { return a + b; }, 0);
+    document.getElementById('board-summary').textContent =
+      total + ' tasks · ' + counts.done + ' done · ' + counts.in_progress + ' in progress · ' +
+      counts.blocked + ' blocked · ' + counts.pending + ' pending';
+  })();
+</script>
+{% endblock %}

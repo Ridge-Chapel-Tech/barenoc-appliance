@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — Tickets{% endblock %}
+{% block inner_content %}
+<div id="tickets-app">
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-semibold text-gray-900">Tickets</h1>
+    <button onclick="showNewTicketModal()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">+ New Ticket</button>
+  </div>
+
+  <!-- Filters -->
+  <div class="mt-4 flex flex-wrap items-center gap-4">
+    <select id="filter-status" onchange="fetchTickets(0)" class="rounded-md border-gray-300 text-sm">
+      <option value="">All Statuses</option>
+      <option value="open">Open</option>
+      <option value="in_progress">In Progress</option>
+      <option value="escalated">Escalated</option>
+      <option value="customer_action">Customer Action</option>
+      <option value="closed">Closed</option>
+    </select>
+    <select id="filter-priority" onchange="fetchTickets(0)" class="rounded-md border-gray-300 text-sm">
+      <option value="">All Priorities</option>
+      <option value="P1">P1 - Critical</option>
+      <option value="P2">P2 - High</option>
+      <option value="P3">P3 - Normal</option>
+      <option value="P4">P4 - Low</option>
+    </select>
+    <button onclick="saveTicketPrefs()" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200" title="Remember these filters as your default view">Set as default</button>
+    <span id="ticket-count" class="text-sm text-gray-500 self-center"></span>
+  </div>
+
+  <!-- Ticket Table -->
+  <div class="mt-4 bg-white shadow rounded-lg overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Assigned</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+          <th class="px-6 py-3"></th>
+        </tr>
+      </thead>
+      <tbody id="tickets-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div class="mt-4 flex items-center justify-between">
+    <button id="prev-page" onclick="fetchTickets(currentOffset - currentLimit)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50 disabled:opacity-50" disabled>← Previous</button>
+    <span id="page-info" class="text-sm text-gray-500"></span>
+    <button id="next-page" onclick="fetchTickets(currentOffset + currentLimit)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50 disabled:opacity-50">Next →</button>
+  </div>
+
+  <div id="loading-tickets" class="mt-4 text-center text-gray-500">Loading tickets...</div>
+</div>
+
+<!-- New Ticket Modal -->
+<div id="new-ticket-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Create New Ticket</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <div><label class="block text-sm font-medium text-gray-700">Title</label><input id="new-ticket-title" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Description</label><textarea id="new-ticket-desc" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></textarea></div>
+      <div><label class="block text-sm font-medium text-gray-700">Priority</label>
+        <select id="new-ticket-priority" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2">
+          <option value="P1">P1 - Critical</option>
+          <option value="P2">P2 - High</option>
+          <option value="P3" selected>P3 - Normal</option>
+          <option value="P4">P4 - Low</option>
+        </select>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideNewTicketModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
+      <button onclick="createTicket()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function renderNotes(notesJson) {
+  try {
+    var notes = JSON.parse(notesJson);
+    if (!notes.length) return '';
+    return notes.map(function(n) {
+      return '<div class="text-xs border-l-2 border-barenoc-200 pl-2 py-1">'
+        + '<span class="text-gray-400">' + esc(n.timestamp) + '</span> '
+        + '<span class="font-medium text-gray-700">[' + esc(n.event) + ']</span> '
+        + '<span class="text-gray-600">' + esc(n.detail) + '</span>'
+        + (n.actor ? ' <span class="text-gray-400">by ' + esc(n.actor) + '</span>' : '')
+        + '</div>';
+    }).join('');
+  } catch(e) { return ''; }
+}
+
+function getToken() { return localStorage.getItem('access_token'); }
+
+function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+var currentOffset = 0;
+var currentLimit = 10;
+var currentTotal = 0;
+
+async function fetchTickets(offset) {
+  if (offset === undefined) offset = currentOffset;
+  currentOffset = offset;
+
+  document.getElementById('loading-tickets').style.display = 'block';
+
+  var params = [];
+  var s = document.getElementById('filter-status').value;
+  var p = document.getElementById('filter-priority').value;
+  if (s) params.push('status=' + encodeURIComponent(s));
+  if (p) params.push('priority=' + encodeURIComponent(p));
+  params.push('limit=' + currentLimit);
+  params.push('offset=' + offset);
+
+  try {
+    // 15s timeout: a hung request surfaces an error + Retry instead of
+    // leaving the "Loading tickets..." spinner frozen forever.
+    var ctrl = new AbortController();
+    var to = setTimeout(function() { ctrl.abort(); }, 15000);
+    try {
+      var resp = await fetch('/api/v1/tickets?' + params.join('&'), {
+        headers: { 'Authorization': 'Bearer ' + getToken() },
+        signal: ctrl.signal
+      });
+    } finally {
+      clearTimeout(to);
+    }
+    var data = await resp.json();
+    var tickets = data.tickets || [];
+    currentTotal = data.total || 0;
+
+    var tbody = document.getElementById('tickets-body');
+    tbody.innerHTML = '';
+    document.getElementById('ticket-count').textContent = currentTotal + ' total';
+
+    for (var i = 0; i < tickets.length; i++) {
+      var t = tickets[i];
+      var pc = t.priority === 'P1' ? 'bg-red-100 text-red-700' :
+               t.priority === 'P2' ? 'bg-orange-100 text-orange-700' :
+               t.priority === 'P3' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600';
+      var sc = t.status === 'closed' ? 'text-green-600' :
+               t.status === 'escalated' ? 'text-purple-600' :
+               t.status === 'customer_action' ? 'text-orange-600' : '';
+      var showClose = (t.status === 'open' || t.status === 'in_progress' ||
+                       t.status === 'escalated' || t.status === 'customer_action');
+
+      tbody.innerHTML += '<tr class="hover:bg-gray-50">'
+        + '<td class="px-6 py-4 text-sm font-mono text-barenoc-600">' + esc(t.ticket_id) + '</td>'
+        + '<td class="px-6 py-4 text-sm text-gray-900">' + esc(t.title) + '</td>'
+        + '<td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ' + pc + '">' + t.priority + '</span></td>'
+        + '<td class="px-6 py-4 text-sm ' + sc + '">' + esc(t.status.replace(/_/g, ' ')) + '</td>'
+        + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.assigned_to || '\u2014') + '</td>'
+        + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.created_at) + '</td>'
+        + '<td class="px-6 py-4 text-right"><button onclick="toggleDetail(\'' + t.ticket_id + '\')" class="text-barenoc-600 hover:text-barenoc-800 text-sm">View</button></td></tr>'
+        + '<tr id="d-' + t.ticket_id + '" style="display:none"><td colspan="7" class="px-6 py-4 bg-gray-50">'
+        + '<div class="text-sm text-gray-700">'
+        + '<p><strong>Description:</strong> ' + esc(t.description || 'No description') + '</p>'
+        + (t.resolution ? '<p class="mt-1"><strong>Resolution:</strong> ' + esc(t.resolution) + '</p>' : '')
+        + '<p class="mt-1"><strong>Source:</strong> ' + esc(t.source) + '</p>'
+        + (t.work_notes ? '<div class="mt-2"><details><summary class="cursor-pointer text-barenoc-600 text-xs font-medium">Work Notes</summary><div class="mt-1 space-y-1 max-h-40 overflow-y-auto">' + renderNotes(t.work_notes) + '</div></details></div>' : '')
+        + (t.llm_model ? '<p class="mt-1"><strong>LLM:</strong> ' + esc(t.llm_model) + ' (conf: ' + (t.llm_confidence || '-') + ', cost: $' + (t.llm_cost_usd || '0').toFixed(6) + ')</p>' : '')
+        + (t.status === 'closed' ? '<p class="mt-1"><strong>Closed by:</strong> ' + esc(t.assigned_to || 'system') + '</p>' : '')
+        + (t.resolved_at ? '<p class="mt-1"><strong>Closed at:</strong> ' + esc(t.resolved_at) + '</p>' : '')
+        + (t.status === 'escalated' ? '<div class="mt-2 flex gap-2"><button onclick="approveTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Approve</button><button onclick="retryTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Retry</button><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700">Reject/Close</button></div>' : (t.status === 'customer_action' ? '<div class="mt-2 flex gap-2"><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Confirm & Close</button><button onclick="addComment(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Add Comment</button></div>' : (showClose ? '<div class="mt-2"><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Close</button></div>' : '')))
+        + '</div></td></tr>';
+    }
+    if (tickets.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-12 text-center text-gray-500">No tickets found.</td></tr>';
+    }
+
+    // Pagination
+    var totalPages = Math.ceil(currentTotal / currentLimit) || 1;
+    var currentPage = Math.floor(offset / currentLimit) + 1;
+    document.getElementById('page-info').textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + currentTotal + ' tickets)';
+    document.getElementById('prev-page').disabled = (offset <= 0);
+    document.getElementById('next-page').disabled = (offset + currentLimit >= currentTotal);
+
+  } catch (err) {
+    console.error(err);
+    var timedOut = err && err.name === 'AbortError';
+    document.getElementById('tickets-body').innerHTML =
+      '<tr><td colspan="7" class="px-6 py-12 text-center text-red-500">'
+      + (timedOut ? 'Request timed out — is the server up? ' : 'Error loading tickets ')
+      + '<button onclick="fetchTickets(currentOffset)" class="ml-2 px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Retry</button>'
+      + '</td></tr>';
+  }
+  document.getElementById('loading-tickets').style.display = 'none';
+}
+
+var currentDetail = null;
+function toggleDetail(id) {
+  var row = document.getElementById('d-' + id);
+  if (!row) return;
+  if (currentDetail && currentDetail !== id) {
+    var p = document.getElementById('d-' + currentDetail);
+    if (p) p.style.display = 'none';
+  }
+  row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+  currentDetail = row.style.display === 'table-row' ? id : null;
+}
+
+async function addComment(id) {
+  var msg = prompt('Add a comment - the AI Technician will pick this up and continue:');
+  if (!msg || !msg.trim()) return;
+  try {
+    var r = await fetch('/api/v1/tickets/' + id + '/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ message: msg.trim() })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'API error');
+    currentDetail = null;
+    fetchTickets(currentOffset);
+  } catch (e) { alert('Failed to add comment: ' + e.message); }
+}
+
+async function retryTicket(id) {
+  try {
+    var r = await fetch('/api/v1/tickets/' + id + '/retry', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (!r.ok) throw new Error('API error');
+    currentDetail = null;
+    fetchTickets(currentOffset);
+  } catch (e) { alert('Failed to retry: ' + e.message); }
+}
+
+async function approveTicket(id) {
+  try {
+    var r = await fetch('/api/v1/tickets/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ status: 'in_progress' })
+    });
+    if (!r.ok) throw new Error('API error');
+    currentDetail = null;
+    fetchTickets(currentOffset);
+  } catch (e) { alert('Failed to approve: ' + e.message); }
+}
+
+function promptCloseTicket(id) {
+  var reason = prompt('Reason for closing this ticket:');
+  if (reason === null) return;
+  reason = reason.trim();
+  if (!reason) { alert('A reason is required.'); return; }
+  doCloseTicket(id, reason);
+}
+
+async function doCloseTicket(id, reason) {
+  try {
+    var r = await fetch('/api/v1/tickets/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ status: 'closed', resolution: reason })
+    });
+    if (!r.ok) throw new Error('API error');
+    currentDetail = null;
+    fetchTickets(currentOffset);
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+function showNewTicketModal() { document.getElementById('new-ticket-modal').classList.remove('hidden'); }
+function hideNewTicketModal() { document.getElementById('new-ticket-modal').classList.add('hidden'); }
+
+async function createTicket() {
+  var title = document.getElementById('new-ticket-title').value.trim();
+  var desc = document.getElementById('new-ticket-desc').value;
+  var priority = document.getElementById('new-ticket-priority').value;
+  if (!title) { alert('Title is required'); return; }
+  try {
+    var r = await fetch('/api/v1/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ title: title, description: desc, priority: priority })
+    });
+    if (!r.ok) throw new Error('API error');
+    document.getElementById('new-ticket-title').value = '';
+    document.getElementById('new-ticket-desc').value = '';
+    hideNewTicketModal();
+    fetchTickets(0);
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function loadTicketPrefs() {
+  try {
+    var r = await fetch('/api/v1/tickets/prefs', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('filter-status').value = d.status || '';
+    document.getElementById('filter-priority').value = d.priority || '';
+  } catch (e) { /* keep defaults */ }
+  fetchTickets(0);
+}
+
+async function saveTicketPrefs() {
+  try {
+    var r = await fetch('/api/v1/tickets/prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        status: document.getElementById('filter-status').value,
+        priority: document.getElementById('filter-priority').value
+      })
+    });
+    var d = await r.json();
+    if (r.ok) {
+      alert('Default view saved: ' + (d.status || 'All Statuses') + ' / ' + (d.priority || 'All Priorities'));
+    } else {
+      alert('Failed: ' + (d.detail || 'error'));
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+var lastSnapshot = '';
+async function pollTickets() {
+  // Silent auto-refresh: re-render only when the ticket set actually changed
+  // (new ticket, status change) so scrolling/pagination is never disturbed.
+  try {
+    var resp = await fetch('/api/v1/tickets?limit=200', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var data = await resp.json();
+    var tickets = data.tickets || [];
+    var snap = tickets.map(function(t) { return t.ticket_id + ':' + t.status; }).join('|');
+    var totalEl = document.getElementById('ticket-count');
+    if (totalEl && data.total !== undefined) totalEl.textContent = data.total + ' total';
+    if (snap !== lastSnapshot) {
+      lastSnapshot = snap;
+      fetchTickets(currentOffset);
+    }
+  } catch (e) { /* transient — ignore */ }
+}
+
+document.addEventListener('DOMContentLoaded', function() { loadTicketPrefs(); setInterval(pollTickets, 15000); });
+</script>
+{% endblock %}

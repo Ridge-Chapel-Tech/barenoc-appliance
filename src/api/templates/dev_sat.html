@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — SAT Checklist{% endblock %}
+{% block inner_content %}
+<div class="max-w-6xl">
+  <div class="flex items-center justify-between flex-wrap gap-2">
+    <div>
+      <h1 class="text-2xl font-semibold text-gray-900">System Acceptance Tests</h1>
+      <p class="text-sm text-gray-500">121 checks across 16 sections · <a href="/dev/tasks" class="text-barenoc-600 hover:underline">← Back to Build Board</a></p>
+    </div>
+    <div id="sat-summary" class="text-xs text-gray-500"></div>
+  </div>
+  <p class="text-xs text-gray-400 mt-1">Progress is saved in your browser (localStorage). "Done" reflects the SAT doc's ✅ markers.</p>
+
+  {% for section in sections %}
+  <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+      <h2 class="font-semibold text-gray-800">{{ section.name }}</h2>
+      <span class="text-xs text-gray-500">{{ section.tests|length }} check(s)</span>
+    </div>
+    <div class="divide-y divide-gray-100">
+      {% for t in section.tests %}
+      <label class="flex items-start gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer sat-row" data-id="{{ t.id }}">
+        <input type="checkbox" class="mt-1 sat-check" value="{{ t.id }}">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-mono text-xs text-barenoc-700">{{ t.id }}</span>
+            <span class="text-sm font-medium text-gray-800">{{ t.name }}</span>
+            {% if t.note and ('✅' in t.note or 'PASSED' in t.note) %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">verified</span>
+            {% elif t.note and 'PENDING' in t.note %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">pending</span>
+            {% elif t.note %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">note</span>
+            {% endif %}
+          </div>
+          {% if t.expected %}<div class="text-xs text-gray-500 mt-0.5">{{ t.expected }}</div>{% endif %}
+          {% if t.note %}<div class="text-xs text-gray-400 mt-0.5">{{ t.note }}</div>{% endif %}
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<script>
+  (function () {
+    var KEY = 'barenoc-sat-done';
+    var done = {};
+    try { done = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+    document.querySelectorAll('.sat-check').forEach(function (c) {
+      if (done[c.value]) c.checked = true;
+      c.addEventListener('change', function () {
+        done[c.value] = c.checked;
+        localStorage.setItem(KEY, JSON.stringify(done));
+        updateSummary();
+      });
+    });
+    function updateSummary() {
+      var checks = document.querySelectorAll('.sat-check').length;
+      var marked = Object.keys(done).filter(function (k) { return done[k]; }).length;
+      var pct = checks ? Math.round(100 * marked / checks) : 0;
+      document.getElementById('sat-summary').textContent = marked + ' / ' + checks + ' checked (' + pct + '%)';
+    }
+    updateSummary();
+  })();
+</script>
+{% endblock %}

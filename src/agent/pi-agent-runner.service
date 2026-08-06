@@ -1,0 +1,26 @@
+[Unit]
+Description=BareNOC Pi Agent Runner
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=pi-agent
+Group=pi-agent
+ExecStart=/usr/bin/python3 /opt/barenoc/agent/runner.py
+WorkingDirectory=/opt/barenoc
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/barenoc/volumes/logs/agent/agent.log
+StandardError=append:/opt/barenoc/volumes/logs/agent/agent.log
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=no
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

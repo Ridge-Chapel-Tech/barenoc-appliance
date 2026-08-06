@@ -1,0 +1,1321 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — Settings{% endblock %}
+{% block inner_content %}
+<div id="settings-app">
+  <h1 class="text-2xl font-semibold text-gray-900">Settings</h1>
+  <p class="mt-1 text-sm text-gray-500">System configuration, accounts, and integrations.</p>
+
+  <!-- Tabs -->
+  <div class="mt-4 border-b">
+    <nav class="flex gap-4">
+      <button onclick="switchTab('general')" id="tab-general" class="px-3 py-2 text-sm font-medium border-b-2 border-barenoc-600 text-barenoc-700">General</button>
+      <button onclick="switchTab('users')" id="tab-users" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Users</button>
+      <button onclick="switchTab('llm')" id="tab-llm" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">API Keys</button>
+      <button onclick="switchTab('email')" id="tab-email" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Email</button>
+      <button onclick="switchTab('unifi')" id="tab-unifi" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">UniFi</button>
+      <button onclick="switchTab('identity')" id="tab-identity" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Identity</button>
+      <button onclick="switchTab('tickets')" id="tab-tickets" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Tickets</button>
+      <button onclick="switchTab('backups')" id="tab-backups" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Backups</button>
+    </nav>
+  </div>
+
+  <!-- General -->
+  <div id="panel-general" class="mt-6 max-w-xl">
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">General Settings</h3>
+      <div class="mt-4 space-y-4">
+        <div><label class="block text-sm font-medium text-gray-700">Site ID</label><input id="gen-site-id" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Customer Name</label><input id="gen-customer" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+        <div><label class="block text-sm font-medium text-gray-700" for="gen-tz">Timezone</label>
+          <select id="gen-tz" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+          <p class="text-xs text-gray-400 mt-1">Used for report send times (morning digest / EOD summary) and email timestamps.</p>
+        </div>
+        <div><label class="block text-sm font-medium text-gray-700">Device Groups</label><input id="gen-device-groups" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="device-core,device-edge"><p class="text-xs text-gray-500 mt-1">Comma-separated group names. These mirror Pocket ID groups — a user only views/manages/controls devices in groups they belong to.</p></div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700">Queue Manager name</label><input id="gen-qm-name" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Juniper"><p class="text-xs text-gray-400 mt-1">The chat front-desk assistant.</p></div>
+          <div><label class="block text-sm font-medium text-gray-700">AI assistant name</label><input id="gen-assistant-name" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Lily"><p class="text-xs text-gray-400 mt-1">The AI that works tickets (notes, email, chat).</p></div>
+        </div>
+        <label class="flex items-start gap-3 mt-2 cursor-pointer">
+          <input id="gen-chat-enabled" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300">
+          <span class="text-sm text-gray-700">Enable desktop chat client
+            <span class="block text-xs text-gray-400 mt-0.5">When off, the Downloads page and chat API are disabled (the client cannot sign in).</span>
+          </span>
+        </label>
+        <button onclick="saveGeneral()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save General</button>
+      </div>
+      <div class="mt-6 border-t pt-5">
+        <h4 class="text-sm font-medium text-gray-900">Customer Logo</h4>
+        <p class="text-xs text-gray-500 mt-1">PNG, JPEG, WebP, or SVG · max 2 MB · shown on the dashboard when uploaded.</p>
+        <div class="mt-3 flex items-center gap-4 flex-wrap">
+          <img id="logo-preview" class="hidden h-16 w-auto max-w-xs object-contain border border-gray-200 rounded-md bg-white p-1" alt="Customer logo preview">
+          <input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="text-sm text-gray-700">
+          <button onclick="uploadLogo()" class="rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">Upload Logo</button>
+          <button onclick="removeLogo()" id="remove-logo-btn" class="hidden rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-700">Remove Logo</button>
+        </div>
+        <p id="logo-msg" class="text-sm mt-2"></p>
+      </div>
+    </div>
+
+    <!-- Remote Access (Tailscale) -->
+    <div class="mt-6 border-t pt-5">
+      <div class="flex items-center justify-between">
+        <h4 class="text-sm font-medium text-gray-900">Remote Access (Tailscale)</h4>
+        <button onclick="loadRemoteAccess()" class="text-xs font-medium text-barenoc-600 hover:text-barenoc-800">↻ refresh</button>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">Tailscale overlay VPN — reach this appliance and the Proxmox hosts from anywhere, no open ports. Nodes appear once you approve them in your Tailscale account.</p>
+      <div id="remote-access-status" class="mt-3 text-sm">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Users -->
+  <div id="panel-users" class="mt-6 hidden">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-medium">User Accounts</h3>
+      <button onclick="showAddUser()" class="rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">+ Add User</button>
+    </div>
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-2 text-left font-medium text-gray-500">Username</th>
+            <th class="px-4 py-2 text-left font-medium text-gray-500">Display Name</th>
+            <th class="px-4 py-2 text-left font-medium text-gray-500">Email</th>
+            <th class="px-4 py-2 text-left font-medium text-gray-500">Role</th>
+            <th class="px-4 py-2 text-left font-medium text-gray-500">Status</th>
+            <th class="px-4 py-2"></th>
+          </tr>
+        </thead>
+        <tbody id="users-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- API Keys -->
+  <div id="panel-llm" class="mt-6 hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">LLM Providers</h3>
+        <button onclick="saveLLM()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save All</button>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">Tickets route through the provider chain in order: <b>Primary → Secondary → Tertiary</b>. If one fails, times out, or has too many consecutive failures, the worker fails over to the next automatically, and opens a <b>P1</b> ticket if the whole chain goes down. Choose <b>Hosted</b> (DeepSeek/OpenAI/Anthropic/Gemini) or <b>On-prem</b> (Ollama / LM Studio on your LAN).</p>
+      <div class="mt-4" id="provider-order"></div>
+      <div class="mt-4" id="provider-list"></div>
+      <p id="llm-msg" class="text-sm mt-3"></p>
+    </div>
+
+    <!-- Autonomy Policy -->
+    <div class="bg-white shadow rounded-lg p-6 mt-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">Autonomy Policy</h3>
+        <button onclick="savePolicy()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Policy</button>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">How much the AI may do on its own, per deployment. Home/owner = <b>autonomous</b> (no approvals, risk filters off) · SMB owner = <b>balanced</b> · Tier II support = <b>strict</b> (writes + P1/P2 to the approval queue). Hot-reloaded by the worker — no restart.</p>
+      <p id="policy-msg" class="text-sm mt-3"></p>
+      <div class="mt-4 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Profile</label>
+          <select id="pol-profile" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" onchange="updateAutonomyWarning()">
+            <option value="">(inherit — legacy behavior)</option>
+            <option value="autonomous">Autonomous — home / owner</option>
+            <option value="balanced">Balanced — SMB owner-operator</option>
+            <option value="strict">Strict — Tier II support</option>
+          </select>
+          <div id="autonomy-warning" class="hidden mt-2 rounded-md bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-800">
+            <b>Autonomous mode is experimental / risky.</b> The AI runs actions on its own with no approval queue — and with the Pi Coding Agent enabled it has full tool access to this system. Only use on networks you fully control.
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Auto-exec confidence threshold</label>
+          <input id="pol-threshold" type="number" min="0" max="1" step="0.05" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <p class="text-xs text-gray-400 mt-1">Write actions auto-run at ≥ this confidence (profile-adjusted).</p>
+        </div>
+      </div>
+      <div class="mt-4 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Risk filters</label>
+          <select id="pol-risk-mode" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+            <option value="all">All — every risk keyword forces the judge</option>
+            <option value="none">None — never force the judge on keywords</option>
+            <option value="custom">Custom (check below)</option>
+          </select>
+          <div id="pol-risk-cats" class="mt-2 space-y-1"></div>
+          <p class="text-xs text-gray-400 mt-1">Keywords in an active category always send the request to the judge (never auto-approved).</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Approval priorities</label>
+          <div id="pol-prios" class="mt-2 space-y-1"></div>
+          <label class="block text-sm font-medium text-gray-700 mt-4">Patch allowlist</label>
+          <input id="pol-patches" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="FW-6.6.55,FW-6.6.52">
+          <p class="text-xs text-gray-400 mt-1">Comma-separated firmware IDs the AI may apply, or <code>*</code> for any. Blank = built-in defaults.</p>
+        </div>
+      </div>
+      <div class="mt-4 flex gap-8">
+        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"><input id="pol-judge" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500"> Judge required (lawfulness gate)</label>
+        <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"><input id="pol-write" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500"> Write actions auto-execute</label>
+      </div>
+      <div class="mt-4 border-t border-gray-200 pt-4 grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">LLM retry interval (minutes)</label>
+          <input id="pol-retry-interval" type="number" min="1" max="120" step="1" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <p class="text-xs text-gray-400 mt-1">If the LLM provider is unreachable, the worker retries every N minutes instead of failing the ticket.</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">LLM retry max attempts</label>
+          <input id="pol-retry-attempts" type="number" min="1" max="100" step="1" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <p class="text-xs text-gray-400 mt-1">After this many failed attempts the ticket escalates to a human tech.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email -->
+  <div id="panel-email" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">Email (SMTP)</h3>
+      <div class="mt-4 space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700">SMTP Host</label><input id="smtp-host" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="smtp.gmail.com"></div>
+          <div><label class="block text-sm font-medium text-gray-700">Port</label><input id="smtp-port" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="587"></div>
+        </div>
+        <div><label class="block text-sm font-medium text-gray-700">SMTP User</label><input id="smtp-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc.noc@gmail.com"></div>
+        <div><label class="block text-sm font-medium text-gray-700">App Password</label><input id="smtp-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="smtp-status"></p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Alert Recipient(s)</label><input id="smtp-alert" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="admin@example.com, oncall@example.com"><p class="text-xs text-gray-400 mt-1">Comma-separated — gets P1/P2 ticket alerts and device down/recovery alerts. Reports fall back to this list unless overridden below.</p></div>
+
+        <!-- Report recipients (who gets what) -->
+        <div class="border-t border-gray-200 pt-4">
+          <p class="text-sm font-medium text-gray-700">Who gets what</p>
+          <div class="mt-2 space-y-3">
+            <div><label class="block text-xs font-medium text-gray-600">Morning digest recipients</label><input id="email-digest-recipients" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="(blank = alert recipients)"><p class="text-xs text-gray-400 mt-1">Daily summary of tickets + device health.</p></div>
+            <div><label class="block text-xs font-medium text-gray-600">End-of-day summary recipients</label><input id="email-eod-recipients" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="(blank = alert recipients)"><p class="text-xs text-gray-400 mt-1">Day recap + system settings changes.</p></div>
+          </div>
+        </div>
+
+        <!-- Report schedule (types + time of day) -->
+        <div class="border-t border-gray-200 pt-4">
+          <p class="text-sm font-medium text-gray-700">Reports &amp; schedule</p>
+          <div class="mt-3 space-y-3">
+            <div class="flex items-center justify-between gap-3">
+              <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"><input id="email-digest-enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500"> Morning digest</label>
+              <select id="email-digest-hour" class="rounded-md border-gray-300 border px-2 py-1.5 text-sm"></select>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <label class="flex cursor-pointer items-center gap-2 text-sm text-gray-700"><input id="email-eod-enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500"> End-of-day summary</label>
+              <select id="email-eod-hour" class="rounded-md border-gray-300 border px-2 py-1.5 text-sm"></select>
+            </div>
+            <div class="flex gap-2 pt-1">
+              <button onclick="testReport('morning_digest')" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200">Send test digest</button>
+              <button onclick="testReport('eod_summary')" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200">Send test EOD summary</button>
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="saveEmail()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Email Config</button>
+          <button onclick="testEmail()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Send Test Email</button>
+        </div>
+        <p id="email-msg" class="text-sm"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- UniFi -->
+  <div id="panel-unifi" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">UniFi Controller</h3>
+      <div class="mt-4 space-y-4">
+        <div><label class="block text-sm font-medium text-gray-700">Controller URL</label><input id="unifi-url" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="https://192.0.2.1:443"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Username</label><input id="unifi-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Password <span class="text-xs text-gray-400">(or use an API key below)</span></label><input id="unifi-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+        <div><label class="block text-sm font-medium text-gray-700">API Key <span class="text-xs text-gray-400">(recommended — UniFi Network → Settings → Integrations)</span></label><input id="unifi-key" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="unifi-status"></p></div>
+        <div class="border-t border-gray-200 pt-4">
+          <label class="flex cursor-pointer items-center justify-between gap-3">
+            <span class="text-sm font-medium text-gray-700">Auto-sync from UniFi</span>
+            <input id="unifi-autosync" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500">
+          </label>
+          <p class="mt-1 text-xs text-gray-500">Automatically pull devices and clients from the controller on a schedule. When enabled, the manual "Scan Network" button on the Devices page is hidden.</p>
+          <div class="mt-3">
+            <label class="block text-sm font-medium text-gray-700" for="unifi-autosync-interval">Sync interval</label>
+            <select id="unifi-autosync-interval" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+              <option value="5">Every 5 minutes</option>
+              <option value="10">Every 10 minutes</option>
+              <option value="15">Every 15 minutes</option>
+              <option value="30">Every 30 minutes</option>
+              <option value="60">Every hour</option>
+            </select>
+          </div>
+          <div class="mt-3">
+            <label class="flex cursor-pointer items-center justify-between gap-3">
+              <span class="text-sm font-medium text-gray-700">Auto-adopt UniFi devices</span>
+              <input id="unifi-auto-adopt" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500">
+            </label>
+            <p class="mt-1 text-xs text-gray-500">UniFi-managed network gear (gateways, switches, APs) is claimed automatically once the controller connection works. Disable to review discoveries before claiming. Endpoint clients are never auto-adopted.</p>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="saveUnifi()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save UniFi Config</button>
+          <button onclick="testUnifi()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Test Connection</button>
+        </div>
+        <p id="unifi-msg" class="text-sm"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Identity (Pocket ID / passkeys) -->
+  <div id="panel-identity" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">Identity &amp; Passkeys (Pocket ID)</h3>
+        <a href="/auth/pocket-id/" target="_blank" class="text-xs font-medium text-barenoc-600 hover:text-barenoc-800">Open Pocket ID admin ↗</a>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">Passkey login for users and admins. Users are invited in Pocket ID; groups map to BareNOC roles.</p>
+      <div class="mt-4 space-y-4">
+        <div><label class="flex items-center gap-2 text-sm font-medium text-gray-700"><input id="id-enabled" type="checkbox" class="rounded border-gray-300"> Enable passkey login (OIDC)</label></div>
+        <div><label class="block text-sm font-medium text-gray-700">Provider URL</label><input id="id-provider" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="https://192.0.2.207/auth/pocket-id/"></div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700">Client ID</label><input id="id-client" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+          <div><label class="block text-sm font-medium text-gray-700">Client Secret</label><input id="id-secret" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="••••••••"><p class="text-xs text-gray-400 mt-1" id="id-secret-status"></p></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700">Admin Group</label><input id="id-group-admin" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc-admins"></div>
+          <div><label class="block text-sm font-medium text-gray-700">Operator Group</label><input id="id-group-operator" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc-operators"></div>
+        </div>
+        <div class="border-t border-gray-200 pt-4">
+          <label class="flex cursor-pointer items-center justify-between gap-3">
+            <span class="text-sm font-medium text-gray-700">Sign in with GitHub</span>
+            <input id="id-github-enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500">
+          </label>
+          <p class="mt-1 text-xs text-gray-500">Allow users to log in with their GitHub account. Requires a GitHub OAuth app (callback: <code>/api/v1/auth/github/callback</code>). <span class="font-medium text-amber-600">Coming soon</span> — config is stored now, the login flow ships in a later update.</p>
+          <div class="mt-2 grid grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-gray-700">GitHub Client ID</label><input id="id-github-client" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+            <div><label class="block text-sm font-medium text-gray-700">GitHub Client Secret</label><input id="id-github-secret" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="••••••••"><p class="text-xs text-gray-400 mt-1" id="id-github-secret-status"></p></div>
+          </div>
+        </div>
+        <div class="border-t border-gray-200 pt-4">
+          <label class="flex cursor-pointer items-center justify-between gap-3">
+            <span class="text-sm font-medium text-gray-700">Sign in with Google</span>
+            <input id="id-google-enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-barenoc-600 focus:ring-barenoc-500">
+          </label>
+          <p class="mt-1 text-xs text-gray-500">Allow users to log in with their Google account. Requires a Google OAuth client (callback: <code>/api/v1/auth/google/callback</code>). <span class="font-medium text-amber-600">Coming soon</span> — config is stored now, the login flow ships in a later update.</p>
+          <div class="mt-2 grid grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-gray-700">Google Client ID</label><input id="id-google-client" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+            <div><label class="block text-sm font-medium text-gray-700">Google Client Secret</label><input id="id-google-secret" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="••••••••"><p class="text-xs text-gray-400 mt-1" id="id-google-secret-status"></p></div>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="saveIdentity()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Identity Config</button>
+          <a href="/api/v1/auth/oidc/login" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Test Passkey Login</a>
+        </div>
+        <p id="identity-msg" class="text-sm"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tickets (lifecycle: check-ins + auto-close) -->
+  <div id="panel-tickets" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">Ticket Lifecycle</h3>
+        <button onclick="saveTickets()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Tickets</button>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">After a ticket is handed to a human (escalated) or waits on the customer, the alert engine checks in at the interval below. Auto-close only fires once the AI has resolved a ticket and that resolved state has held for the configured days — a resolved P1 sits for 3 days before closing, a P4 for 3 days, etc. 0 = never.</p>
+      <div class="mt-4 space-y-4">
+        <div class="grid grid-cols-3 gap-3">
+          <label class="flex items-center gap-2 text-sm text-gray-700"><input id="tkt-checkin-enabled" type="checkbox" class="rounded border-gray-300"> Check in with human/customer</label>
+          <label class="flex items-center gap-2 text-sm text-gray-700"><input id="tkt-checkin-email" type="checkbox" class="rounded border-gray-300"> Email on check-in</label>
+          <label class="flex items-center gap-2 text-sm text-gray-700"><input id="tkt-autoclose-enabled" type="checkbox" class="rounded border-gray-300"> Auto-close resolved tickets</label>
+        </div>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs text-gray-500 uppercase tracking-wide">
+              <th class="py-1 pr-2">Priority</th>
+              <th class="py-1 pr-2">Check in every (hours)</th>
+              <th class="py-1">Auto-close after (days resolved)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="py-1 pr-2 font-medium text-red-700">P1</td><td class="py-1 pr-2"><input id="tkt-checkin-P1" type="number" min="0" max="168" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td><td class="py-1"><input id="tkt-close-P1" type="number" min="0" max="90" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td></tr>
+            <tr><td class="py-1 pr-2 font-medium text-orange-600">P2</td><td class="py-1 pr-2"><input id="tkt-checkin-P2" type="number" min="0" max="168" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td><td class="py-1"><input id="tkt-close-P2" type="number" min="0" max="90" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td></tr>
+            <tr><td class="py-1 pr-2 font-medium text-yellow-600">P3</td><td class="py-1 pr-2"><input id="tkt-checkin-P3" type="number" min="0" max="168" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td><td class="py-1"><input id="tkt-close-P3" type="number" min="0" max="90" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td></tr>
+            <tr><td class="py-1 pr-2 font-medium text-gray-500">P4</td><td class="py-1 pr-2"><input id="tkt-checkin-P4" type="number" min="0" max="168" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td><td class="py-1"><input id="tkt-close-P4" type="number" min="0" max="90" class="w-24 rounded-md border-gray-300 border px-2 py-1"></td></tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-gray-400">Check-ins post a work note and (optionally) email the alert recipients — e.g. a P1 escalated ticket gets poked every hour; a P4 every day. Auto-close records <code>ticket_autoclosed</code> in the audit trail.</p>
+      </div>
+      <p id="tickets-msg" class="text-sm mt-3"></p>
+    </div>
+  </div>
+</div>
+
+<!-- Add User Modal -->
+<div id="add-user-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Add User</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <div><label class="block text-sm font-medium text-gray-700">Username *</label><input id="nu-username" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Display Name</label><input id="nu-display" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Email</label><input id="nu-email" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Password *</label><input id="nu-password" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="flex items-center gap-2 text-sm font-medium text-gray-700"><input id="nu-force" type="checkbox" checked class="rounded border-gray-300"> Require password change on next login</label></div>
+      <div><label class="block text-sm font-medium text-gray-700">Role</label>
+        <select id="nu-role" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <option value="admin">Admin</option><option value="operator" selected>Operator</option><option value="readonly">Read Only</option>
+        </select>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideAddUser()" class="px-4 py-2 text-sm text-gray-700">Cancel</button>
+      <button onclick="createUser()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit User Modal -->
+<div id="edit-user-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Edit User</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <div><label class="block text-sm font-medium text-gray-700">Username</label><input id="eu-username" disabled class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm bg-gray-50"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Display Name</label><input id="eu-display" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Email</label><input id="eu-email" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="block text-sm font-medium text-gray-700">Role</label>
+        <select id="eu-role" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <option value="admin">Admin</option><option value="operator" selected>Operator</option><option value="readonly">Read Only</option>
+        </select>
+      </div>
+      <div><label class="block text-sm font-medium text-gray-700">New Password <span class="text-gray-400 font-normal">(blank = unchanged)</span></label><input id="eu-password" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+      <div><label class="flex items-center gap-2 text-sm font-medium text-gray-700"><input id="eu-force" type="checkbox" class="rounded border-gray-300"> Require password change on next login</label></div>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideEditUser()" class="px-4 py-2 text-sm text-gray-700">Cancel</button>
+      <button onclick="saveEditUser()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+  <!-- Backups -->
+  <div id="panel-backups" class="mt-6 max-w-xl hidden">
+    <div id="bk-not-appliance" class="hidden bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-3 text-xs mb-4">
+      <b>This doesn't look like a BareNOC appliance deployment.</b> No Proxmox host is pushing backup status, so the VM-snapshot and encrypted-USB layers only apply on shipped hardware. Your backups are the <b>app-data archive</b> (every 6 h, 30-day retention) — restore it on any Docker host with <code>restore_app.sh</code>. See the <a href="/wiki/backups" class="underline">Backups wiki</a>.
+    </div>
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">Backups</h3>
+      <p class="text-xs text-gray-500 mt-1">The Proxmox host backs up this VM — an encrypted USB stick (Layer 3) holds the full VM image + your app data. The schedule here is synced to the host automatically.</p>
+      <div class="mt-4 space-y-4">
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input id="bk-enabled" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300">
+          <span class="text-sm text-gray-700">Enable USB backup
+            <span class="block text-xs text-gray-400 mt-0.5">Skips automatically when the stick isn't plugged in.</span>
+          </span>
+        </label>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700" for="bk-day">Backup day</label>
+            <select id="bk-day" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+            <p class="text-xs text-gray-400 mt-1">Keep-last 4 backups on the stick.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700" for="bk-hour">Backup hour</label>
+            <select id="bk-hour" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+            <p class="text-xs text-gray-400 mt-1">Pick a quiet window (local time).</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button onclick="saveBackups()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save</button>
+          <button onclick="runBackupNow()" id="bk-run-now" class="rounded-md border border-barenoc-600 px-4 py-2 text-sm font-semibold text-barenoc-700 hover:bg-barenoc-50">Run USB backup now</button>
+        </div>
+        <p id="bk-msg" class="text-sm mt-2"></p>
+      </div>
+      <div class="mt-6 border-t pt-5">
+        <h4 class="text-sm font-medium text-gray-900">Status</h4>
+        <dl class="mt-2 text-sm space-y-1">
+          <div class="flex justify-between"><dt class="text-gray-500">USB stick</dt><dd id="bk-usb-present" class="font-medium">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Encryption</dt><dd id="bk-usb-enc" class="font-medium">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Last USB backup</dt><dd id="bk-usb-last" class="font-medium">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Last VM snapshot</dt><dd id="bk-vm-last" class="font-medium">—</dd></div>
+          <div class="flex justify-between"><dt class="text-gray-500">Status updated</dt><dd id="bk-status-updated" class="font-medium">—</dd></div>
+        </dl>
+      </div>
+      <div class="mt-6 border-t pt-5">
+        <h4 class="text-sm font-medium text-gray-900">Keys &amp; recovery</h4>
+        <p class="text-xs text-gray-500 mt-1">The USB stick is LUKS-encrypted. Two ways to unlock it:</p>
+        <ul class="mt-2 text-xs text-gray-600 space-y-1 list-disc list-inside">
+          <li><b>Host keyfile</b> (<code>/etc/barenoc-usb.key</code>, root-only) — used automatically by the backup schedule.</li>
+          <li><b>Recovery passphrase</b> — generated once during stick setup; it belongs on the appliance's <b>sealed rack card</b> (or your password manager). Use it if the host dies and you must open the stick elsewhere.</li>
+        </ul>
+        <p class="text-xs text-gray-400 mt-2">If the passphrase is lost, the keyfile still works — add a new one from the host with <code>cryptsetup luksAddKey</code>. See the Backups wiki page.</p>
+      </div>
+    </div>
+  </div>
+
+<script>
+function getToken() { return localStorage.getItem('access_token'); }
+function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+var currentTab = 'general';
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('[id^="panel-"]').forEach(function(p) {
+    var t = p.id.replace('panel-', '');
+    p.classList.toggle('hidden', t !== tab);
+    var btn = document.getElementById('tab-' + t);
+    if (btn) {
+      btn.className = t === tab
+        ? 'px-3 py-2 text-sm font-medium border-b-2 border-barenoc-600 text-barenoc-700'
+        : 'px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700';
+    }
+  });
+  if (tab === 'users') loadUsers();
+  if (tab === 'general') loadGeneral();
+  if (tab === 'llm') loadLLM();
+  if (tab === 'email') loadEmail();
+  if (tab === 'unifi') loadUnifi();
+  if (tab === 'identity') loadIdentity();
+  if (tab === 'tickets') loadTickets();
+  if (tab === 'backups') loadBackups();
+  if (tab === 'general') loadRemoteAccess();
+}
+
+// ── General ──
+var TZ_OPTIONS = [
+  'UTC',
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
+  'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu',
+  'America/Sao_Paulo', 'America/Argentina/Buenos_Aires', 'America/Mexico_City',
+  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid', 'Europe/Rome', 'Europe/Amsterdam',
+  'Africa/Cairo', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Nairobi',
+  'Asia/Dubai', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Dhaka', 'Asia/Bangkok',
+  'Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul',
+  'Australia/Perth', 'Australia/Sydney', 'Australia/Melbourne', 'Australia/Brisbane',
+  'Pacific/Auckland'
+];
+
+function populateTzSelect() {
+  var sel = document.getElementById('gen-tz');
+  if (!sel || sel.options.length) return;
+  TZ_OPTIONS.forEach(function(z) {
+    var o = document.createElement('option');
+    o.value = z; o.textContent = z;
+    sel.appendChild(o);
+  });
+}
+
+async function loadGeneral() {
+  try {
+    var r = await fetch('/api/v1/settings/general', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('gen-site-id').value = d.site_id || '';
+    document.getElementById('gen-customer').value = d.customer_name || '';
+    document.getElementById('gen-qm-name').value = d.queue_manager_name || 'Juniper';
+    document.getElementById('gen-assistant-name').value = d.assistant_name || 'Lily';
+    populateTzSelect();
+    var sel = document.getElementById('gen-tz');
+    if (d.timezone) {
+      var exists = false;
+      for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === d.timezone) { exists = true; break; } }
+      if (!exists) {
+        var o = document.createElement('option');
+        o.value = d.timezone; o.textContent = d.timezone;
+        sel.appendChild(o);
+      }
+      sel.value = d.timezone;
+    } else {
+      sel.value = 'UTC';
+    }
+    document.getElementById('gen-device-groups').value = d.device_groups || '';
+    document.getElementById('gen-chat-enabled').checked = d.chat_client_enabled !== false;
+    refreshLogoUI(d.logo);
+  } catch (e) { console.error(e); }
+}
+async function saveGeneral() {
+  try {
+    var r = await fetch('/api/v1/settings/general', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        site_id: document.getElementById('gen-site-id').value,
+        customer_name: document.getElementById('gen-customer').value,
+        timezone: document.getElementById('gen-tz').value,
+        device_groups: document.getElementById('gen-device-groups').value,
+        queue_manager_name: document.getElementById('gen-qm-name').value,
+        assistant_name: document.getElementById('gen-assistant-name').value,
+        chat_client_enabled: document.getElementById('gen-chat-enabled').checked
+      })
+    });
+    alert((await r.json()).status === 'ok' ? 'General settings saved' : 'Failed to save');
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ── Logo ──
+function refreshLogoUI(filename) {
+  var img = document.getElementById('logo-preview');
+  var rmBtn = document.getElementById('remove-logo-btn');
+  var msg = document.getElementById('logo-msg');
+  if (filename) {
+    img.src = '/api/v1/branding/logo?t=' + Date.now();
+    img.classList.remove('hidden');
+    rmBtn.classList.remove('hidden');
+    msg.textContent = '';
+  } else {
+    img.classList.add('hidden');
+    rmBtn.classList.add('hidden');
+    msg.textContent = '';
+  }
+}
+async function uploadLogo() {
+  var msg = document.getElementById('logo-msg');
+  var f = document.getElementById('logo-file').files[0];
+  if (!f) { msg.textContent = 'Choose a file first.'; msg.className = 'text-sm text-red-600'; return; }
+  var fd = new FormData();
+  fd.append('file', f);
+  msg.textContent = 'Uploading...';
+  msg.className = 'text-sm text-gray-500';
+  try {
+    var r = await fetch('/api/v1/settings/logo', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + getToken() },
+      body: fd
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Upload failed');
+    msg.textContent = '✅ Logo uploaded';
+    msg.className = 'text-sm text-green-600';
+    document.getElementById('logo-file').value = '';
+    refreshLogoUI(d.filename);
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+async function removeLogo() {
+  var msg = document.getElementById('logo-msg');
+  try {
+    var r = await fetch('/api/v1/settings/logo', {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Remove failed');
+    msg.textContent = 'Logo removed';
+    msg.className = 'text-sm text-green-600';
+    refreshLogoUI(null);
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Users ──
+async function loadUsers() {
+  try {
+    var r = await fetch('/api/v1/users', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    usersCache = await r.json();
+    var tbody = document.getElementById('users-body');
+    tbody.innerHTML = '';
+    usersCache.forEach(function(u) {
+      var roleBadge = u.role === 'admin' ? 'bg-red-100 text-red-700' : u.role === 'operator' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600';
+      tbody.innerHTML += `<tr class="hover:bg-gray-50">
+        <td class="px-4 py-2 font-mono text-xs">${esc(u.username)}</td>
+        <td class="px-4 py-2">${esc(u.display_name || '-')}</td>
+        <td class="px-4 py-2">${esc(u.email || '-')}</td>
+        <td class="px-4 py-2"><span class="px-2 py-0.5 rounded text-xs ${roleBadge}">${u.role}</span></td>
+        <td class="px-4 py-2">${u.is_active ? '<span class="text-green-600">Active</span>' : '<span class="text-red-600">Disabled</span>'}${u.must_change_password ? ' <span class="px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">change required</span>' : ''}</td>
+        <td class="px-4 py-2 text-right whitespace-nowrap">
+          <button onclick="openEditUser(${u.id})" class="text-xs text-barenoc-600 hover:text-barenoc-800">Edit</button>
+          <button onclick="forcePasswordChange(${u.id})" class="text-xs text-amber-600 hover:text-amber-800 ml-3" title="Require this user to set a new password on next login">Force Change</button>
+          <button onclick="toggleUser(${u.id}, ${u.is_active ? 'false' : 'true'})" class="text-xs ${u.is_active ? 'text-red-600' : 'text-green-600'} ml-3">${u.is_active ? 'Disable' : 'Enable'}</button>
+        </td>
+      </tr>`;
+    });
+  } catch (e) { console.error(e); }
+}
+async function toggleUser(id, active) {
+  try {
+    await fetch('/api/v1/users/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ is_active: active })
+    });
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+async function forcePasswordChange(id) {
+  if (!confirm('Require this user to set a new password at their next login?')) return;
+  try {
+    var r = await fetch('/api/v1/users/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ must_change_password: true })
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.detail || 'Failed'); }
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+function showAddUser() { document.getElementById('add-user-modal').classList.remove('hidden'); }
+function hideAddUser() {
+  document.getElementById('add-user-modal').classList.add('hidden');
+  ['nu-username','nu-display','nu-email','nu-password'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('nu-force').checked = true;
+}
+
+// ── Edit User ──
+var usersCache = [];
+var editingUserId = null;
+function openEditUser(id) {
+  var u = usersCache.find(x => x.id === id);
+  if (!u) return;
+  editingUserId = id;
+  document.getElementById('eu-username').value = u.username;
+  document.getElementById('eu-display').value = u.display_name || '';
+  document.getElementById('eu-email').value = u.email || '';
+  document.getElementById('eu-role').value = u.role || 'operator';
+  document.getElementById('eu-password').value = '';
+  document.getElementById('eu-force').checked = !!u.must_change_password;
+  document.getElementById('edit-user-modal').classList.remove('hidden');
+}
+function hideEditUser() {
+  document.getElementById('edit-user-modal').classList.add('hidden');
+  editingUserId = null;
+}
+async function saveEditUser() {
+  if (!editingUserId) return;
+  var body = {
+    display_name: document.getElementById('eu-display').value,
+    email: document.getElementById('eu-email').value,
+    role: document.getElementById('eu-role').value,
+    must_change_password: document.getElementById('eu-force').checked
+  };
+  var pw = document.getElementById('eu-password').value;
+  if (pw) {
+    if (pw.length < 8) { alert('New password must be at least 8 characters'); return; }
+    body.password = pw;
+  }
+  try {
+    var r = await fetch('/api/v1/users/' + editingUserId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.detail || 'Failed'); }
+    hideEditUser();
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+async function createUser() {
+  var username = document.getElementById('nu-username').value.trim();
+  var password = document.getElementById('nu-password').value;
+  if (!username || !password) { alert('Username and password required'); return; }
+  try {
+    var r = await fetch('/api/v1/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        username: username,
+        password: password,
+        display_name: document.getElementById('nu-display').value,
+        email: document.getElementById('nu-email').value,
+        role: document.getElementById('nu-role').value,
+        must_change_password: document.getElementById('nu-force').checked
+      })
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.detail || 'Failed'); }
+    hideAddUser();
+    loadUsers();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ── LLM Providers ──
+function providerCard(p) {
+  var depOpts = ['hosted', 'on_prem'].map(function(dep) {
+    return `<option value="${dep}" ${(p.deployment || 'hosted') === dep ? 'selected' : ''}>${dep === 'on_prem' ? '🏠 On-prem' : '☁️ Hosted'}</option>`;
+  }).join('');
+  // New (unsaved) cards have an editable name; existing cards show the name.
+  var nameHtml = p.name
+    ? `<span class="font-medium text-gray-900">${esc(p.name)}</span>`
+    : `<input class="pv-name mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1 text-sm font-medium" placeholder="provider name (e.g. ollama)">`;
+  var keyStatus = p.api_key_configured
+    ? '<span class="text-xs text-green-600">✅ key set</span>'
+    : '<span class="text-xs text-gray-400">no key</span>';
+  return `<div class="border rounded-lg p-4" data-provider="${esc(p.name || '')}" data-type="${esc(p.type)}">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">${nameHtml} <span class="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">${esc(p.type)}</span></div>
+      <div class="flex items-center gap-2">${keyStatus}<button onclick="removeProviderCard('${esc(p.name || '')}')" title="Remove this provider" class="text-gray-300 hover:text-red-600 font-bold text-sm">✕</button></div>
+    </div>
+    <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div><label class="block text-xs font-medium text-gray-600">Base URL</label><input class="pv-base mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" value="${esc(p.base_url)}"></div>
+      <div><label class="block text-xs font-medium text-gray-600">API Key</label><input class="pv-key mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" type="password" placeholder="${p.api_key_configured ? '•••••••• (unchanged)' : 'sk-...'}" value=""></div>
+      <div><label class="block text-xs font-medium text-gray-600">Deployment</label><select class="pv-dep mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm">${depOpts}</select></div>
+      <div><label class="block text-xs font-medium text-gray-600">Chat Model</label><input class="pv-chat mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" value="${esc(p.chat_model)}"></div>
+      <div><label class="block text-xs font-medium text-gray-600">Reasoner Model</label><input class="pv-reason mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" value="${esc(p.reasoner_model)}"></div>
+      <div><label class="block text-xs font-medium text-gray-600">Price Mode</label>
+        <select class="pv-mode mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm">
+          <option value="auto" ${p.price_mode === 'auto' ? 'selected' : ''}>auto (live if available)</option>
+          <option value="live" ${p.price_mode === 'live' ? 'selected' : ''}>live</option>
+          <option value="static" ${p.price_mode === 'static' ? 'selected' : ''}>static</option>
+          <option value="zero" ${p.price_mode === 'zero' ? 'selected' : ''}>zero (local)</option>
+        </select>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="block text-xs font-medium text-gray-600">In $/1M</label><input class="pv-in mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" value="${p.input_price || ''}"></div>
+        <div><label class="block text-xs font-medium text-gray-600">Out $/1M</label><input class="pv-out mt-0.5 block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" value="${p.output_price || ''}"></div>
+      </div>
+    </div>
+    <div class="mt-3">
+      <button onclick="testProvider('${esc(p.name)}')" class="rounded-md bg-gray-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-700">Test Connection</button>
+      <span class="text-xs ml-2" id="prov-msg-${esc(p.name)}"></span>
+    </div>
+  </div>`;
+}
+
+function orderSelects(d) {
+  // Primary / Secondary / Tertiary selects — the failover chain.
+  var order = d.provider_order || (d.active_provider ? [d.active_provider] : []);
+  var names = d.providers.map(function(p) { return p.name; });
+  function sel(slot, cur) {
+    var opts = ['<option value="">(none)</option>'].concat(names.map(function(n) {
+      return `<option value="${esc(n)}" ${cur === n ? 'selected' : ''}>${esc(n)}</option>`;
+    })).join('');
+    return `<select class="order-sel block w-full rounded-md border-gray-300 border px-2 py-1.5 text-sm" data-slot="${slot}">${opts}</select>`;
+  }
+  return '<div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Failover order</div>'
+    + '<div class="mt-2 grid grid-cols-3 gap-3">'
+    + ['Primary', 'Secondary', 'Tertiary'].map(function(label, i) {
+      return '<div><div class="text-xs text-gray-600">' + label + '</div>' + sel(label.toLowerCase(), order[i] || '') + '</div>';
+    }).join('') + '</div>';
+}
+
+function renderProviders(d) {
+  var el = document.getElementById('provider-list');
+  document.getElementById('provider-order').innerHTML = orderSelects(d);
+  var addCard = '<button onclick="addProviderCard()" class="w-full border-2 border-dashed border-gray-300 rounded-lg p-4 text-sm text-gray-500 hover:border-barenoc-400 hover:text-barenoc-600">+ Add provider (secondary / tertiary / on-prem fallback)</button>';
+  el.innerHTML = '<div class="space-y-4">' + d.providers.map(providerCard).join('')
+    + '<div id="add-provider-slot">' + addCard + '</div></div>';
+}
+
+function addProviderCard() {
+  var slot = document.getElementById('add-provider-slot');
+  if (!slot) { return; }
+  var wrap = document.createElement('div');
+  wrap.innerHTML = providerCard({name: '', type: 'openai', base_url: '', deployment: 'hosted',
+    chat_model: '', reasoner_model: '', thinking: 'auto', price_mode: 'auto',
+    api_key_configured: false, api_key: '', input_price: 0, output_price: 0});
+  var newCard = wrap.firstChild;
+  slot.parentNode.insertBefore(newCard, slot);
+  var inp = newCard.querySelector('.pv-name');
+  if (inp) inp.focus();
+}
+
+function removeProviderCard(name) {
+  if (!name) { return; }
+  if (!confirm('Remove provider "' + name + '"? (its config is deleted on Save All)')) return;
+  var card = document.querySelector('[data-provider="' + name + '"]');
+  if (card) card.remove();
+  // also clear it from the failover-order selects
+  document.querySelectorAll('.order-sel').forEach(function(sel) {
+    if (sel.value === name) sel.value = '';
+  });
+}
+
+async function loadLLM() {
+  try {
+    var r = await fetch('/api/v1/settings/llm', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    renderProviders(d);
+    loadPolicy();
+  } catch (e) { console.error(e); }
+}
+async function saveLLM() {
+  var msg = document.getElementById('llm-msg');
+  var order = Array.from(document.querySelectorAll('.order-sel')).map(function(s) { return s.value; }).filter(Boolean);
+  var providers = [];
+  var seen = {};
+  var ok = true;
+  Array.from(document.querySelectorAll('[data-provider]')).forEach(function(card) {
+    var name = (card.dataset.provider || (card.querySelector('.pv-name') || {}).value || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (!name) { ok = false; return; }
+    if (seen[name]) { ok = false; return; }
+    seen[name] = true;
+    providers.push({
+      name: name,
+      type: card.dataset.type || 'openai',
+      base_url: card.querySelector('.pv-base').value,
+      api_key: card.querySelector('.pv-key').value,
+      deployment: card.querySelector('.pv-dep').value || 'hosted',
+      chat_model: card.querySelector('.pv-chat').value,
+      reasoner_model: card.querySelector('.pv-reason').value,
+      input_price: card.querySelector('.pv-in').value,
+      output_price: card.querySelector('.pv-out').value,
+      price_mode: card.querySelector('.pv-mode').value
+    });
+  });
+  if (!ok) { msg.textContent = '❌ Every provider needs a unique name (letters/numbers/underscores).';
+    msg.className = 'text-sm text-red-600'; return; }
+  try {
+    var r = await fetch('/api/v1/settings/llm', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ provider_order: order, providers: providers })
+    });
+    var d = await r.json();
+    if (r.ok && d.status === 'ok') {
+      msg.textContent = '✅ Saved. Worker picks up changes automatically (~15s).';
+      msg.className = 'text-sm text-green-600';
+      loadLLM();
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'Failed to save');
+      msg.className = 'text-sm text-red-600';
+    }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+async function testProvider(name) {
+  var card = document.querySelector('[data-provider="' + name + '"]');
+  var msg = document.getElementById('prov-msg-' + name);
+  msg.textContent = 'Testing...';
+  msg.className = 'text-xs ml-2 text-gray-500';
+  var body = { provider: name };
+  var key = card.querySelector('.pv-key').value;
+  if (key) body.api_key = key; // first-time override
+  try {
+    var r = await fetch('/api/v1/settings/llm/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    var d = await r.json();
+    if (r.ok) {
+      msg.textContent = '✅ ' + d.latency_ms + 'ms · ' + d.model + ' · "' + d.text + '"';
+      msg.className = 'text-xs ml-2 text-green-600';
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'failed');
+      msg.className = 'text-xs ml-2 text-red-600';
+    }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-xs ml-2 text-red-600'; }
+}
+
+// ── Autonomy policy ──
+var POLICY_CATS = ['maintenance', 'security', 'network', 'identity', 'install', 'change'];
+var POLICY_PRIOS = ['P1', 'P2', 'P3', 'P4'];
+
+function renderRiskCats(checked) {
+  var el = document.getElementById('pol-risk-cats');
+  el.innerHTML = POLICY_CATS.map(function(c) {
+    return `<label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" data-cat="${c}" ${checked.indexOf(c) >= 0 ? 'checked' : ''} class="pol-cat h-3.5 w-3.5 rounded border-gray-300 text-barenoc-600"> ${c}</label>`;
+  }).join('');
+}
+function renderPrios(checked) {
+  var el = document.getElementById('pol-prios');
+  el.innerHTML = POLICY_PRIOS.map(function(p) {
+    return `<label class="flex items-center gap-2 text-xs text-gray-600"><input type="checkbox" data-prio="${p}" ${checked.indexOf(p) >= 0 ? 'checked' : ''} class="pol-prio h-3.5 w-3.5 rounded border-gray-300 text-barenoc-600"> ${p}</label>`;
+  }).join('');
+}
+
+
+function updateAutonomyWarning() {
+  var w = document.getElementById('autonomy-warning');
+  if (w) w.classList.toggle('hidden', document.getElementById('pol-profile').value !== 'autonomous');
+}
+
+async function loadPolicy() {
+  try {
+    var r = await fetch('/api/v1/settings/policy', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    if (r.status === 404) return; // older backend
+    var d = await r.json();
+    document.getElementById('pol-profile').value = d.profile || '';
+    updateAutonomyWarning();
+    document.getElementById('pol-threshold').value = d.autoexec_threshold;
+    document.getElementById('pol-judge').checked = !!d.judge_required;
+    document.getElementById('pol-write').checked = !!d.write_autoexec;
+    document.getElementById('pol-patches').value = d.patch_allowlist || '';
+    document.getElementById('pol-retry-interval').value = d.llm_retry_interval_min || 2;
+    document.getElementById('pol-retry-attempts').value = d.llm_retry_max_attempts || 10;
+    var rf = (d.risk_filters || 'all').toLowerCase();
+    var mode = (rf === 'all' || rf === 'none') ? rf : 'custom';
+    document.getElementById('pol-risk-mode').value = mode;
+    var cats = (mode === 'custom') ? rf.split(',') : POLICY_CATS;
+    if (mode === 'none') cats = [];
+    renderRiskCats(cats);
+    renderPrios((d.approval_priorities || 'P1,P2').split(','));
+  } catch (e) { console.error(e); }
+}
+
+async function savePolicy() {
+  var msg = document.getElementById('policy-msg');
+  var mode = document.getElementById('pol-risk-mode').value;
+  var cats = Array.from(document.querySelectorAll('.pol-cat:checked')).map(function(c) { return c.dataset.cat; });
+  var risk = mode === 'all' ? 'all' : mode === 'none' ? 'none' : (cats.length ? cats.join(',') : 'none');
+  var prios = Array.from(document.querySelectorAll('.pol-prio:checked')).map(function(c) { return c.dataset.prio; });
+  var body = {
+    profile: document.getElementById('pol-profile').value,
+    risk_filters: risk,
+    judge_required: document.getElementById('pol-judge').checked,
+    write_autoexec: document.getElementById('pol-write').checked,
+    autoexec_threshold: parseFloat(document.getElementById('pol-threshold').value || '0.8'),
+    approval_priorities: prios.join(','),
+    patch_allowlist: document.getElementById('pol-patches').value.trim(),
+    llm_retry_interval_min: parseInt(document.getElementById('pol-retry-interval').value || '2', 10),
+    llm_retry_max_attempts: parseInt(document.getElementById('pol-retry-attempts').value || '10', 10)
+  };
+  try {
+    var r = await fetch('/api/v1/settings/policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    var d = await r.json();
+    if (r.ok && d.status === 'ok') {
+      msg.textContent = '✅ Saved. Worker hot-reloads the policy on its next cycle.';
+      msg.className = 'text-sm text-green-600';
+      loadPolicy();
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'Failed to save');
+      msg.className = 'text-sm text-red-600';
+    }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Email ──
+async function loadEmail() {
+  try {
+    var r = await fetch('/api/v1/settings/email', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('smtp-host').value = d.smtp_host || '';
+    document.getElementById('smtp-port').value = d.smtp_port || '587';
+    document.getElementById('smtp-user').value = d.smtp_user || '';
+    document.getElementById('smtp-pass').value = d.smtp_password;
+    document.getElementById('smtp-status').textContent = d.smtp_password_configured ? '✅ Password configured' : 'No password set';
+    document.getElementById('smtp-alert').value = d.alert_email || '';
+    document.getElementById('email-digest-recipients').value = d.digest_recipients || '';
+    document.getElementById('email-eod-recipients').value = d.eod_recipients || '';
+    document.getElementById('email-digest-enabled').checked = !!d.report_morning_digest;
+    document.getElementById('email-eod-enabled').checked = !!d.report_eod_summary;
+    document.getElementById('email-digest-hour').value = String(d.digest_hour || 7);
+    document.getElementById('email-eod-hour').value = String(d.eod_hour || 18);
+  } catch (e) { console.error(e); }
+}
+
+// populate 0-23 hour selects once
+(function() {
+  var hours = [];
+  for (var h = 0; h < 24; h++) {
+    hours.push('<option value="' + h + '">' + String(h).padStart(2, '0') + ':00</option>');
+  }
+  var sel = document.getElementById('email-digest-hour');
+  if (sel) { sel.innerHTML = hours.join(''); }
+  var sel2 = document.getElementById('email-eod-hour');
+  if (sel2) { sel2.innerHTML = hours.join(''); }
+})();
+
+async function saveEmail() {
+  try {
+    var r = await fetch('/api/v1/settings/email', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        smtp_host: document.getElementById('smtp-host').value,
+        smtp_port: document.getElementById('smtp-port').value,
+        smtp_user: document.getElementById('smtp-user').value,
+        smtp_password: document.getElementById('smtp-pass').value,
+        alert_email: document.getElementById('smtp-alert').value,
+        digest_recipients: document.getElementById('email-digest-recipients').value,
+        eod_recipients: document.getElementById('email-eod-recipients').value,
+        report_morning_digest: document.getElementById('email-digest-enabled').checked,
+        report_eod_summary: document.getElementById('email-eod-enabled').checked,
+        digest_hour: parseInt(document.getElementById('email-digest-hour').value, 10),
+        eod_hour: parseInt(document.getElementById('email-eod-hour').value, 10)
+      })
+    });
+    var d = await r.json();
+    if (d.status === 'ok') { alert('Email config saved'); loadEmail(); }
+    else alert('Failed to save');
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function testReport(type) {
+  var msg = document.getElementById('email-msg');
+  msg.textContent = 'Sending...';
+  msg.className = 'text-sm text-gray-500';
+  try {
+    var r = await fetch('/api/v1/settings/email/test-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ type: type })
+    });
+    var d = await r.json();
+    if (r.ok) { msg.textContent = '✅ Sent ' + d.subject + ' to ' + (d.to || []).join(', '); msg.className = 'text-sm text-green-600'; }
+    else { msg.textContent = '❌ ' + (d.detail || 'Failed'); msg.className = 'text-sm text-red-600'; }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+async function testEmail() {
+  var msg = document.getElementById('email-msg');
+  msg.textContent = 'Sending test email...';
+  msg.className = 'text-sm text-gray-500';
+  try {
+    var r = await fetch('/api/v1/settings/test/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        smtp_host: document.getElementById('smtp-host').value,
+        smtp_port: document.getElementById('smtp-port').value,
+        smtp_user: document.getElementById('smtp-user').value,
+        smtp_password: document.getElementById('smtp-pass').value,
+        alert_email: document.getElementById('smtp-alert').value,
+        google_client_id: document.getElementById('gmail-client-id').value,
+        google_client_secret: document.getElementById('gmail-client-secret').value,
+        google_refresh_token: document.getElementById('gmail-refresh-token').value,
+        google_sender: document.getElementById('gmail-sender').value
+      })
+    });
+    var d = await r.json();
+    if (r.ok) { msg.textContent = '✅ Test email sent to ' + d.to; msg.className = 'text-sm text-green-600'; }
+    else { msg.textContent = '❌ ' + d.detail; msg.className = 'text-sm text-red-600'; }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── UniFi ──
+async function loadUnifi() {
+  try {
+    var r = await fetch('/api/v1/unifi/config', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('unifi-url').value = d.url || '';
+    document.getElementById('unifi-user').value = d.username || '';
+    document.getElementById('unifi-pass').value = '';
+    document.getElementById('unifi-key').value = '';
+    document.getElementById('unifi-autosync').checked = !!d.autosync_enabled;
+    document.getElementById('unifi-autosync-interval').value = String(d.autosync_interval || 5);
+    document.getElementById('unifi-auto-adopt').checked = d.auto_adopt !== false;
+    var st = d.auth === 'api_key' ? '🔑 API key configured' : (d.password_configured ? '🔑 Password configured' : 'No auth configured');
+    document.getElementById('unifi-status').textContent = st;
+  } catch (e) { console.error(e); }
+}
+async function saveUnifi() {
+  try {
+    var payload = {
+      url: document.getElementById('unifi-url').value,
+      username: document.getElementById('unifi-user').value
+    };
+    var pw = document.getElementById('unifi-pass').value;
+    if (pw) payload.password = pw;   // empty field = keep stored password
+    var key = document.getElementById('unifi-key').value;
+    if (key) payload.api_key = key;  // empty field = keep stored API key
+    payload.autosync_enabled = document.getElementById('unifi-autosync').checked;
+    payload.autosync_interval = parseInt(document.getElementById('unifi-autosync-interval').value, 10);
+    payload.auto_adopt = document.getElementById('unifi-auto-adopt').checked;
+    var r = await fetch('/api/v1/unifi/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if (d.status === 'ok') { alert('UniFi config saved'); loadUnifi(); }
+    else alert('Failed to save');
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+async function testUnifi() {
+  var msg = document.getElementById('unifi-msg');
+  msg.textContent = 'Testing connection...';
+  msg.className = 'text-sm text-gray-500';
+  try {
+    var r = await fetch('/api/v1/unifi/test', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var d = await r.json();
+    if (d.connected) { msg.textContent = '✅ Connected to controller — ' + d.devices_found + ' devices found'; msg.className = 'text-sm text-green-600'; }
+    else { msg.textContent = '❌ ' + (d.error || d.detail || 'Connection failed'); msg.className = 'text-sm text-red-600'; }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadRemoteAccess(); switchTab('general'); });
+
+// ── Identity (Pocket ID / passkeys) ──
+async function loadIdentity() {
+  try {
+    var r = await fetch('/api/v1/settings/identity', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('id-enabled').checked = d.enabled === 'true' || d.enabled === true;
+    document.getElementById('id-provider').value = d.provider_url || '';
+    document.getElementById('id-client').value = d.client_id || '';
+    document.getElementById('id-secret').value = '';
+    document.getElementById('id-secret-status').textContent = d.client_secret_configured ? '✅ Secret configured' : 'No secret set';
+    document.getElementById('id-group-admin').value = d.group_admin || '';
+    document.getElementById('id-group-operator').value = d.group_operator || '';
+    document.getElementById('id-github-enabled').checked = !!d.github_enabled;
+    document.getElementById('id-github-client').value = d.github_client_id || '';
+    document.getElementById('id-github-secret').value = '';
+    document.getElementById('id-github-secret-status').textContent = d.github_client_secret_configured ? '✅ Secret configured' : 'No secret set';
+    document.getElementById('id-google-enabled').checked = !!d.google_enabled;
+    document.getElementById('id-google-client').value = d.google_client_id || '';
+    document.getElementById('id-google-secret').value = '';
+    document.getElementById('id-google-secret-status').textContent = d.google_client_secret_configured ? '✅ Secret configured' : 'No secret set';
+  } catch (e) { console.error(e); }
+}
+async function saveIdentity() {
+  var msg = document.getElementById('identity-msg');
+  try {
+    var r = await fetch('/api/v1/settings/identity', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        enabled: document.getElementById('id-enabled').checked ? 'true' : 'false',
+        provider_url: document.getElementById('id-provider').value,
+        client_id: document.getElementById('id-client').value,
+        client_secret: document.getElementById('id-secret').value,
+        group_admin: document.getElementById('id-group-admin').value,
+        group_operator: document.getElementById('id-group-operator').value,
+        github_enabled: document.getElementById('id-github-enabled').checked ? 'true' : 'false',
+        github_client_id: document.getElementById('id-github-client').value,
+        github_client_secret: document.getElementById('id-github-secret').value,
+        google_enabled: document.getElementById('id-google-enabled').checked ? 'true' : 'false',
+        google_client_id: document.getElementById('id-google-client').value,
+        google_client_secret: document.getElementById('id-google-secret').value
+      })
+    });
+    var d = await r.json();
+    if (r.ok && d.status === 'ok') {
+      msg.textContent = '✅ Saved. Changes take effect immediately.';
+      msg.className = 'text-sm text-green-600';
+      loadIdentity();
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'Failed to save');
+      msg.className = 'text-sm text-red-600';
+    }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Remote Access (Tailscale) ──
+function raNode(label, node) {
+  if (!node || typeof node !== 'object') {
+    return '<div class="flex items-center justify-between py-1 border-b border-gray-100"><span class="text-gray-600">' + label + '</span><span class="text-gray-400">not reporting</span></div>';
+  }
+  var online = node.online ? '<span class="text-green-600 font-medium">● online</span>' : '<span class="text-amber-600 font-medium">○ offline/needs login</span>';
+  var ip = node.tailscale_ip ? ' <span class="font-mono text-xs text-gray-500">' + node.tailscale_ip + '</span>' : '';
+  var auth = node.auth_url && node.needs_login
+    ? '<div class="text-xs mt-1"><a href="' + node.auth_url + '" target="_blank" class="text-barenoc-600 underline">Approve this node →</a></div>' : '';
+  return '<div class="py-1 border-b border-gray-100"><div class="flex items-center justify-between"><span class="text-gray-700">' + label + ' <span class="font-mono text-xs">' + (node.hostname || '?') + '</span>' + ip + '</span>' + online + '</div>' + auth + '</div>';
+}
+async function loadRemoteAccess() {
+  var el = document.getElementById('remote-access-status');
+  try {
+    var r = await fetch('/api/v1/settings/remote-access', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    el.innerHTML = raNode('Appliance (this VM)', d.vm) + raNode('Proxmox host', d.host);
+    var auth = d.host && d.host.auth_url && d.host.needs_login ? d.host.auth_url : (d.vm && d.vm.auth_url ? d.vm.auth_url : '');
+    if (!auth) {
+      el.innerHTML += '<div class="text-xs text-gray-500 mt-2">Connect from anywhere: ssh ops@' + ((d.host && d.host.tailscale_ip) || '<node-ip>') + ' · Proxmox UI + app UI served over the tailnet.</div>';
+    }
+  } catch (e) { el.innerHTML = '<span class="text-red-600">Could not load tailscale status</span>'; }
+}
+
+// ── Ticket lifecycle (check-ins + auto-close) ──
+function setTickets(d) {
+  document.getElementById('tkt-checkin-enabled').checked = !!d.checkin_enabled;
+  document.getElementById('tkt-checkin-email').checked = !!d.checkin_email;
+  document.getElementById('tkt-autoclose-enabled').checked = !!d.autoclose_enabled;
+  ['P1','P2','P3','P4'].forEach(function(p) {
+    document.getElementById('tkt-checkin-' + p).value = d.checkin_hours[p] || 0;
+    document.getElementById('tkt-close-' + p).value = d.close_after_days[p] || 0;
+  });
+}
+async function loadTickets() {
+  try {
+    var r = await fetch('/api/v1/settings/tickets', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    setTickets(d);
+  } catch (e) { console.error(e); }
+}
+async function saveTickets() {
+  var msg = document.getElementById('tickets-msg');
+  var body = {
+    checkin_enabled: document.getElementById('tkt-checkin-enabled').checked,
+    checkin_email: document.getElementById('tkt-checkin-email').checked,
+    autoclose_enabled: document.getElementById('tkt-autoclose-enabled').checked,
+    checkin_hours: {}, close_after_days: {}
+  };
+  ['P1','P2','P3','P4'].forEach(function(p) {
+    body.checkin_hours[p] = parseInt(document.getElementById('tkt-checkin-' + p).value, 10) || 0;
+    body.close_after_days[p] = parseInt(document.getElementById('tkt-close-' + p).value, 10) || 0;
+  });
+  try {
+    var r = await fetch('/api/v1/settings/tickets', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    var d = await r.json();
+    if (r.ok && d.status === 'ok') {
+      msg.textContent = '✅ Saved. The alert engine picks it up within a minute.';
+      msg.className = 'text-sm text-green-600';
+      loadTickets();
+    } else {
+      msg.textContent = '❌ ' + (d.detail || 'Failed to save');
+      msg.className = 'text-sm text-red-600';
+    }
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Backups ──
+var BK_DAYS = [['daily','Daily'],['0','Sunday'],['1','Monday'],['2','Tuesday'],['3','Wednesday'],['4','Thursday'],['5','Friday'],['6','Saturday']];
+
+function populateBkSelects(dayVal, hourVal) {
+  var dsel = document.getElementById('bk-day');
+  if (dsel && !dsel.options.length) {
+    BK_DAYS.forEach(function(p) {
+      var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1]; dsel.appendChild(o);
+    });
+  }
+  if (dsel) dsel.value = dayVal;
+  var hsel = document.getElementById('bk-hour');
+  if (hsel && !hsel.options.length) {
+    for (var h = 0; h < 24; h++) {
+      var o = document.createElement('option'); o.value = h; o.textContent = (h < 10 ? '0' : '') + h + ':00'; hsel.appendChild(o);
+    }
+  }
+  if (hsel) hsel.value = String(hourVal);
+}
+
+async function loadBackups() {
+  try {
+    var r = await fetch('/api/v1/settings/backups', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    var app = d.appliance_host !== false;
+    document.getElementById('bk-not-appliance').classList.toggle('hidden', app);
+    ['bk-enabled','bk-day','bk-hour','bk-run-now'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.disabled = !app;
+    });
+    document.getElementById('bk-enabled').checked = d.usb_backup_enabled !== false;
+    populateBkSelects(d.usb_backup_day || '3', d.usb_backup_hour != null ? d.usb_backup_hour : 2);
+    document.getElementById('bk-usb-present').textContent = d.usb_present ? '✅ present' : '— not detected';
+    document.getElementById('bk-usb-enc').textContent = d.usb_encrypted
+      ? ('🔐 LUKS2 · ' + (d.usb_keyslots || 1) + ' keyslot' + ((d.usb_keyslots || 1) > 1 ? 's' : ''))
+      : (d.usb_present ? '⚠ not encrypted!' : '—');
+    document.getElementById('bk-usb-last').textContent = d.usb_last_backup && d.usb_last_backup !== 'none' ? d.usb_last_backup : '—';
+    document.getElementById('bk-vm-last').textContent = d.vm_snapshot_last && d.vm_snapshot_last !== 'none' ? d.vm_snapshot_last : '—';
+    document.getElementById('bk-status-updated').textContent = d.status_updated || '—';
+  } catch (e) { console.error(e); }
+}
+
+async function saveBackups() {
+  var msg = document.getElementById('bk-msg');
+  try {
+    var r = await fetch('/api/v1/settings/backups', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        usb_backup_enabled: document.getElementById('bk-enabled').checked,
+        usb_backup_day: document.getElementById('bk-day').value,
+        usb_backup_hour: parseInt(document.getElementById('bk-hour').value, 10)
+      })
+    });
+    var d = await r.json();
+    msg.textContent = d.status === 'ok' ? '✅ Saved — the host picks this up within ~10 minutes.' : '❌ ' + (d.detail || 'Failed to save');
+    msg.className = d.status === 'ok' ? 'text-sm text-green-600' : 'text-sm text-red-600';
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+async function runBackupNow() {
+  var msg = document.getElementById('bk-msg');
+  try {
+    var r = await fetch('/api/v1/settings/backups', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ run_usb_backup_now: true })
+    });
+    var d = await r.json();
+    msg.textContent = d.status === 'ok' ? '✅ Backup queued — the host starts it within ~10 minutes (see Status above).' : '❌ ' + (d.detail || 'Failed to queue');
+    msg.className = d.status === 'ok' ? 'text-sm text-green-600' : 'text-sm text-red-600';
+  } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+</script>
+{% endblock %}

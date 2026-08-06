@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml   # reuse the CI test job
+
+  release:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: |
+          echo "APP_VERSION=$(python3 -c "import sys;sys.path.insert(0,'src/api');import version;print(version.APP_VERSION)")" >> "$GITHUB_OUTPUT"
+
+      - name: Extract CHANGELOG section for release notes
+        id: notes
+        run: |
+          python3 scripts/changelog_section.py "${{ steps.ver.outputs.APP_VERSION }}" > /tmp/notes.md
+          echo "notes_size=$(wc -c < /tmp/notes.md)" >> "$GITHUB_OUTPUT"
+
+      - name: Collect release assets + checksums
+        run: |
+          mkdir -p /tmp/assets
+          cp install.sh proxmox/barenoc-appliance.sh proxmox/build_barenoc_iso.sh \
+             proxmox/setup-usb-backup.sh /tmp/assets/
+          ( cd /tmp/assets && sha256sum * > SHA256SUMS )
+          ls -la /tmp/assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.ver.outputs.APP_VERSION }}"
+          gh release create "v${VERSION}" /tmp/assets/* \
+            --title "v${VERSION}" \
+            --notes-file /tmp/notes.md
+
+      - name: Publish versions.json (release artifact)
+        run: |
+          VERSION="${{ steps.ver.outputs.APP_VERSION }}"
+          python3 - "$VERSION" <<'EOF'
+          import json, sys, hashlib, pathlib
+          v = sys.argv[1]
+          assets = pathlib.Path("/tmp/assets")
+          sha = lambda name: hashlib.sha256((assets / name).read_bytes()).hexdigest()
+          manifest = {
+            "version": v,
+            "channel": "stable",
+            "released_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "iso": {"url": "", "sha256": "", "size_bytes": 0},  # uploaded manually (R2/B2)
+            "appliance_script": {
+              "url": f"https://github.com/<org>/BareNOC/releases/download/v{v}/barenoc-appliance.sh",
+              "sha256": sha("barenoc-appliance.sh"),
+            },
+            "installer": {
+              "url": f"https://github.com/<org>/BareNOC/releases/download/v{v}/install.sh",
+              "sha256": sha("install.sh"),
+            },
+            "changelog_url": f"https://github.com/<org>/BareNOC/releases/tag/v{v}",
+          }
+          pathlib.Path("versions.json").write_text(json.dumps(manifest, indent=2))
+          EOF
+          echo "versions.json written (publish to https://barenoc.com/download/ + R2 per marketing/download_distribution.md)"
+          cat versions.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: versions.json
+          path: versions.json

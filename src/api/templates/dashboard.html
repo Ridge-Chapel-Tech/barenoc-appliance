@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% block title %}BareNOC — Dashboard{% endblock %}
+{% block inner_content %}
+<div id="dashboard-app">
+    <div class="flex items-center gap-4">
+        <img id="brand-logo" class="hidden h-14 w-auto max-w-xs object-contain" alt="Customer logo">
+        <div>
+            <h1 class="text-2xl font-semibold text-gray-900">Dashboard</h1>
+            <p class="mt-1 text-sm text-gray-500" id="last-updated"></p>
+        </div>
+    </div>
+    <p id="brand-customer" class="mt-2 text-sm font-medium text-barenoc-700 hidden"></p>
+
+    <!-- Health Banner -->
+    <div id="health-banner" class="mt-4 hidden"></div>
+
+    <!-- Stat Cards -->
+    <div id="stat-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
+
+    <!-- Recent Tickets -->
+    <div id="recent-section" class="mt-8 hidden">
+        <h2 class="text-lg font-medium text-gray-900">Recent Tickets</h2>
+        <div class="mt-4 bg-white shadow rounded-lg overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                    </tr>
+                </thead>
+                <tbody id="recent-tickets-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Performance & Reporting (business value) -->
+    <div id="reports-section" class="mt-8">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+            <div>
+                <h2 class="text-lg font-medium text-gray-900">Performance &amp; Reporting</h2>
+                <p class="text-sm text-gray-500 mt-1">Ticket action time, escalations, closures — the value BareNOC delivers vs a manned NOC.</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <select id="report-days" onchange="loadReports()" class="rounded-md border-gray-300 border px-3 py-2 text-sm">
+                    <option value="7">Last 7 days</option>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                </select>
+                <select id="report-format" class="rounded-md border-gray-300 border px-3 py-2 text-sm">
+                    <option value="pdf">PDF</option>
+                    <option value="xlsx">Excel (XLSX)</option>
+                    <option value="ods">OpenOffice (ODS)</option>
+                    <option value="csv">CSV</option>
+                    <option value="gsheet">Google Sheets</option>
+                </select>
+                <button onclick="downloadReport()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">⬇ Download</button>
+            </div>
+        </div>
+
+        <div id="report-kpis" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"></div>
+
+        <div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div class="bg-white shadow rounded-lg p-4 lg:col-span-2">
+                <div class="text-sm font-medium text-gray-500">Tickets created vs resolved</div>
+                <canvas id="trend-chart" height="120"></canvas>
+            </div>
+            <div class="bg-white shadow rounded-lg p-4">
+                <div class="text-sm font-medium text-gray-500">Priority mix (created)</div>
+                <canvas id="priority-chart" height="160"></canvas>
+            </div>
+        </div>
+        <div class="mt-4 bg-white shadow rounded-lg p-4">
+            <div class="text-sm font-medium text-gray-500">Average resolution time by priority (hours)</div>
+            <canvas id="restime-chart" height="90"></canvas>
+        </div>
+    </div>
+
+    <div id="loading-dashboard" class="mt-8 text-center text-gray-500">Loading dashboard...</div>
+</div>
+
+<script>
+const TOKEN = () => localStorage.getItem('access_token');
+
+async function loadDashboard() {
+    try {
+        const resp = await fetch('/api/v1/dashboard/stats', {
+            headers: { 'Authorization': 'Bearer ' + TOKEN() }
+        });
+        if (!resp.ok) throw new Error('Failed');
+        const d = await resp.json();
+
+        // Branding: show the uploaded logo, otherwise the customer name
+        const logo = document.getElementById('brand-logo');
+        const customer = document.getElementById('brand-customer');
+        if (d.has_logo) {
+            logo.src = '/api/v1/branding/logo?t=' + Date.now();
+            logo.classList.remove('hidden');
+            customer.classList.add('hidden');
+        } else if (d.customer_name) {
+            customer.textContent = d.customer_name;
+            customer.classList.remove('hidden');
+            logo.classList.add('hidden');
+        }
+
+        // Health banner
+        const banner = document.getElementById('health-banner');
+        const healthMsg = d.system_health === 'healthy' ? ['bg-green-50 border-green-200 text-green-700', '✅ System is healthy — all services operational.'] :
+                          d.system_health === 'degraded' ? ['bg-yellow-50 border-yellow-200 text-yellow-700', '⚠️ System is degraded — some devices offline.'] :
+                          d.system_health === 'warning' ? ['bg-orange-50 border-orange-200 text-orange-700', '🔶 System has warnings — P2 tickets need attention.'] :
+                          ['bg-red-50 border-red-200 text-red-700', '🔴 System is critical — P1 outage tickets active!'];
+        banner.className = 'mt-4 px-4 py-3 rounded border ' + healthMsg[0];
+        banner.textContent = healthMsg[1];
+        banner.classList.remove('hidden');
+
+        // Stat cards
+        const cards = document.getElementById('stat-cards');
+        cards.innerHTML = `
+            <div class="bg-white shadow rounded-lg p-5">
+                <div class="text-sm font-medium text-gray-500">Total Devices</div>
+                <div class="text-2xl font-semibold text-gray-900 mt-1">${d.total_devices}</div>
+                <div class="text-xs text-gray-500 mt-2"><span class="text-green-600 font-medium">${d.online_devices} online</span> | <span class="text-red-600 font-medium">${d.offline_devices} offline</span></div>
+            </div>
+            <div class="bg-white shadow rounded-lg p-5">
+                <div class="text-sm font-medium text-gray-500">Active Tickets</div>
+                <div class="text-2xl font-semibold text-gray-900 mt-1">${d.open_tickets + d.in_progress_tickets}</div>
+                <div class="text-xs text-gray-500 mt-2"><span class="text-red-600 font-medium">${d.p1_tickets} P1</span> | <span class="text-orange-600 font-medium">${d.p2_tickets} P2</span></div>
+            </div>
+            <div class="bg-white shadow rounded-lg p-5">
+                <div class="text-sm font-medium text-gray-500">System Health</div>
+                <div class="text-2xl font-semibold mt-1 ${d.system_health === 'healthy' ? 'text-green-600' : d.system_health === 'degraded' ? 'text-yellow-600' : d.system_health === 'warning' ? 'text-orange-600' : 'text-red-600'}">${d.system_health.toUpperCase()}</div>
+            </div>
+            <div class="bg-white shadow rounded-lg p-5">
+                <div class="text-sm font-medium text-gray-500">Total Tickets</div>
+                <div class="text-2xl font-semibold text-gray-900 mt-1">${d.total_tickets}</div>
+            </div>
+        `;
+
+        // Recent tickets
+        const tbody = document.getElementById('recent-tickets-body');
+        tbody.innerHTML = '';
+        if (d.recent_tickets && d.recent_tickets.length > 0) {
+            d.recent_tickets.forEach(t => {
+                const cls = t.priority === 'P1' ? 'bg-red-100 text-red-700' :
+                            t.priority === 'P2' ? 'bg-orange-100 text-orange-700' :
+                            t.priority === 'P3' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-gray-100 text-gray-600';
+                tbody.innerHTML += `<tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 text-sm font-mono text-barenoc-600">${t.ticket_id}</td>
+                    <td class="px-6 py-4 text-sm text-gray-900">${t.title}</td>
+                    <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ${cls}">${t.priority}</span></td>
+                    <td class="px-6 py-4 text-sm">${t.status.replace('_', ' ')}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">${t.created_at}</td>
+                </tr>`;
+            });
+            document.getElementById('recent-section').classList.remove('hidden');
+        }
+    } catch (err) {
+        console.error('Dashboard error:', err);
+    }
+    document.getElementById('loading-dashboard').style.display = 'none';
+}
+
+document.addEventListener('DOMContentLoaded', loadDashboard);
+
+// ── Performance & Reporting ──
+let _charts = [];
+function loadReports() {
+  var days = document.getElementById('report-days').value;
+  fetch('/api/v1/dashboard/reports?days=' + days, {
+    headers: { 'Authorization': 'Bearer ' + TOKEN() }
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    // KPI cards
+    var kpi = document.getElementById('report-kpis');
+    function card(label, value, sub) {
+      return '<div class="bg-white shadow rounded-lg p-4"><div class="text-xs font-medium text-gray-500 uppercase tracking-wide">' + label + '</div>'
+        + '<div class="text-2xl font-semibold text-gray-900 mt-1">' + value + '</div>'
+        + (sub ? '<div class="text-xs text-gray-500 mt-1">' + sub + '</div>' : '') + '</div>';
+    }
+    function fmtMin(m) {
+      if (m == null) return '—';
+      if (m < 1) return Math.round(m * 60) + 's';
+      if (m < 60) return m + ' min';
+      return (m / 60).toFixed(1) + 'h';
+    }
+    kpi.innerHTML =
+      card('Avg resolution time', d.avg_resolution_hours != null ? d.avg_resolution_hours + 'h' : '—', d.resolved + ' resolved in period') +
+      card('Time to first response', fmtMin(d.avg_first_response_min), 'from ticket creation') +
+      card('Escalations', d.escalated_tickets, (d.escalations ? d.escalations + ' events · ' : '') + (d.created ? Math.round(d.escalation_rate * 100) + '% of tickets created this period' : '—')) +
+      card('Auto-closed', d.autoclosed, (d.reopens ? d.reopens + ' reopened / follow-ups' : 'no reopens') + ' · ' + d.checkins + ' check-ins') +
+      card('AI support spend', '$' + d.support_cost_usd.toFixed(2), d.llm_calls + ' LLM calls in period') +
+      card('Est. manned-NOC cost', '$' + d.est_manned_noc_cost_usd.toFixed(2), 'same workload, human labor (est.)') +
+      card('Estimated savings', '$' + d.savings_usd.toFixed(2), 'manned-NOC minus AI spend');
+
+    // Chart.js (load from CDN on demand, like mermaid for the wiki)
+    if (!window.Chart) {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+      s.onload = function() { renderCharts(d); };
+      document.head.appendChild(s);
+    } else {
+      renderCharts(d);
+    }
+  }).catch(function(e) { console.error('Reports error:', e); });
+}
+
+function renderCharts(d) {
+  _charts.forEach(function(c) { c.destroy(); });
+  _charts = [];
+  var labels = d.trend.map(function(t) { return t.date.slice(5); });
+  var colors = ['#e03131', '#e8590c', '#f59f00', '#868e96'];
+
+  _charts.push(new Chart(document.getElementById('trend-chart'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: 'Created', data: d.trend.map(function(t) { return t.created; }),
+          borderColor: '#1c7ed6', backgroundColor: 'rgba(28,126,214,0.1)', fill: true, tension: 0.3 },
+        { label: 'Resolved', data: d.trend.map(function(t) { return t.resolved; }),
+          borderColor: '#2f9e44', backgroundColor: 'rgba(47,158,68,0.1)', fill: true, tension: 0.3 }
+      ]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+  }));
+
+  _charts.push(new Chart(document.getElementById('priority-chart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['P1', 'P2', 'P3', 'P4'],
+      datasets: [{ data: ['P1','P2','P3','P4'].map(function(p) { return d.priority_dist[p] || 0; }),
+                  backgroundColor: colors }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+  }));
+
+  _charts.push(new Chart(document.getElementById('restime-chart'), {
+    type: 'bar',
+    data: {
+      labels: ['P1', 'P2', 'P3', 'P4'],
+      datasets: [{ label: 'Avg resolution (h)',
+                   data: ['P1','P2','P3','P4'].map(function(p) {
+                     return d.res_by_priority_hours[p] != null ? d.res_by_priority_hours[p] : 0; }),
+                   backgroundColor: colors }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } }
+  }));
+}
+
+async function downloadReport() {
+  var days = document.getElementById('report-days').value;
+  var fmt = document.getElementById('report-format').value;
+  if (fmt === 'gsheet') {
+    // Google Sheets flow (no extra OAuth needed): fetch the tab-separated
+    // report, copy it, and open a new blank sheet — Ctrl+V pastes the grid.
+    try {
+      var r = await fetch('/api/v1/dashboard/reports/export?days=' + days + '&format=tsv', {
+        headers: { 'Authorization': 'Bearer ' + TOKEN() }
+      });
+      if (!r.ok) { alert('Export failed (' + r.status + ')'); return; }
+      var tsv = await r.text();
+      await navigator.clipboard.writeText(tsv);
+      window.open('https://sheets.new', '_blank');
+      alert('Report copied to clipboard — paste (Ctrl+V) into the new Google Sheet.');
+    } catch (e) { alert('Google Sheets flow failed: ' + e.message); }
+    return;
+  }
+  try {
+    var r = await fetch('/api/v1/dashboard/reports/export?days=' + days + '&format=' + fmt, {
+      headers: { 'Authorization': 'Bearer ' + TOKEN() }
+    });
+    if (!r.ok) { alert('Export failed (' + r.status + ')'); return; }
+    var blob = await r.blob();
+    var disp = r.headers.get('Content-Disposition') || '';
+    var m = disp.match(/filename="?([^";]+)/);
+    var name = m ? m[1] : ('barenoc-report.' + fmt);
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('Download failed: ' + e.message); }
+}
+
+loadReports();
+</script>
+{% endblock %}

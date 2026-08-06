@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} · BareNOC Wiki</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        barenoc: {
+                            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe',
+                            600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .wiki-body h1 { font-size: 1.5rem; font-weight: 700; color: #1e40af; margin-bottom: .75rem; }
+        .wiki-body h2 { font-size: 1.15rem; font-weight: 600; color: #1e3a8a; margin-top: 1.5rem; margin-bottom: .5rem; border-bottom: 1px solid #e5e7eb; padding-bottom: .25rem; }
+        .wiki-body h3 { font-size: 1rem; font-weight: 600; color: #334155; margin-top: 1.25rem; margin-bottom: .4rem; }
+        .wiki-body p { margin: .5rem 0; line-height: 1.6; color: #374151; }
+        .wiki-body ul, .wiki-body ol { margin: .5rem 0 .5rem 1.4rem; color: #374151; }
+        .wiki-body ul { list-style: disc; }
+        .wiki-body ol { list-style: decimal; }
+        .wiki-body li { margin: .2rem 0; }
+        .wiki-body code { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 4px; padding: 0 .3rem; font-size: .85em; color: #0b7285; }
+        .wiki-body pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; margin: .75rem 0; }
+        .wiki-body pre code { background: none; border: none; color: inherit; padding: 0; }
+        .wiki-body table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .9rem; }
+        .wiki-body th { background: #eff6ff; color: #1e3a8a; text-align: left; }
+        .wiki-body th, .wiki-body td { border: 1px solid #e2e8f0; padding: .45rem .6rem; }
+        .wiki-body a { color: #2563eb; text-decoration: underline; }
+        .wiki-body blockquote { border-left: 3px solid #bfdbfe; padding-left: .9rem; color: #64748b; margin: .75rem 0; }
+        .wiki-body pre code.language-mermaid { background: transparent; border: none; }
+        .mermaid-wrap { margin: 1rem 0; display: flex; justify-content: center; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-full">
+    <header class="bg-barenoc-800 text-white">
+        <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div class="text-xl font-bold">BareNOC <span class="text-gray-300 text-base font-normal">User Wiki</span></div>
+            <div class="flex gap-5 text-sm">
+                {% if request.cookies.get('access_token') %}
+                <a href="/dashboard" class="text-gray-300 hover:text-white hover:underline">Portal</a>
+                {% endif %}
+            </div>
+        </div>
+    </header>
+    <div class="max-w-6xl mx-auto px-4 py-8 flex gap-8">
+        <aside class="w-56 shrink-0">
+            <h2 class="font-bold text-barenoc-800 text-lg mb-3">Pages</h2>
+            <ul class="space-y-1 text-sm">
+                {% for slug, pt in pages %}
+                <li>
+                    <a href="/wiki/{{ slug }}"
+                       class="block rounded px-2 py-1.5 {% if slug == active %}bg-barenoc-100 text-barenoc-800 font-semibold{% else %}text-gray-600 hover:bg-gray-100{% endif %}">
+                        {{ pt }}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </aside>
+        <article class="wiki-body max-w-3xl flex-1 bg-white rounded-lg shadow-sm border border-gray-100 p-6">
+            {{ body_html | safe }}
+        </article>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        // Render ```mermaid blocks (markdown renders them as pre > code.language-mermaid)
+        // into inline SVG. Robust to the CDN (3.3 MB) finishing AFTER DOMContentLoaded:
+        // re-check on window load + timed retries; only processes blocks still present.
+        (function () {
+            var initialized = false;
+            function renderMermaid() {
+                if (!window.mermaid) return;            // not loaded yet — retry later
+                var blocks = document.querySelectorAll('pre code.language-mermaid');
+                if (!blocks.length) return;
+                if (!initialized) {
+                    try {
+                        mermaid.initialize({
+                            startOnLoad: false,
+                            theme: 'base',
+                            themeVariables: {
+                                primaryColor: '#eff6ff', primaryTextColor: '#1e3a8a',
+                                primaryBorderColor: '#bfdbfe', lineColor: '#94a3b8',
+                                secondaryColor: '#f8fafc', tertiaryColor: '#fffbeb'
+                            }
+                        });
+                    } catch (e) {
+                        mermaid.initialize({ startOnLoad: false });
+                    }
+                    initialized = true;
+                }
+                blocks.forEach(function (el, i) {
+                    if (el.dataset.mermaidDone) return;   // already rendered/replaced
+                    el.dataset.mermaidDone = '1';           // idempotent across racing retries
+                    // Capture the container BEFORE rendering and use an id that is
+                    // NOT a live DOM element — mermaid.render() auto-replaces an
+                    // attached element whose id matches, which detaches our node
+                    // mid-render (closest('pre') → null) and collapses the result.
+                    var pre = el.closest('pre') || el.parentElement;
+                    if (!pre) return;
+                    var id = 'mmd-' + Date.now() + '-' + i;
+                    var code = el.textContent;
+                    mermaid.render(id, code).then(function (r) {
+                        var holder = document.createElement('div');
+                        holder.className = 'mermaid-wrap';
+                        holder.innerHTML = r.svg;
+                        pre.replaceWith(holder);
+                    }).catch(function (e) {
+                        console.error('mermaid render failed:', e);
+                        pre.replaceWith(Object.assign(document.createElement('div'), {
+                            className: 'mermaid-wrap',
+                            textContent: '⚠ diagram failed to render'
+                        }));
+                    });
+                });
+            }
+            document.addEventListener('DOMContentLoaded', renderMermaid);
+            window.addEventListener('load', renderMermaid);
+            setTimeout(renderMermaid, 2000);
+            setTimeout(renderMermaid, 8000);
+        })();
+    </script>
+</body>
+</html>

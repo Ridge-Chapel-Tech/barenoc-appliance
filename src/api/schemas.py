@@ -1,0 +1,205 @@
+import hashlib
+import json
+import datetime
+from pydantic import BaseModel, Field, field_serializer
+from typing import Optional
+from datetime import datetime
+
+
+# ── Auth Schemas ──
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    email: Optional[str] = None
+    role: str
+    is_active: bool
+    must_change_password: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+# ── Ticket Schemas ──
+
+class TicketCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: str = "P3"
+    target_device_id: Optional[int] = None
+
+
+class TicketUpdate(BaseModel):
+    status: Optional[str] = None
+    resolution: Optional[str] = None
+    assigned_to: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class TicketResponse(BaseModel):
+    id: int
+    ticket_id: str
+    title: str
+    description: Optional[str] = None
+    priority: str
+    status: str
+    source: str
+    submitter_id: Optional[int] = None
+    assigned_to: Optional[str] = None
+    target_device_id: Optional[int] = None
+    action: Optional[str] = None
+    llm_confidence: Optional[float] = None
+    llm_model: Optional[str] = None
+    llm_cost_usd: Optional[float] = None
+    resolution: Optional[str] = None
+    work_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+    @field_serializer("created_at", "updated_at", "resolved_at")
+    def serialize_datetime(self, dt: datetime, _info) -> str:
+        if dt is None:
+            return None
+        return dt.isoformat()
+
+
+# ── Device Schemas ──
+
+class DeviceCreate(BaseModel):
+    name: str
+    ip_address: str
+    hostname: Optional[str] = None
+    device_type: str = "unknown"
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    mac_address: Optional[str] = None
+    tags: list = []
+    claimed: Optional[bool] = True
+    device_group: Optional[str] = "default"
+    snmp_community: Optional[str] = None
+    ssh_user: Optional[str] = None
+    ssh_key: Optional[str] = None
+
+
+class DeviceUpdate(BaseModel):
+    name: Optional[str] = None
+    hostname: Optional[str] = None
+    ip_address: Optional[str] = None
+    device_type: Optional[str] = None
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    tags: Optional[list] = None
+    status: Optional[str] = None
+    claimed: Optional[bool] = None
+    device_group: Optional[str] = None
+    notify_state_changes: Optional[bool] = None
+    last_poll_data: Optional[dict] = None
+    last_seen: Optional[datetime] = None
+    fingerprint: Optional[dict] = None
+    snmp_community: Optional[str] = None
+    ssh_user: Optional[str] = None
+    ssh_key: Optional[str] = None
+
+
+class DeviceResponse(BaseModel):
+    id: int
+    name: str
+    hostname: Optional[str] = None
+    ip_address: str
+    device_type: str
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    mac_address: Optional[str] = None
+    status: str
+    claimed: bool = True
+    device_group: str = "default"
+    notify_state_changes: bool = False
+    tags: list
+    last_seen: Optional[datetime] = None
+    last_poll_data: Optional[dict] = None
+    fingerprint: Optional[dict] = None
+    snmp_configured: bool = False
+    ssh_configured: bool = False
+    unifi_managed: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    @field_serializer("last_seen", "created_at")
+    def serialize_dt(self, dt: datetime, _info) -> str:
+        if dt is None:
+            return None
+        return dt.isoformat()
+
+
+# ── Dashboard Schemas ──
+
+class DashboardStats(BaseModel):
+    total_devices: int
+    online_devices: int
+    offline_devices: int
+    warning_devices: int
+    total_tickets: int
+    open_tickets: int
+    in_progress_tickets: int
+    p1_tickets: int
+    p2_tickets: int
+    recent_tickets: list
+    system_health: str
+    customer_name: str = ""
+    has_logo: bool = False
+
+
+# ── Audit Schemas ──
+
+class AuditLogResponse(BaseModel):
+    event_id: str
+    timestamp: str
+    event_type: str
+    ticket_id: Optional[str] = None
+    actor: str
+    data: dict
+    sha256_hash: str
+
+    class Config:
+        from_attributes = True
+
+
+# ── Helpers ──
+
+def generate_ticket_id() -> str:
+    now = datetime.utcnow()
+    date_part = now.strftime("%Y%m%d")
+    seq = int(now.timestamp() * 1000) % 10000  # milliseconds as seq
+    return f"TKT-{date_part}-{seq:04d}"
+
+
+def generate_event_id() -> str:
+    ts = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+    return f"evt_{ts}"
+
+
+def compute_hash(data: dict, previous_hash: Optional[str] = None) -> str:
+    raw = json.dumps(data, sort_keys=True) + (previous_hash or "0")
+    return hashlib.sha256(raw.encode()).hexdigest()
