@@ -62,11 +62,16 @@ labeled; the sealed **rack card** in the lid holds the secrets you need later
 
 ### A3. Provision a fresh appliance (re-image / pre-ship)
 If you are standing up a *new* appliance from the repo (factory/pre-ship), run
-the one-shot installer **on the Proxmox host**. The installer needs the repo
-on the host (it runs `deploy.sh` from it) and your SSH keypair on the host
-(`--ssh-key` — the host's own key is used to reach the VM):
+the one-shot installer **on the Proxmox host — over SSH, in a terminal** (the
+web UI at `https://<proxmox>:8006` is only needed later for the console / VM
+view). The installer needs the repo on the host (it runs `deploy.sh` from it)
+and your SSH keypair on the host (`--ssh-key` — the host's own key is used to
+reach the VM):
 
 ```bash
+# 0. SSH into the Proxmox host from your workstation:
+ssh root@<proxmox-ip>      # e.g. ssh root@192.0.2.95
+
 # 1. one-time: let the host pull the (private, invite-only) release repo.
 #    Add the host's public key as a read-only DEPLOY KEY:
 #      GitHub → Ridge-Chapel-Tech/barenoc-appliance → Settings → Deploy keys
