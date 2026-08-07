@@ -189,7 +189,7 @@ The **installer is `deploy.sh` from the dev box** (not a git clone on the VM):
 ./deploy.sh barenoc@192.0.2.207
 ```
 
-This rsyncs `src/` + `client/`, rebuilds the 5 containers, reloads nginx, and
+This rsyncs `src/` + `client/`, rebuilds the 7 containers, reloads nginx, and
 provisions the agent service account. **Then install the host-side agent
 runner** (not in Docker):
 
@@ -202,7 +202,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now pi-agent-runner
 #   (see SESSION_LOG 2026-08-04 "Pi Coding Agent at the core")
 ```
 
-Verify: `docker compose ps` (5 containers), `systemctl status pi-agent-runner`,
+Verify: `docker compose ps` (7 containers), `systemctl status pi-agent-runner`,
 `curl -sk https://127.0.0.1/api/v1/health` → 200. First login: change the
 `admin` password, then configure Settings (UniFi, LLM provider, email,
 timezone).

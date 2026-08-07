@@ -22,6 +22,12 @@ ENV_FILE = "/opt/barenoc/.env"
 DISCOVERY_CACHE: dict = {"url": None, "data": None, "fetched": 0.0}
 DISCOVERY_TTL = 3600
 
+# The appliance's own Pocket ID serves a SELF-SIGNED cert (like every other
+# internal service) — the API must not reject it. The trust boundary is the
+# LAN + the PKCE code exchange + the client secret; TLS is transport only.
+# (Mirrors how the agent talks to the local API and unifi.py to the controller.)
+_HTTX_VERIFY = False
+
 
 def read_env() -> dict:
     env = {}
@@ -80,7 +86,7 @@ def discovery(cfg: dict) -> dict:
     if cache["url"] == url and cache["data"] and (time.time() - cache["fetched"]) < DISCOVERY_TTL:
         return cache["data"]
     try:
-        r = httpx.get(url, timeout=10)
+        r = httpx.get(url, timeout=10, verify=_HTTX_VERIFY)
         r.raise_for_status()
         data = r.json()
         cache.update(url=url, data=data, fetched=time.time())
@@ -105,7 +111,7 @@ def authorize_url(cfg: dict, verifier: str, state: str, redirect_uri: str) -> st
         "response_type": "code",
         "client_id": cfg["client_id"],
         "redirect_uri": redirect_uri,
-        "scope": "openid profile email",
+        "scope": "openid profile email groups",
         "state": state,
         "code_challenge": _code_challenge(verifier),
         "code_challenge_method": "S256",
@@ -117,13 +123,14 @@ def exchange_code(cfg: dict, code: str, verifier: str, redirect_uri: str) -> dic
     disc = discovery(cfg)
     endpoint = disc.get("token_endpoint") or f"{cfg['provider_url']}/token"
     r = httpx.post(endpoint, data={
+
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
         "client_id": cfg["client_id"],
         "client_secret": cfg["client_secret"],
         "code_verifier": verifier,
-    }, timeout=15)
+    }, timeout=15, verify=_HTTX_VERIFY)
     r.raise_for_status()
     return r.json()
 
@@ -131,7 +138,8 @@ def exchange_code(cfg: dict, code: str, verifier: str, redirect_uri: str) -> dic
 def fetch_userinfo(cfg: dict, access_token: str) -> dict:
     disc = discovery(cfg)
     endpoint = disc.get("userinfo_endpoint") or f"{cfg['provider_url']}/userinfo"
-    r = httpx.get(endpoint, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    r = httpx.get(endpoint, headers={"Authorization": f"Bearer {access_token}"}, timeout=10,
+                   verify=_HTTX_VERIFY)
     r.raise_for_status()
     return r.json()
 

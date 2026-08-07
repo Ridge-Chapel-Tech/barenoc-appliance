@@ -89,3 +89,26 @@ def init_db():
             ))
     except OperationalError:
         pass  # Columns already exist
+    # Migration: device adoption via step-ca certificates (Phase F)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN adoption_method VARCHAR(16) DEFAULT 'none'"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN cert_cn VARCHAR(128)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN cert_serial VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN cert_enrolled_at DATETIME"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN cert_last_seen DATETIME"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN adoption_status VARCHAR(16) DEFAULT 'none'"
+            ))
+    except OperationalError:
+        pass  # Columns already exist

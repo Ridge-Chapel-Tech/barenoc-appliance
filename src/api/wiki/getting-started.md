@@ -1,5 +1,15 @@
 # Getting Started
 
+## Identity & DNS (set at install)
+
+Passkey login needs a **real domain** — Chrome/Edge/Safari refuse passkeys on
+`.local`/`.lan`/raw IPs. In **Settings → Identity → Appliance identity & DNS**
+set the appliance IP, a domain you own, and the console hostname; the page
+shows the exact DNS record / hosts line to add. The appliance also runs a
+**split-horizon DNS server** (port 53) that answers for its own names and
+forwards everything else — point your router's DNS at it (as a secondary) and
+nothing else needs configuring.
+
 ## First login
 
 1. Open the portal URL (your admin gave you `https://<appliance>/`).
@@ -76,6 +86,11 @@ ssh barenoc@<vm-100.x-ip>        # BareNOC VM
   private key (plus user) in the credentials section — it becomes
   **Onboarded**, and the AI Technician can run SSH actions on it (patch
   check, collect logs, reboot).
+- **Self-service (no BareNOC login)**: point the device's user at
+  `https://<appliance>/onboard` (or the QR) — one-click script that creates
+  the dedicated `barenoc` account, installs a short-lived device certificate
+  and a heartbeat; the device self-registers as **Onboarded 🔐** within a
+  minute. No tech required per machine.
 - **Track it**: "status of TKT-…" in chat, or the Tickets page.
 
 ## Where things live

@@ -85,10 +85,11 @@ function renderNotes(notesJson) {
     var notes = JSON.parse(notesJson);
     if (!notes.length) return '';
     return notes.map(function(n) {
+      var prog = n.event === 'agent_progress' ? ' italic text-gray-400' : '';
       return '<div class="text-xs border-l-2 border-barenoc-200 pl-2 py-1">'
-        + '<span class="text-gray-400">' + esc(n.timestamp) + '</span> '
-        + '<span class="font-medium text-gray-700">[' + esc(n.event) + ']</span> '
-        + '<span class="text-gray-600">' + esc(n.detail) + '</span>'
+        + '<span class="text-gray-400">' + esc(fmtTz(n.timestamp)) + '</span> '
+        + '<span class="font-medium text-gray-700' + prog + '">[' + esc(n.event) + ']</span> '
+        + '<span class="text-gray-600' + prog + '">' + esc(n.detail) + '</span>'
         + (n.actor ? ' <span class="text-gray-400">by ' + esc(n.actor) + '</span>' : '')
         + '</div>';
     }).join('');
@@ -98,6 +99,15 @@ function renderNotes(notesJson) {
 function getToken() { return localStorage.getItem('access_token'); }
 
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Timestamps are stored as naive UTC — render them in the viewer's local time.
+function fmtTz(ts) {
+  if (!ts) return ts || '';
+  var s = String(ts).trim().replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z';
+  var d = new Date(s);
+  return isNaN(d) ? ts : d.toLocaleString();
+}
 
 var currentOffset = 0;
 var currentLimit = 10;
@@ -155,7 +165,7 @@ async function fetchTickets(offset) {
         + '<td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ' + pc + '">' + t.priority + '</span></td>'
         + '<td class="px-6 py-4 text-sm ' + sc + '">' + esc(t.status.replace(/_/g, ' ')) + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.assigned_to || '\u2014') + '</td>'
-        + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.created_at) + '</td>'
+        + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(fmtTz(t.created_at)) + '</td>'
         + '<td class="px-6 py-4 text-right"><button onclick="toggleDetail(\'' + t.ticket_id + '\')" class="text-barenoc-600 hover:text-barenoc-800 text-sm">View</button></td></tr>'
         + '<tr id="d-' + t.ticket_id + '" style="display:none"><td colspan="7" class="px-6 py-4 bg-gray-50">'
         + '<div class="text-sm text-gray-700">'

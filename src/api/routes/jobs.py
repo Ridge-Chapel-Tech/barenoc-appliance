@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 from database import get_db
 from models import Ticket, User
-from auth import require_role
+from auth import require_any_role, require_role
 from schemas import TicketResponse
 from worknotes import add_note
 
@@ -92,6 +92,25 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append("  • It appears in the UniFi controller now; adopt/assign devices to it as needed.")
         else:
             lines.append(f"Network creation did not complete: {out.get('error') or 'unknown error'}")
+    elif action == "enroll_device":
+        if out.get("enrolled"):
+            lines.append(f"✅ Adopted {out.get('device','the device')} with a certificate.")
+            lines.append("  • step-cli + a short-lived cert were installed; the device renews it and reports "
+                         "over mTLS every 10 minutes (it shows as 🔐 cert on the Devices page).")
+        else:
+            lines.append(f"Enrollment did not complete: {out.get('error') or 'unknown error'}")
+    elif action == "apply_patch":
+        pm = out.get("package_manager") or "?"
+        avail = bool(out.get("updates_available"))
+        lines.append(f"Update check on {out.get('target','?')} ({pm}): "
+                     + ("updates available" if avail else "up to date"))
+        b64 = out.get("updates_b64") or ""
+        if b64:
+            import base64 as _b
+            text = _b.b64decode(b64).decode(errors="replace")
+            for ln in text.splitlines()[:25]:
+                if ln.strip():
+                    lines.append(f"  {ln[:160]}")
     elif action == "batch":
         res = out.get("results") or []
         total = out.get("total", len(res))
@@ -153,9 +172,10 @@ class JobResult(BaseModel):
 
 @router.post("/result")
 def report_job_result(result: JobResult, db: Session = Depends(get_db),
-                      user: User = Depends(require_role("operator"))):
+                      user: User = Depends(require_any_role("operator", "admin", "agent"))):
     """Called by the Pi Agent Runner to report job execution results.
-    Requires an authenticated operator+ (the agent service account)."""
+    Requires an authenticated operator+, admin, or the agent service account
+    (the runner's identity)."""
     ticket = db.query(Ticket).filter(Ticket.ticket_id == result.ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")

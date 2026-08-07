@@ -14,7 +14,11 @@ SRC="$ROOT/src"
 echo "==> Deploying to $VM:/opt/barenoc"
 
 # Ensure runtime directories exist (docker auto-creates mounts, but own them)
-ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_status /opt/barenoc/volumes/pocket-id/data"
+ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_status /opt/barenoc/volumes/pocket-id/data /opt/barenoc/volumes/step-ca /opt/barenoc/volumes/dns"
+
+# step-ca: bootstrap the CA password file (uid 1000 = the step container user).
+# The container reads it on first boot to init the CA, then keeps its own copy.
+ssh "$VM" "chown 1000:1000 /opt/barenoc/volumes/step-ca; [ -s /opt/barenoc/volumes/step-ca/password-in ] || { umask 077; openssl rand -base64 24 | tr '+/' '_-' > /opt/barenoc/volumes/step-ca/password-in; chown 1000:1000 /opt/barenoc/volumes/step-ca/password-in; }"
 
 # Security: .env holds all API keys/secrets — never world-readable
 ssh "$VM" "chmod 600 /opt/barenoc/.env"
@@ -22,6 +26,9 @@ ssh "$VM" "chmod 600 /opt/barenoc/.env"
 # Pocket ID is served at root on 8443 (its SPA needs root-absolute paths).
 # Best-effort: needs sudo on first setup; idempotent afterwards.
 ssh "$VM" "sudo ufw allow 8443/tcp 2>/dev/null || true"
+
+# DNS service (split-horizon CoreDNS): allow the LAN to reach it
+ssh "$VM" "sudo ufw allow 53/udp 2>/dev/null; sudo ufw allow 53/tcp 2>/dev/null; true"
 
 # Backup: let the backup cron read the DB dir (root-owned; root still writes fine).
 # Run via the api container (root) since the barenoc user has no sudo.
@@ -70,6 +77,33 @@ done
 
 # nginx config is a bind-mounted file — restart nginx to pick up changes (e.g. Pocket ID route)
 ssh "$VM" "docker exec barenoc-nginx nginx -t 2>/dev/null && docker restart barenoc-nginx >/dev/null 2>&1 && echo 'nginx reloaded' || echo 'nginx config check skipped'"
+
+# DNS service: render the split-horizon Corefile from the appliance identity
+# settings (APPLIANCE_IP / APPLIANCE_HOST in the VM .env) + restart CoreDNS.
+ssh "$VM" 'bash -s' <<'RENDER'
+set -u
+ENV=/opt/barenoc/.env
+get() { grep -E "^$1=" "$ENV" | head -1 | cut -d= -f2-; }
+IP="${APPLIANCE_IP:-$(get APPLIANCE_IP)}"; IP="${IP:-192.168.4.207}"
+HOST="${APPLIANCE_HOST:-$(get APPLIANCE_HOST)}"; HOST="${HOST:-app.barenoc.com}"
+mkdir -p /opt/barenoc/volumes/dns
+cat > /opt/barenoc/volumes/dns/Corefile <<CORE
+.:53 {
+  hosts {
+    $IP $HOST bareNOC.local pocket-id.barenoc.local stepca.barenoc.local
+    fallthrough
+  }
+  forward . 1.1.1.1 8.8.8.8
+  cache 30
+  log
+}
+CORE
+echo "dns Corefile rendered (IP=$IP host=$HOST)"
+docker restart barenoc-dns >/dev/null 2>&1 && echo "dns restarted" || echo "dns container not up yet"
+RENDER
+
+# step-cli builds for self-service onboarding (Linux + macOS; fetched once)
+ssh "$VM" 'mkdir -p /opt/barenoc/volumes/static && for p in "step:step_linux_amd64" "step-cli-darwin_amd64:step_darwin_amd64" "step-cli-darwin_arm64:step_darwin_arm64"; do out="${p%%:*}"; src="${p##*:}"; [ -s "/opt/barenoc/volumes/static/$out" ] && continue; (cd /tmp && curl -sL "https://dl.smallstep.com/gh-release/cli/gh-release-header/v0.30.2/${src}.tar.gz" -o s.tgz && tar xzf s.tgz && find "${src}" -name step -type f -exec cp {} "/opt/barenoc/volumes/static/$out" \; && chmod 755 "/opt/barenoc/volumes/static/$out" && rm -rf s.tgz "${src}" && echo "fetched $out") || true; done'
 
 # Agent service credentials: create/rotate the `agent` service account + 0600
 # credential file (needs the api container up). Idempotent.

@@ -110,6 +110,8 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
         params, reason = {"ssid": "Kids", "password": "newpass1234"}, "Changing the SSID passphrase"
     elif action == "unifi_network_create":
         params, reason = {"name": "IoT", "vlan": 12}, "Creating the new VLAN network"
+    elif action == "enroll_device":
+        params, reason = {}, "Adopting the device with a certificate (step-ca)"
     elif action == "batch":
         target = ""
         params, reason = {"jobs": [

@@ -8,11 +8,12 @@
 ## What BareNOC is
 
 BareNOC is a **single-node network operations appliance**: one Linux machine
-running a **5-container Docker stack** (API + web UI, poll worker, scheduler,
-nginx, Pocket ID) plus **one host-side service** (`pi-agent-runner`) that
-executes the action scripts (ping, SNMP, reboot, UniFi control, the Pi Coding
-Agent). All state lives in SQLite + encrypted credential files under
-`/opt/barenoc/` — no external services are required.
+running a **7-container Docker stack** (api + web UI, poll worker, scheduler,
+nginx, Pocket ID, the step-ca device CA, and CoreDNS split-horizon DNS) plus
+one **host-side service** (`pi-agent-runner`) that executes the action scripts
+(ping, SNMP, reboot, UniFi control, the Pi Coding Agent). All state lives in
+SQLite + encrypted credential files under `/opt/barenoc/` — no external
+services are required.
 
 Everything below deploys **the same application**. The three tracks differ
 only in *how you provision the machine* and *which backup layers apply*:
@@ -61,32 +62,45 @@ labeled; the sealed **rack card** in the lid holds the secrets you need later
 
 ### A3. Provision a fresh appliance (re-image / pre-ship)
 If you are standing up a *new* appliance from the repo (factory/pre-ship), run
-the one-shot installer **on the Proxmox host**:
+the one-shot installer **on the Proxmox host**. The installer needs the repo
+on the host (it runs `deploy.sh` from it) and your SSH keypair on the host
+(`--ssh-key` — the host's own key is used to reach the VM):
 
 ```bash
-# from a checkout of the repo on the Proxmox host (or via ssh 'bash -s' < script)
-bash proxmox/barenoc-appliance.sh \
+# 1. copy this repo to the Proxmox host (git clone / rsync — the full tree;
+#    deploy.sh syncs src/ + client/ from it)
+rsync -a --exclude=.git /path/to/BareNOC/ root@<proxmox>:/root/barenoc/
+
+# 2. on the host, from that checkout:
+bash /root/barenoc/proxmox/barenoc-appliance.sh \
   --ip 192.0.2.210 \          # required: static IP for the VM
   --ssh-key ~/.ssh/id_ed25519.pub \
-  --profile m \                 # s | m | l | xl (default m)
+  --profile m \                # s | m | l | xl (default m)
   --admin-password 'Change-Me-Now'   # optional; auto-generated otherwise
 ```
 
 What it does: downloads/caches the Ubuntu 24.04 cloud image → creates a VM
 sized by `--profile` with cloud-init (static IP, `barenoc` user + your SSH
 key, qemu-guest-agent) → provisions Docker, the pi-agent user + Pi Coding
-Agent runtime, the agent runner service, UFW, and the `/opt/barenoc` skeleton
-→ waits for the provisioning marker → runs `./deploy.sh barenoc@<ip>` to
-install the application. **Result: a ready appliance at https://<ip>**, no
-manual steps. (`--skip-app` provisions the OS only; run `./deploy.sh`
-yourself later. A fully manual VM path — for hosts without the script — is in
+Agent runtime, the agent runner service (enabled at boot), UFW, and the
+`/opt/barenoc` skeleton → waits for the provisioning marker → bootstraps
+`/opt/barenoc/.env` from `src/.env.example` (your `--admin-password` is the
+seeded admin login; `JWT_SECRET`, `APPLIANCE_IP`, `APPLIANCE_HOST` are
+injected) → runs `./deploy.sh barenoc@<ip>` to install the application.
+**Result: a ready appliance at https://<ip>** — log in as `admin` with the
+seeded password (the UI forces a change). (`--skip-app` provisions the OS
+only; bootstrap `.env` and run `./deploy.sh` yourself later. A fully manual
+VM path — for hosts without the script — is in
 `docs/appliance/barenoc_vm_create.md`.)
 
 ### A4. First login & configure
 1. Log in with `admin` + the seeded password (the UI forces a change).
-2. Configure in **Settings** (all audit-logged):
+2. **Before enrolling passkeys:** set **Settings → Identity** — your real
+   domain for `APP_URL`/`APPLIANCE_HOST` (passkeys require a registrable
+domain + a trusted cert; `.local`/raw IPs fail).
+3. Configure in **Settings** (all audit-logged):
    - **UniFi** — controller URL/credentials, auto-sync interval, auto-adopt.
-   - **API Keys** — the active LLM provider(s) (DeepSeek/Gemini/Anthropic/Ollama).
+   - **LLM Providers** — the active provider(s) (DeepSeek/Gemini/Anthropic/Ollama).
    - **Email** — Gmail OAuth2 (client id/secret/refresh token) + recipients/schedule.
    - **General** — site ID, customer name, timezone, bot names.
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
@@ -118,7 +132,7 @@ Trial provisioning, conversion to paid, and wiping for the next customer:
 (host-side `factory-reset.sh` restores from the pre-ship snapshot).
 
 ### A — Verification checklist
-- [ ] `https://<vm-ip>/api/v1/health` → `200` (all 5 containers up)
+- [ ] `https://<vm-ip>/api/v1/health` → `200` (all 7 containers up)
 - [ ] First login forces a password change
 - [ ] UniFi sync discovers gear (`Settings → UniFi → Test connection`)
 - [ ] A test ticket completes (P4 "what time is it?" → Lily/worker answers)
@@ -310,7 +324,32 @@ Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client
 - **Backups:** managed in Settings → Backups (the Proxmox host reconciles its
   cron from the VM every 10 min — appliance only).
 
-### Updating
+### Identity & DNS (all tracks)
+
+**Passkeys need a real domain.** The console works by IP, but passkey login
+(Pocket ID) requires a registrable hostname — Chrome/Edge/Safari refuse
+passkeys on `.local`/`.lan`/raw IPs. At install (Settings → Identity →
+Appliance identity & DNS) set:
+
+- **Appliance IP** — the machine's LAN address.
+- **Domain** — a real domain you own (e.g. `bareNOC.com`); it only needs to
+  resolve inside your network.
+- **Console hostname** — e.g. `app.bareNOC.com`.
+
+The page shows the exact **DNS record** or **hosts line** with copy buttons,
+and warns when the domain can't carry passkeys.
+
+**The appliance serves DNS (split-horizon).** A CoreDNS service (port 53)
+answers authoritatively for the appliance's own names and forwards everything
+else upstream. Point your router's DNS (or a machine's resolver) at the
+appliance IP as a **secondary** DNS — every machine and device then resolves
+`app.<domain>` / `stepca.<domain>` automatically, no hosts files. The
+appliance is never the sole resolver, so a reboot can't break the LAN.
+
+Changing the domain later requires a redeploy + re-enrolling passkeys
+(WebAuthn origin) — set it right at first run.
+
+## Updating
 - **Application code:** `./deploy.sh <user>@<ip>` (rsync → rebuild → health
   check → agent credentials → runner sync). Always snapshot the VM (or take
   your hypervisor's snapshot) before an update.

@@ -148,5 +148,121 @@ class CredentialsAccessTest(unittest.TestCase):
             self._creds("readonly")
 
 
+class DeviceAdoptionTest(unittest.TestCase):
+    """Phase F — adopt with a certificate (step-ca): mint token, link via mTLS
+    report, revoke. The report endpoint authenticates by CERT (no user token)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Device).delete()
+        d = Device(name="Cam01", ip_address="192.0.2.55", device_type="camera",
+                   claimed=False, status="unclaimed")
+        db.add(d)
+        db.commit()
+        self.device_id = d.id
+        db.close()
+
+    def _ctx(self, role):
+        return {"user": SimpleNamespace(role=role, username="tester"), "groups": []}
+
+    def _adopt(self, role, **kw):
+        from routes.devices import adopt_with_cert
+        db = SessionLocal()
+        try:
+            return adopt_with_cert(self.device_id, body=kw.get("body"), db=db,
+                                   ctx=self._ctx(role))
+        finally:
+            db.close()
+
+    def test_readonly_cannot_adopt(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._adopt("readonly")
+
+    def test_operator_mints_token_and_sets_enrolling(self):
+        from unittest.mock import patch
+        with patch("step_ca.mint_token", return_value="JWT-TOKEN"), \
+             patch("step_ca.root_fingerprint", return_value="FP"):
+            r = self._adopt("operator")
+        self.assertEqual(r["status"], "enrolling")
+        self.assertEqual(r["cn"], "device-Cam01")
+        self.assertEqual(r["token"], "JWT-TOKEN")
+        self.assertIn("step ca certificate", r["note"])
+        db = SessionLocal()
+        d = db.query(Device).get(self.device_id)
+        self.assertEqual(d.adoption_status, "enrolling")
+        self.assertEqual(d.adoption_method, "cert")
+        db.close()
+
+    def test_revoke(self):
+        from routes.devices import revoke_adoption
+        db = SessionLocal()
+        d = db.query(Device).get(self.device_id)
+        d.adoption_status = "linked"
+        d.adoption_method = "cert"
+        d.cert_cn = "device-Cam01"
+        db.commit()
+        r = revoke_adoption(self.device_id, db=db, ctx=self._ctx("admin"))
+        db.close()
+        self.assertEqual(r["status"], "revoked")
+
+    def test_report_links_device(self):
+        from routes.device_certs import device_report
+        from types import SimpleNamespace as NS
+        req = NS(headers={"x-ssl-client-dn": "CN=device-Cam01,OU=bareNOC"})
+        db = SessionLocal()
+        r = device_report(request=req, db=db)
+        d = db.query(Device).get(self.device_id)
+        self.assertEqual(r["adopted"], "linked")
+        self.assertEqual(r["method"], "cert")
+        self.assertEqual(d.adoption_status, "linked")
+        self.assertTrue(d.claimed)
+        db.close()
+
+    def test_report_revoked_denied(self):
+        from routes.device_certs import device_report
+        from types import SimpleNamespace as NS
+        from fastapi import HTTPException
+        db = SessionLocal()
+        d = db.query(Device).get(self.device_id)
+        d.adoption_status = "revoked"
+        db.commit()
+        req = NS(headers={"x-ssl-client-dn": "CN=device-Cam01"})
+        with self.assertRaises(HTTPException):
+            device_report(request=req, db=db)
+        db.close()
+
+    def test_report_unknown_cn_404(self):
+        from routes.device_certs import device_report
+        from types import SimpleNamespace as NS
+        from fastapi import HTTPException
+        req = NS(headers={"x-ssl-client-dn": "CN=device-Nope"})
+        with self.assertRaises(HTTPException):
+            device_report(request=req, db=SessionLocal())
+
+    def test_snmp_sweep_results_create_and_update(self):
+        from routes.devices import snmp_sweep_results
+        from types import SimpleNamespace as NS
+        db = SessionLocal()
+        r = snmp_sweep_results({"found": [
+            {"ip": "192.168.4.200", "sysname": "core-switch", "vendor": "Cisco",
+             "sysdescr": "Cisco IOS switch"},
+            {"ip": "192.168.4.201", "sysname": "printer1", "sysdescr": "HP LaserJet"},
+        ]}, db=db, user=NS(role="agent"))
+        self.assertEqual(r["added"], 2)
+        db = SessionLocal()
+        sw = db.query(Device).filter(Device.ip_address == "192.168.4.200").first()
+        self.assertEqual(sw.name, "core-switch")
+        self.assertEqual(sw.device_type, "switch")
+        self.assertFalse(sw.claimed)
+        # update path: re-sweep with a type refinement
+        r2 = snmp_sweep_results({"found": [{"ip": "192.168.4.200", "sysname": "core-switch",
+                                            "sysdescr": "Cisco IOS switch", "vendor": "Cisco"}]},
+                                db=db, user=NS(role="agent"))
+        self.assertEqual(r2["updated"], 1)
+        db.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

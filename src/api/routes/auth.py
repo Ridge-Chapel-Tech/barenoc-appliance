@@ -1,4 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi.responses import RedirectResponse
+import logging
+
+logger = logging.getLogger("auth")
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import get_db
@@ -212,7 +216,7 @@ def _redirect_uri(request: Request) -> str:
 
 
 @router.get("/oidc/login")
-def oidc_login(request: Request, response: Response, db: Session = Depends(get_db)):
+def oidc_login(request: Request, db: Session = Depends(get_db)):
     """Start the Pocket ID passkey login (PKCE authorization-code flow)."""
     cfg = oidc_config()
     if not cfg["enabled"] or not cfg["client_id"]:
@@ -225,7 +229,11 @@ def oidc_login(request: Request, response: Response, db: Session = Depends(get_d
     redirect_uri = _redirect_uri(request)
     url = authorize_url(cfg, verifier, state, redirect_uri)
 
-    response.set_cookie(
+    # NOTE: the state/verifier cookie must be set on the response we actually
+    # RETURN (FastAPI's injected `response` is discarded when a redirect is
+    # returned) — otherwise the callback can never validate the state.
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie(
         key=FLOW_COOKIE,
         value=_flow_token({"state": state, "verifier": verifier}),
         max_age=300,
@@ -233,7 +241,7 @@ def oidc_login(request: Request, response: Response, db: Session = Depends(get_d
         samesite="lax",
         path="/",
     )
-    return Response(status_code=302, headers={"Location": url})
+    return resp
 
 
 @router.get("/oidc/callback")
@@ -273,10 +281,14 @@ def oidc_callback(
     oidc_groups = claims.get("groups") or claims.get("group") or []
     if not isinstance(oidc_groups, list):
         oidc_groups = [oidc_groups]
+    logger.debug("OIDC callback: role=%s groups=%r", role_from_groups(cfg, claims), oidc_groups)
     access_token = create_access_token({"sub": user.username, "role": user.role,
                                         "groups": oidc_groups, "auth_method": "oidc"})
-    response.delete_cookie(FLOW_COOKIE, path="/")
-    response.set_cookie(
+    # Set the session cookie on the response we actually RETURN (the injected
+    # `response` is discarded) — /dashboard's server-side session check needs it.
+    page = _oidc_page(token=access_token)
+    page.delete_cookie(FLOW_COOKIE, path="/")
+    page.set_cookie(
         key="access_token",
         value=access_token,
         max_age=3600,
@@ -285,7 +297,7 @@ def oidc_callback(
         samesite="lax",
         path="/",
     )
-    return _oidc_page(token=access_token)
+    return page
 
 
 # ── GitHub / Google OAuth login (future work) ──

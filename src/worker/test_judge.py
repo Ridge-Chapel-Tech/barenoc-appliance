@@ -316,6 +316,17 @@ class UnifiNetworkCreateTest(unittest.TestCase):
                                 {"name": "IoT", "vlan": 12, "subnet": "192.168.12.1/24"})
         self.assertTrue(ok)
 
+    def test_enroll_device_params(self):
+        from action_validator import validate_params, validate_action
+        ok, _ = validate_action("enroll_device")
+        self.assertTrue(ok)
+        ok, _ = validate_params("enroll_device", {})
+        self.assertTrue(ok)
+        ok, _ = validate_params("enroll_device", {"ttl": 300})
+        self.assertTrue(ok)
+        ok, msg = validate_params("enroll_device", {"ttl": 99999})
+        self.assertFalse(ok)
+
     def test_catalog_includes(self):
         self.assertIn("unifi_port_config", judge.ACTION_CATALOG)
 

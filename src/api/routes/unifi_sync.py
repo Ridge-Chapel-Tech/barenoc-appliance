@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from urllib.parse import quote
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import get_db
 from models import Device, User
 from schemas import DeviceResponse
@@ -649,8 +649,37 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
 
     # ── endpoints (clients) ──────────────────────────────────────
     # Full client DB merged with active sessions (see get_clients).
+    # Retention: the controller keeps full client history; the appliance only
+    # cares about the CURRENT picture — unclaimed clients not seen within
+    # UNIFI_CLIENT_RETENTION_DAYS (default 30) are not imported, and existing
+    # stale unclaimed client records are pruned (claimed/adopted/fingerprinted
+    # records are never pruned; the controller re-adds a returning device).
+    retention_days = 30
+    try:
+        retention_days = max(1, int(os.getenv("UNIFI_CLIENT_RETENTION_DAYS", _read_unifi_env().get("UNIFI_CLIENT_RETENTION_DAYS") or "30")))
+    except (TypeError, ValueError):
+        retention_days = 30
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=retention_days)
+
+    def _seen(uc) -> "datetime | None":
+        """Client's real last-seen (UniFi epoch s or ms) as naive UTC."""
+        ts = uc.get("last_seen")
+        if not ts:
+            return None
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            return None
+        if ts > 10 ** 12:   # milliseconds
+            ts = ts // 1000
+        try:
+            return datetime.utcfromtimestamp(ts)
+        except (ValueError, OverflowError, OSError):
+            return None
+
     clients = client.get_clients()
-    c_added = c_updated = c_skipped = 0
+    c_added = c_updated = c_skipped = c_pruned = 0
 
     for uc in clients:
         # Only invent devices for clients we can actually reach/monitor
@@ -662,6 +691,13 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
         if not uc["hostname"] and (not uc["vendor"] or uc["vendor"] == "?") and not uc["online"]:
             c_skipped += 1
             continue
+        # Historical client outside the retention window → not part of the
+        # current picture (the controller keeps it; it re-imports on return)
+        seen = _seen(uc)
+        if not uc["online"] and seen is not None and seen < cutoff:
+            c_skipped += 1
+            continue
+        real_last_seen = now if uc["online"] else (seen or now)
 
         existing = None
         if uc["mac"]:
@@ -686,7 +722,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             existing.status = "online" if uc["online"] else "offline"
             existing.hostname = existing.hostname or (uc["hostname"] or None)
             existing.vendor = existing.vendor or (uc["vendor"] or None)
-            existing.last_seen = datetime.utcnow()
+            existing.last_seen = real_last_seen
             # Ensure scan-found records merged earlier are visible as clients
             if "unifi-client" not in (existing.tags or []):
                 existing.tags = list(existing.tags or []) + [
@@ -706,10 +742,25 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             claimed=False,
             unifi_managed=False,
             tags=["unifi-client", "wired" if uc["wired"] else "wireless"],
-            last_seen=datetime.utcnow(),
+            last_seen=real_last_seen,
         )
         db.add(device)
         c_added += 1
+
+    # Prune unclaimed UniFi-client transients not seen within the window.
+    # Never pruned: claimed/adopted devices, records with a fingerprint
+    # (operator invested an action), cert-adopted, or anything else tagged.
+    stale = db.query(Device).filter(
+        Device.claimed.is_(False),
+        Device.adoption_status.in_((None, "", "none")),
+        Device.fingerprint.is_(None),
+        Device.last_seen.isnot(None),
+        Device.last_seen < cutoff,
+    ).all()
+    for d in stale:
+        if "unifi-client" in (d.tags or []):
+            db.delete(d)
+            c_pruned += 1
 
     db.commit()
     return {
@@ -718,11 +769,13 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
         "added": added,
         "updated": updated,
         "adopted": adopted,
-        "skipped": skipped,
-        "unifi_clients": len(clients),
         "clients_added": c_added,
         "clients_updated": c_updated,
         "clients_skipped": c_skipped,
+        "clients_pruned": c_pruned,
+        "retention_days": retention_days,
+        "skipped": skipped,
+        "unifi_clients": len(clients),
     }
 
 

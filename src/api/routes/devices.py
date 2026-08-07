@@ -9,7 +9,7 @@ from datetime import datetime
 from database import get_db
 from models import Device, User
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
-from auth import get_current_user, get_access_context
+from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
@@ -48,6 +48,69 @@ def _validate_group(group: Optional[str]) -> str:
     return g
 
 
+@router.get("/control-key")
+def device_control_key(ctx: dict = Depends(get_access_context)):
+    """The appliance's device-control SSH keypair (operator+).
+
+    The public half goes on the device's authorized_keys; the private half is
+    what the Credentials modal stores so the runner can SSH in.
+    """
+    from auth import require_any_role
+    require_any_role("operator", "admin")(ctx["user"])
+    from control_key import ensure_control_key
+    return ensure_control_key()
+
+
+@router.post("/snmp-sweep-results")
+def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
+                       user: User = Depends(require_role("agent"))):
+    """Ingest the SNMP discovery sweep (agent callback). Creates/updates
+    unclaimed device records with the identity SNMP gear announces."""
+    found = (body or {}).get("found") or []
+    added = updated = 0
+    for hit in found:
+        ip = (hit or {}).get("ip") or ""
+        if not ip:
+            continue
+        name = (hit.get("sysname") or "").strip() or None
+        vendor = (hit.get("vendor") or "").strip() or None
+        desc = (hit.get("sysdescr") or "").strip()
+        d = db.query(Device).filter(Device.ip_address == ip).first()
+        if d:
+            d.vendor = d.vendor or vendor
+            if name and (not d.name or d.name.startswith("discovered-") or d.name == "unknown"):
+                d.name = name
+            if d.device_type == "unknown" and desc:
+                d.device_type = _guess_snmp_type(desc)
+            updated += 1
+        else:
+            d = Device(name=name or f"discovered-{ip.replace('.', '-')}",
+                       ip_address=ip, device_type=_guess_snmp_type(desc),
+                       vendor=vendor, status="unknown", claimed=False,
+                       tags=["snmp-discovered"])
+            db.add(d)
+            added += 1
+    db.commit()
+    return {"status": "ok", "added": added, "updated": updated, "count": len(found)}
+
+
+def _guess_snmp_type(desc: str) -> str:
+    d = desc.lower()
+    if any(k in d for k in ("router", "gateway", "udm", "ucg")):
+        return "gateway"
+    if any(k in d for k in ("switch", "ubiquiti networks")):
+        return "switch"
+    if any(k in d for k in ("access point", "ubiquiti", "unifi")):
+        return "ap"
+    if any(k in d for k in ("printer", "laserjet", "deskjet")):
+        return "printer"
+    if any(k in d for k in ("nas", "synology", "qnap")):
+        return "nas"
+    if "linux" in d or "ubuntu" in d or "debian" in d:
+        return "server"
+    return "unknown"
+
+
 @router.get("/groups")
 def list_groups(ctx: dict = Depends(get_access_context)):
     """Valid device groups (mirrors Pocket ID groups)."""
@@ -62,6 +125,7 @@ def list_devices(
     claimed: Optional[bool] = None,
     controlled: Optional[bool] = None,
     group: Optional[str] = None,
+    seen_within: Optional[int] = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -76,13 +140,22 @@ def list_devices(
         q = q.filter(Device.claimed == claimed)
     # 'controlled' = BareNOC has admin control and can run actions on the
     # device: via SSH credentials, OR via the UniFi controller for adopted
-    # UniFi-managed gear (unifi_managed + claimed).
+    # UniFi-managed gear (unifi_managed + claimed), OR via certificate
+    # adoption (adoption_status == 'linked' — the device holds a valid
+    # short-lived cert from the internal CA and reports over mTLS).
+    _controlled_cond = or_(
+        Device.ssh_key_fingerprint.isnot(None),
+        and_(Device.unifi_managed.is_(True), Device.claimed.is_(True)),
+        and_(Device.adoption_status == "linked", Device.claimed.is_(True)),
+    )
     if controlled is True:
-        q = q.filter(or_(Device.ssh_key_fingerprint.isnot(None),
-                         and_(Device.unifi_managed.is_(True), Device.claimed.is_(True))))
+        q = q.filter(_controlled_cond)
     elif controlled is False:
-        q = q.filter(and_(Device.ssh_key_fingerprint.is_(None),
-                          or_(Device.unifi_managed.isnot(True), Device.claimed.isnot(True))))
+        q = q.filter(and_(
+            Device.ssh_key_fingerprint.is_(None),
+            or_(Device.unifi_managed.isnot(True), Device.claimed.isnot(True)),
+            or_(Device.adoption_status != "linked", Device.claimed.isnot(True)),
+        ))
     if group:
         q = q.filter(Device.device_group == group)
     # Group-based access: non-admins only see devices in groups they hold
@@ -91,6 +164,9 @@ def list_devices(
         held = ctx.get("groups") or []
         q = q.filter(or_(Device.device_group.in_([DEFAULT_GROUP, ""]),
                          Device.device_group.in_(held)))
+    if seen_within:
+        from datetime import datetime, timedelta
+        q = q.filter(Device.last_seen >= datetime.utcnow() - timedelta(days=seen_within))
     if search:
         like = f"%{search}%"
         q = q.filter(
@@ -278,41 +354,80 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
 
     def _run_discovery():
         """Run discovery in background thread."""
-        import os
+        import os, ipaddress
         from database import SessionLocal
+        from llm_providers import read_env_file
+        env = read_env_file()
         s = SessionLocal()
         try:
             existing_ips = set(row[0] for row in s.query(Device.ip_address).all())
         finally:
             s.close()
-        # Scan the appliance's own subnet (DISCOVERY_SUBNET env, default
-        # 192.168.4 — the deployment's management LAN). UniFi sites rely on
-        # the controller instead; this is the non-UniFi fallback.
-        subnet = os.getenv("DISCOVERY_SUBNET", "192.168.0")
+        # Multi-VLAN discovery: DISCOVERY_SUBNETS is a comma list of CIDRs
+        # (e.g. 192.168.4.0/24,192.168.8.0/24). Legacy DISCOVERY_SUBNET
+        # (a bare 3-octet prefix) still works. Defaults to the management LAN.
+        raw = env.get("DISCOVERY_SUBNETS") or env.get("DISCOVERY_SUBNET") or "192.168.0.0/24"
+        subnets = [s.strip() for s in raw.split(",") if s.strip()]
+        max_per_subnet = 50
+        try:
+            max_per_subnet = max(10, min(int(env.get("DISCOVERY_MAX_HOSTS_PER_SUBNET") or "50"), 254))
+        except (TypeError, ValueError):
+            max_per_subnet = 50
         discovered = 0
-        for octet in range(1, 50):
-            ip = f"{subnet}.{octet}"
-            if ip in existing_ips:
-                continue
-            job = {
-                "ticket_id": f"disc-{ip.replace('.', '-')}-{datetime.utcnow().strftime('%M%S')}",
-                "action": "ping_test",
-                "target": ip,
-                "params": {},
-                "reason": "Discovery scan",
-                "confidence": 1.0,
-                "created_at": datetime.utcnow().isoformat(),
-                "source": "discovery",
-                "_callback": {"type": "discover_add", "ip": ip},
-            }
-            jpath = f"/opt/barenoc/jobs/incoming/discover-{ip.replace('.', '-')}.json"
+        for subnet in subnets:
+            if "/" not in subnet and subnet.count(".") == 3:
+                subnet = subnet + "/24"
             try:
-                with open(jpath, "w") as f:
-                    json.dump(job, f, indent=2)
-                discovered += 1
-            except Exception:
-                pass
-        logger.info(f"Discovery queued {discovered} ping jobs")
+                net = ipaddress.ip_network(subnet, strict=False)
+            except ValueError:
+                logger.warning(f"Discovery: skipping bad subnet {subnet}")
+                continue
+            if net.prefixlen < 24:
+                logger.warning(f"Discovery: {subnet} is wider than /24 — skipping (safety)")
+                continue
+            count = 0
+            for ip in net.hosts():
+                ip = str(ip)
+                if ip in existing_ips or count >= max_per_subnet:
+                    continue
+                job = {
+                    "ticket_id": f"disc-{ip.replace('.', '-')}-{datetime.utcnow().strftime('%M%S')}",
+                    "action": "ping_test",
+                    "target": ip,
+                    "params": {},
+                    "reason": "Discovery scan",
+                    "confidence": 1.0,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "source": "discovery",
+                    "_callback": {"type": "discover_add", "ip": ip},
+                }
+                jpath = f"/opt/barenoc/jobs/incoming/discover-{ip.replace('.', '-')}.json"
+                try:
+                    with open(jpath, "w") as f:
+                        json.dump(job, f, indent=2)
+                    discovered += 1
+                    count += 1
+                except Exception:
+                    pass
+        # SNMP sweep pass: probe the scanned subnets for SNMP gear (routers,
+        # switches, APs, printers identify themselves). Runs as an agent job.
+        sweep = {
+            "ticket_id": f"snmp-sweep-{datetime.utcnow().strftime('%M%S')}",
+            "action": "snmp_sweep",
+            "target": ",".join(str(n) for n in subnets),
+            "params": {"community": env.get("DISCOVERY_SNMP_COMMUNITY", "public")},
+            "reason": "SNMP discovery sweep",
+            "confidence": 1.0,
+            "created_at": datetime.utcnow().isoformat(),
+            "source": "discovery",
+            "_callback": {"type": "snmp_store"},
+        }
+        try:
+            with open("/opt/barenoc/jobs/incoming/snmp-sweep.json", "w") as f:
+                json.dump(sweep, f, indent=2)
+        except Exception:
+            pass
+        logger.info(f"Discovery queued {discovered} ping jobs + 1 SNMP sweep")
 
     threading.Thread(target=_run_discovery, daemon=True).start()
     return {"status": "discovery_started", "message": "Scanning network in background. Refresh devices in a minute."}
@@ -329,6 +444,10 @@ def _store_ssh_key(name: str, key_content: str) -> str:
     No-op when the key is empty."""
     key_path = _ssh_key_path(name)
     os.makedirs(os.path.dirname(key_path), exist_ok=True)
+    # ssh-keygen rejects keys without the trailing newline (OpenSSL 3.0) —
+    # normalize here so stored keys are always loadable.
+    if not key_content.endswith("\n"):
+        key_content += "\n"
     with open(key_path, "w") as f:
         f.write(encrypt(key_content))
     return f"encrypted:{name}"
@@ -440,6 +559,80 @@ def delete_device(device_id: int, db: Session = Depends(get_db), ctx: dict = Dep
     db.delete(device)
     db.commit()
     return None
+
+
+def _adoption_brief(device: Device) -> dict:
+    return {
+        "status": device.adoption_status or "none",
+        "method": device.adoption_method or "none",
+        "cert_cn": device.cert_cn,
+        "cert_serial": device.cert_serial,
+        "cert_enrolled_at": device.cert_enrolled_at.isoformat() if device.cert_enrolled_at else None,
+        "cert_last_seen": device.cert_last_seen.isoformat() if device.cert_last_seen else None,
+    }
+
+
+@router.get("/{device_id}/adoption")
+def device_adoption_status(device_id: int, db: Session = Depends(get_db),
+                           ctx: dict = Depends(get_access_context)):
+    """Adoption status for a device (none/enrolling/linked/revoked + method)."""
+    from auth import require_any_role
+    require_any_role("operator", "admin", "agent")(ctx["user"])
+    device = _get_checked(db, device_id, ctx)
+    return _adoption_brief(device)
+
+
+@router.post("/{device_id}/adopt/cert")
+def adopt_with_cert(device_id: int, body: dict = None, db: Session = Depends(get_db),
+                    ctx: dict = Depends(get_access_context)):
+    """Adopt a device with a certificate (step-ca).
+
+    Mints a one-time enrollment token; the device uses it with step-cli to get
+    its short-lived cert, then its first /api/v1/device/report call links it
+    (adoption completes). Body: {"ttl": 600 (seconds, optional)}.
+    """
+    from auth import require_any_role
+    require_any_role("operator", "admin", "agent")(ctx["user"])
+    from audit import log_event
+    device = _get_checked(db, device_id, ctx)
+    if device.adoption_status == "revoked":
+        raise HTTPException(status_code=400, detail="device adoption is revoked")
+    from step_ca import device_cn, mint_token, root_fingerprint
+    cn = device_cn(device.name)
+    ttl = int((body or {}).get("ttl") or 600)
+    ttl = max(60, min(ttl, 3600))
+    token = mint_token(cn, ttl=ttl)
+    device.adoption_status = "enrolling"
+    device.adoption_method = "cert"
+    device.cert_cn = cn
+    db.commit()
+    log_event(db, "device_adopt_start", ctx["user"].username, {
+        "device_id": device.id, "device": device.name, "cn": cn, "ttl": ttl})
+    return {
+        "status": "enrolling",
+        "cn": cn,
+        "token": token,
+        "ttl": ttl,
+        "ca_url": "https://stepca.barenoc.local:8443",
+        "ca_fingerprint": root_fingerprint(),
+        "note": "On the device: step ca bootstrap --ca-url <ca_url> --fingerprint <fp>; step ca certificate <cn> cert.crt cert.key --token <token>; then POST https://<appliance>/api/v1/device/report with the client cert.",
+    }
+
+
+@router.post("/{device_id}/adopt/revoke")
+def revoke_adoption(device_id: int, db: Session = Depends(get_db),
+                    ctx: dict = Depends(get_access_context)):
+    """Revoke adoption: the device is de-trusted immediately at the API layer
+    (its report calls 403) and its short-TTL cert expires shortly after."""
+    from auth import require_any_role
+    require_any_role("operator", "admin", "agent")(ctx["user"])
+    from audit import log_event
+    device = _get_checked(db, device_id, ctx)
+    device.adoption_status = "revoked"
+    db.commit()
+    log_event(db, "device_adopt_revoke", ctx["user"].username, {
+        "device_id": device.id, "device": device.name, "cn": device.cert_cn})
+    return _adoption_brief(device)
 
 
 @router.get("/{device_id}/credentials")

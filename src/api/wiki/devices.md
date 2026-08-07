@@ -50,6 +50,27 @@ flowchart LR
 
 ## Claiming a device
 
+## Adopting a device with a certificate (step-ca)
+
+The strongest adoption method: the device gets a **short-lived certificate**
+from the appliance's internal CA (step-ca) and proves its identity over **mTLS**
+— no shared passwords, no long-lived keys.
+
+1. On the Devices page, hit **🔐 Adopt** on a device → BareNOC mints a
+   one-time enrollment token (10 minutes).
+2. On the device (with step-cli installed), run the three commands shown in
+   the modal: bootstrap the CA by fingerprint, enroll the cert with the token,
+   and start posting to `/api/v1/device/report` with the client cert.
+3. The first successful report **links** the device (badge 🔐 cert,
+   adoption = linked). The cert auto-renews on its short TTL.
+4. **Revoke** (same modal) de-trusts the device **instantly** — its report
+   calls 403 even while the cert is still within its TTL.
+
+Certificates are issued by the internal CA (`stepca.barenoc.local:8443`); the
+API's device endpoints require a client cert signed by that CA root. Devices
+without step-cli can still be claimed with SSH (fallback) or adopted via the
+UniFi controller — cert adoption is the preferred, revocable path.
+
 Click **Claim** — give it a name, type (gateway/switch/ap/server/workstation/
 printer), vendor/model, and optionally SNMP/SSH credentials. Claimed devices
 become managed: they're monitored (ping/SNMP), appear in dashboards, and are

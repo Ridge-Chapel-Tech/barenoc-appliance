@@ -30,7 +30,7 @@
 ## 1. Install Path
 
 BareNOC is a **single-node appliance**: a Proxmox VM (or bare Ubuntu server)
-running a 5-container Docker stack plus one host-side systemd service.
+running a 7-container Docker stack plus one host-side systemd service.
 
 ### 1.1 VM provisioning (manual, one-time)
 
@@ -251,7 +251,7 @@ judge's `ACTION_CATALOG`, the worker's `SYSTEM_PROMPT`, the runner's
 `ACTION_SCRIPTS`, and `src/scripts/ticket_context_dump.py` mirror it). See
 `docs/security/guardrails.md` for the full list; every action maps to a
 host-side script under `/opt/barenoc/scripts/` (ping_check, snmp_poll,
-reboot_device, patch_debian, collect_logs, discover, fingerprint, network_info,
+apply_patch, reboot_device, collect_logs, discover, fingerprint, network_info,
 unifi_*, install_chat_client).
 
 ---
@@ -263,7 +263,7 @@ unifi_*, install_chat_client).
 - [ ] `src/.env.example` copied to `/opt/barenoc/.env` and filled (or restored
       from backup); `chmod 600`
 - [ ] TLS certs in `volumes/nginx/certs/`
-- [ ] `./deploy.sh` completes: 5 containers up, health 200, agent runner active
+- [ ] `./deploy.sh` completes: 7 containers up, health 200, agent runner active
 - [ ] First login → change the `admin` password (Settings → Users)
 - [ ] Settings: UniFi creds + auto-sync + auto-adopt, LLM provider + key, email
       Gmail OAuth2, timezone, autonomy profile, device groups

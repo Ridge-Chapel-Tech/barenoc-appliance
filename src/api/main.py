@@ -13,8 +13,8 @@ from datetime import datetime
 from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
-from auth import hash_password, decode_token, require_page_session
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client
+from auth import hash_password, decode_token, require_page_session, require_role
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 
@@ -248,6 +248,8 @@ app.include_router(users.router)
 app.include_router(branding.router)
 app.include_router(chat.router)
 app.include_router(client.router)
+app.include_router(device_certs.router)
+app.include_router(onboard.router)
 
 
 # ── Health Check ──
@@ -328,7 +330,7 @@ def system_page(request: Request, _: User = Depends(require_page_session)):
 
 
 @app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, _: User = Depends(require_page_session)):
+def settings_page(request: Request, _: User = Depends(require_role("admin"))):
     return templates.TemplateResponse("settings.html", {"request": request})
 
 

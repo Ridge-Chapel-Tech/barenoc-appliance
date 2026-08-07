@@ -69,6 +69,7 @@ flowchart LR
     SCAN["Ping scan"] -->|"unclaimed"| INV
     INV -->|"fingerprint (nmap)"| ID["Identified<br/>vendor · OS · open ports"]
     ID -->|"claim + configure"| M[Managed device]
+    SELF["User visits /onboard<br/>one-click script"] -->|"barenoc user + scoped sudo + cert + heartbeat"| M
     M -->|"monitor · poll · act"| NOC[NOC / AI Tech]
 ```
 

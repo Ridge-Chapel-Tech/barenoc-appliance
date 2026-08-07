@@ -29,6 +29,8 @@ class AllowedAction(str, enum.Enum):
     BATCH = "batch"                    # WRITE: run multiple sub-jobs (params.jobs list)
     FINGERPRINT_DEVICE = "fingerprint_device"
     INSTALL_CHAT_CLIENT = "install_chat_client"
+    ENROLL_DEVICE = "enroll_device"  # WRITE: adopt a Linux device with a step-ca cert (SSH transport)
+    SNMP_SWEEP = "snmp_sweep"          # WRITE: discover + identify SNMP gear across subnets
     COMPLETE_TICKET = "complete_ticket"  # logical action: close on customer confirmation
     REQUEST_CUSTOMER_INPUT = "request_customer_input"  # logical: ask customer for info → customer_action
     ESCALATE_HUMAN = "escalate_human"
@@ -39,7 +41,7 @@ ACTION_SCRIPTS = {
     AllowedAction.PING_TEST: "scripts/ping_check.sh",
     AllowedAction.SNMP_POLL: "scripts/snmp_poll.sh",
     AllowedAction.DEVICE_STATUS: "scripts/ping_check.sh",  # status = ping reachability
-    AllowedAction.APPLY_PATCH: "scripts/patch_debian.sh",
+    AllowedAction.APPLY_PATCH: "scripts/apply_patch.sh",
     AllowedAction.REBOOT_DEVICE: "scripts/reboot_device.sh",
     AllowedAction.COLLECT_LOGS: "scripts/collect_logs.sh",
     AllowedAction.NETWORK_DISCOVERY: "scripts/discover.sh",
@@ -58,6 +60,8 @@ ACTION_SCRIPTS = {
     AllowedAction.UNIFI_NETWORK_CREATE: "scripts/unifi_network_create.sh",
     AllowedAction.FINGERPRINT_DEVICE: "scripts/fingerprint.sh",
     AllowedAction.INSTALL_CHAT_CLIENT: "scripts/install_chat_client.sh",
+    AllowedAction.ENROLL_DEVICE: "scripts/enroll_device.sh",
+    AllowedAction.SNMP_SWEEP: "scripts/snmp_sweep.sh",
     # ESCALATE_HUMAN has no script — it's a logical action
 }
 
@@ -202,6 +206,21 @@ def validate_params(action: str, params: dict) -> tuple[bool, str]:
     if action == AllowedAction.PI_TASK.value:
         if not params.get("task"):
             return False, "pi_task requires a 'task' parameter"
+        return True, ""
+
+    if action == AllowedAction.SNMP_SWEEP.value:
+        return True, ""
+
+    if action == AllowedAction.ENROLL_DEVICE.value:
+        # target = the device; optional ttl for the enrollment token
+        ttl = params.get("ttl")
+        if ttl is not None:
+            try:
+                ttl = int(ttl)
+            except (TypeError, ValueError):
+                return False, "enroll_device ttl must be seconds (60-3600)"
+            if not 60 <= ttl <= 3600:
+                return False, "enroll_device ttl must be 60-3600 seconds"
         return True, ""
 
     if action == AllowedAction.BATCH.value:

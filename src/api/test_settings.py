@@ -230,6 +230,20 @@ class BackupsSectionTest(unittest.TestCase):
         r = s.get_section("backups", user=SimpleNamespace(role="admin"))
         self.assertIs(r["appliance_host"], False)
 
+    def test_identity_appliance_defaults(self):
+        r = s.get_section("identity", user=SimpleNamespace(role="admin"))
+        self.assertEqual(r["appliance_ip"], "192.168.4.207")
+        self.assertEqual(r["appliance_host"], "app.barenoc.com")
+        self.assertIs(r["passkey_viable"], True)
+        self.assertIn("app.barenoc.com", r["hosts_lines"])
+
+    def test_identity_passkey_warning_on_private_tld(self):
+        with patch.object(s, "_read_env_file",
+                          return_value={"APPLIANCE_DOMAIN": "company.local"}):
+            r = s.get_section("identity", user=SimpleNamespace(role="admin"))
+        self.assertIs(r["passkey_viable"], False)
+        self.assertIn("public-suffix", r["passkey_warning"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

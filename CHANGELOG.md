@@ -61,6 +61,125 @@ Categories per release:
   (`proxmox/sync-backup-schedule.sh`); saved schedule applies without
   touching the host. Default = Wednesday 2 AM — set live for tonight's run.
 
+- **Device adoption via certificates (Phase F)** — adopt a device with a
+  short-lived step-ca certificate: one-time enrollment token (JWT signed by
+  BareNOC's provisioner key), device enrolls with step-cli, first mTLS report
+  links it (badge 🔐), instant revocation (report 403s even with a valid
+  cert). Internal CA + provisioner live; nginx requires client certs from the
+  CA root on the device API surface.
+
+- **`enroll_device` action** — adopt an SSH-reachable Linux device via a
+  ticket: the agent mints the enrollment token, ships step-cli, enrolls the
+  cert + installs a renew/report heartbeat cron; the device links itself over
+  mTLS. (Phase F agent path; UI path landed earlier.)
+- **DNS service + appliance identity (first-run)** — CoreDNS split-horizon
+  container (`barenoc-dns`): the appliance answers `app.barenoc.com` +
+  `*.barenoc.local` names from its own hosts block and forwards everything
+  else; Settings → Identity block shows the hostname/IP + the rendered
+  A-record, deploy.sh writes the Corefile from `APPLIANCE_IP`/`APPLIANCE_HOST`.
+- **Multi-subnet + SNMP discovery** — `DISCOVERY_SUBNETS` (comma-separated
+  CIDRs; legacy `DISCOVERY_SUBNET` fallback) + `DISCOVERY_MAX_HOSTS_PER_SUBNET`;
+  new `snmp_sweep.sh` agent action (routers/switches/APs by community string)
+  posts results to `/devices/snmp-sweep-results` (device-type guess +
+  `snmp-discovered` tag). Docs: `docs/architecture/terminology.md`.
+- **Devices UI self-serve** — fingerprint v2 (nmap service/version scan +
+  SSH-banner OS identification + vendor + reverse-DNS + TTL fallback);
+  “Generate appliance key” button + Credentials modal teaching the dedicated
+  `barenoc` user and **command-scoped sudo**; status filter also applies to
+  the Unclaimed section; cert-adopted devices count as *controlled*.
+- **Fixed — SSH control default user**: the Claim / Add Device / Manage
+  Credentials forms now default the SSH user to **`barenoc`** (the dedicated
+  control account the onboarding flows create) instead of `root`; the agent
+  runner's last-resort fallback matches. macOS/Windows keep their
+  admin-user guidance.
+- **Fixed — scoped sudo was a sudoers parse error**: the generated
+  `/etc/sudoers.d/barenoc` used bare command names (`reboot, shutdown, …`)
+  — sudoers requires **fully-qualified paths**, so every device onboarded via
+  the UI os-setup or `/onboard` got an invalid sudoers entry (no passwordless
+  sudo at all). Now fully-qualified (`/usr/bin/cp, /usr/sbin/reboot,
+  /usr/sbin/shutdown, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/journalctl,
+  /usr/bin/install, /usr/bin/systemctl, /usr/bin/tail, /usr/bin/curl`); cp
+  included so the appliance can sync its own agent runner when adopted as a
+  device.
+- **Fixed — SSH keys must end with a newline**: `control_key.py` stripped the
+  private key, so every key served by the Credentials modal / stored by
+  `_store_ssh_key` lacked the trailing newline — and ssh-keygen/ssh reject
+  ed25519 keys without it (`error in libcrypto` on OpenSSL 3.0). Fixed at all
+  three touchpoints (generation, storage, and the runner's temp-key write,
+  which also repairs already-stored keys).
+- **`src/scripts/fix-device-sudoers.sh`** — device-side repair script: rewrites
+  `/etc/sudoers.d/barenoc` with fully-qualified paths for devices that got the
+  old bare-name entry and validates with `visudo -c`.
+- **Fixed — agent could not report job results**: `POST /jobs/result` was
+  `require_role("operator")` (the Aug-5 agent-role split missed it — `agent`
+  has no rank in the operator hierarchy, so every runner result post 403'd
+  and dispatched tickets never left `in_progress`). Now
+  `require_any_role("operator", "admin", "agent")`; verified end-to-end.
+- **Changed — `collect_logs.sh`**: non-root control users (`barenoc`) now
+  collect the SYSTEM journal via `sudo -n journalctl` (scoped sudo entry);
+  root still connects directly; default SSH user is now `barenoc`.
+- **Fixed — ticket/device timestamps shown in viewer's local time**: the
+  Tickets/Dashboard/Devices pages rendered the naive-UTC `created_at` strings
+  raw (e.g. 12:03 UTC read as if local). New `fmtTz()` helper renders them in
+  the browser's timezone (naive UTC → `Z` → `toLocaleString()`), applied to
+  ticket rows, work-note timestamps, dashboard recent tickets, and device
+  detail. Verified: `2026-08-07 12:03:34` UTC → `8/7/2026 8:03:34 AM` EDT.
+- **Fixed — ticket sort broke on mixed timestamp formats**: `created_at` is a
+  naive string; `T`-separated ISO rows sort ahead of space-separated ones as
+  strings. Lists now sort with `datetime(created_at)` (parses both), id DESC
+  tiebreaker.
+- **`src/scripts/device_ssh.sh`** — first-class endpoint control for the
+  autonomous agent: logs in as the agent, resolves ip→device, fetches the
+  DECRYPTED stored key via `GET /devices/{id}/credentials` (never touches key
+  files on disk), writes a 0600 temp key (trailing newline), runs ssh.
+- **`apply_patch.sh` (was `patch_debian.sh`)** — OS-flavor update check:
+  detects apt/dnf/yum/apk/zypper on the target, `sudo -n` for non-root
+  control users, never installs, and surfaces denied-sudo honestly (no stderr
+  swallowing). Results render readably in tickets. Verified live against the
+  Fedora laptop: `dnf check-update` → 256 updates listed in the ticket.
+- **Scoped sudo covers every major OS flavor** — `SUDO_SCOPED` now includes
+  `dnf`, `yum`, `apk`, `zypper` (package managers) and `log` (macOS), in
+  `onboard.py`, the UI os-setup, `fix-device-sudoers.sh`, and the appliance's
+  own sudoers.
+- **Fixed — autonomous agent's device visibility**: `_device_inventory_context`
+  listed only `unifi_managed` devices, so cert/SSH-adopted hosts were
+  invisible to the agent (root cause of the "it's a phone" misidentification).
+  Now every claimed device with its control channels ([unifi]/[ssh]/[cert]).
+  The pi-task context also gains an operations guide (fetch creds via the API,
+  cross-check the inventory before declaring a host unmanaged, sshd
+  source-vs-destination, OS flavors, no fabricated blockers).
+- **Easter egg** — Settings → Autonomy Policy → "Compliance tooling": a
+  toggle that does nothing; its label tracks the profile (autonomous =
+  "De-escalate Rogue AI Sentience", balanced = "Restrict Sub-Optimal User
+  Behaviors", strict = "Throttle Unrealistic Request Vectors").
+- **/onboard heartbeats report hostname** — adopted devices self-identify;
+  `device_report` stores it (fixes the NULL-hostname case).
+- **Live work notes in tickets** — while a pi task runs, the runner polls the
+  agent's session transcript and relays its brief status messages to the
+  ticket as `agent_progress` work notes (1-3 lines, min 8s apart, capped at
+  15). New `POST /api/v1/tickets/{id}/progress` (agent-allowed) + the pi-task
+  system prompt now asks the agent to keep a short live work log. The UI
+  renders progress notes subtly italic. Verified live: 5 progress notes
+  streamed during a real run, then the final answer.
+- **Ticket assigned column shows the assistant's name** — `assigned_to` stored
+  internal names (pi-agent/ai-tech/human-tech/customer/system); TicketResponse
+  maps them to display names at serialization (agent → `BOT_ASSISTANT_NAME`,
+  default Lily), so the UI never shows the pi-agent service account.
+- **Fixed — runner orphans in-flight jobs on restart**: jobs are moved to
+  `running/` before executing, but nothing scanned it at startup, so a restart
+  mid-job stranded the file forever (ticket stuck `in_progress`, silent).
+  Startup now re-queues any `running/*.json` back to `incoming/`. Verified
+  live: a stranded pi task was recovered and completed with live notes.
+- **Self-service onboard portal (`/onboard`)** — a workstation user with NO
+  BareNOC access visits `/onboard` (URL or QR), downloads a per-OS
+  (Linux/macOS/Windows) script, and with their own admin rights: creates the
+  `barenoc` control user + authorizes the appliance key + scoped sudo,
+  installs step-cli **from the appliance** (nginx static route, darwin
+  arm64/amd64 builds fetched once by deploy.sh), bootstraps the CA, enrolls a
+  short-lived cert via `/onboard/token` (15-min JWT, CN must match
+  `device-*`), and installs a renew+report heartbeat — the device
+  self-registers via its first mTLS report. No tech required per machine.
+
 ### Security
 - **Agent least-privilege split** — new `agent` role (tier-2, distinct from
   operator): the Pi Agent Runner/scripts/scheduler reach exactly the write

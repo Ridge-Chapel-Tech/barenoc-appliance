@@ -32,7 +32,7 @@
       <option value="ap">Access Point</option><option value="server">Server</option><option value="workstation">Workstation</option>
     </select>
     <select id="filter-status" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
-      <option value="">All Statuses</option><option value="online">Online</option><option value="offline">Offline</option>
+      <option value="">All</option><option value="online">Online</option><option value="offline">Offline</option>
       <option value="warning">Warning</option><option value="pending">Pending</option><option value="unreachable">Unreachable</option>
     </select>
     <select id="filter-group" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
@@ -104,7 +104,7 @@
         <summary class="cursor-pointer text-barenoc-600 font-medium">Credentials (optional)</summary>
         <div class="mt-3 space-y-3">
           <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="claim-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public"></div>
-          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="claim-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="claim-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" value="barenoc" placeholder="barenoc"></div>
           <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="claim-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea><p class="text-xs text-gray-500 mt-1">Device becomes <strong>SSH-controlled</strong> when a key is set — the agent can then patch/reboot/collect logs on it.</p></div>
         </div>
       </details>
@@ -139,7 +139,7 @@
         <summary class="cursor-pointer text-barenoc-600 font-medium">Credentials (optional)</summary>
         <div class="mt-3 space-y-3">
           <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="new-device-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public"></div>
-          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="new-device-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="new-device-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" value="barenoc" placeholder="barenoc"></div>
           <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="new-device-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
           <p class="text-xs text-gray-500">A device is <strong>onboarded</strong> when BareNOC has admin control — via SSH credentials <em>or</em> through the UniFi controller for adopted UniFi gear (gateways, switches, APs auto-adopt once the controller connection works). Without either, the device is <em>monitoring only</em> (ping/SNMP), not part of the managed fleet.</p>
         </div>
@@ -153,19 +153,78 @@
 </div>
 
 <!-- Manage Credentials Modal (claimed devices) -->
-<div id="creds-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
-  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+<div id="creds-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50 overflow-y-auto py-6">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 my-auto max-h-[90vh] overflow-y-auto">
     <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Manage Credentials</h3></div>
     <div class="px-6 py-4 space-y-4">
       <p class="text-sm text-gray-500">Device: <span id="creds-device" class="font-medium"></span> (<span id="creds-ip" class="font-mono"></span>)</p>
       <p class="text-xs text-gray-500">With SSH set, BareNOC has <strong>admin control</strong> of this device — the AI Tech can run SSH actions (patch check, collect logs, reboot). Without it, the device is ping/SNMP monitoring only.</p>
+      <div class="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
+        <b>How SSH control works:</b> BareNOC connects with a private key; the matching
+        <b>public key must be on the device's <code>~/.ssh/authorized_keys</code></b>. Click
+        <b>🔑 Generate appliance key</b> — it fills the private key in automatically; you only add the
+        public key to the device and set the SSH user (prefilled for Linux).
+      </div>
+      <div>
+        <button onclick="loadControlKey()" class="rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">🔑 Generate / use appliance key</button>
+        <div id="control-key-box" class="hidden mt-2">
+          <p class="text-xs font-medium text-gray-600">Add this PUBLIC key to the device's <code>~/.ssh/authorized_keys</code>:</p>
+          <pre id="control-key-pub" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto whitespace-pre-wrap"></pre>
+          <button onclick="copyText('control-key-pub')" class="text-barenoc-600 text-[11px]">copy</button>
+          <p class="text-xs text-gray-400 mt-1">The matching private key is filled in below automatically.</p>
+        </div>
+        <div id="os-setup-box" class="hidden mt-2 rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-700">
+          <p class="font-medium text-gray-800">Setup on the device — detected OS: <span id="creds-os" class="font-mono"></span></p>
+          <p class="text-gray-500 mt-1">On the device, run:</p>
+          <pre id="os-setup-cmds" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto whitespace-pre-wrap"></pre>
+          <button onclick="copyText('os-setup-cmds')" class="text-barenoc-600 text-[11px]">copy</button>
+          <p id="os-setup-extra" class="text-gray-500 mt-1"></p>
+        </div>
+      </div>
       <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="creds-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public (leave blank to keep/clear)"></div>
-      <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="creds-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="root"></div>
+      <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="creds-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="barenoc"></div>
       <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="creds-ssh-key" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY----- (leave blank to keep existing)"></textarea></div>
     </div>
     <div class="px-6 py-4 border-t flex justify-end gap-3">
       <button onclick="hideCredsModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
       <button onclick="saveCreds()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Credentials</button>
+    </div>
+  </div>
+</div>
+
+<!-- Adopt with certificate (step-ca) -->
+<div id="adopt-modal" class="fixed inset-0 bg-black/40 z-50 hidden">
+  <div class="flex items-center justify-center min-h-full p-4 overflow-y-auto">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="px-6 py-4 border-b flex justify-between items-center">
+        <h3 class="text-lg font-medium">🔐 Adopt with certificate</h3>
+        <button onclick="hideAdoptModal()" class="text-gray-400 hover:text-gray-600">✕</button>
+      </div>
+      <div class="px-6 py-4">
+        <p class="text-sm text-gray-600">Device: <b id="adopt-name"></b> · identity <code id="adopt-cn"></code></p>
+        <p class="text-xs text-gray-500 mt-2">Run these on the device to enroll its certificate and link it. The certificate is short-lived and auto-renews; revoking adoption de-trusts it instantly.</p>
+        <ol class="text-xs text-gray-600 mt-3 space-y-2 list-decimal list-inside">
+          <li>Install <code>step-cli</code> on the device.</li>
+          <li>Trust the CA + bootstrap:
+            <pre id="adopt-cmd1" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto"></pre>
+            <button onclick="copyText('adopt-cmd1')" class="text-barenoc-600 text-[11px]">copy</button>
+            <p class="text-gray-500 mt-1">(install step-cli from the appliance if needed: <code>curl -sk -o ~/.local/bin/step https://&#60;appliance&#62;/step-cli && chmod +x ~/.local/bin/step</code>)</p>
+          </li>
+          <li>Enroll (one-time token, valid <span id="adopt-ttl"></span>s):
+            <pre id="adopt-cmd2" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto"></pre>
+            <button onclick="copyText('adopt-cmd2')" class="text-barenoc-600 text-[11px]">copy</button>
+          </li>
+          <li>Start reporting (systemd timer/agent):
+            <pre id="adopt-cmd3" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto"></pre>
+            <button onclick="copyText('adopt-cmd3')" class="text-barenoc-600 text-[11px]">copy</button>
+          </li>
+        </ol>
+        <div id="adopt-status" class="mt-3 text-sm"></div>
+      </div>
+      <div class="px-6 py-4 border-t flex justify-end gap-3">
+        <button onclick="revokeAdoption()" id="adopt-revoke-btn" class="hidden rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Revoke adoption</button>
+        <button onclick="hideAdoptModal()" class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700">Close</button>
+      </div>
     </div>
   </div>
 </div>
@@ -192,7 +251,7 @@ async function loadMonitoring() {
         + '<div><div class="font-medium text-gray-900">' + esc(d.name) + badge + '</div>'
         + '<div class="text-sm text-gray-500">' + esc(d.ip_address) + ' · ' + esc(d.device_type || 'unknown') + '</div></div>'
         + '<div class="flex items-center gap-3">'
-        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\')" class="text-xs text-barenoc-600 hover:text-barenoc-800" title="Add SSH/SNMP credentials to move this device into Onboarded">Add SSH/SNMP</button>'
+        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\',\'' + ((d.fingerprint||{}).os||'') + '\')" class="text-xs text-barenoc-600 hover:text-barenoc-800" title="Add SSH/SNMP credentials to move this device into Onboarded">Add SSH/SNMP</button>'
         + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + cls.badge + '">' + d.status + '</span>'
         + '</div>'
         + '</div>';
@@ -224,6 +283,15 @@ async function loadDeviceGroups() {
 function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Timestamps are stored as naive UTC — render them in the viewer's local time.
+function fmtTz(ts) {
+  if (!ts) return ts || '';
+  var s = String(ts).trim().replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z';
+  var d = new Date(s);
+  return isNaN(d) ? ts : d.toLocaleString();
+}
+
 var currentOffset = 0;
 var currentLimit = 24;
 var currentTotal = 0;
@@ -241,7 +309,8 @@ function metricBadge(label, value) {
 
 async function loadUnclaimed() {
   try {
-    var resp = await fetch('/api/v1/devices?claimed=false&limit=200', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var _st = document.getElementById('filter-status').value;
+    var resp = await fetch('/api/v1/devices?claimed=false&limit=200' + (_st ? '&status=' + encodeURIComponent(_st) : ''), { headers: { 'Authorization': 'Bearer ' + getToken() } });
     var data = await resp.json();
     var devices = data.devices || [];
     var section = document.getElementById('unclaimed-section');
@@ -303,13 +372,13 @@ function unclaimedCard(d) {
       return '<span class="inline-block bg-gray-100 text-gray-700 text-xs px-1.5 py-0.5 rounded mr-1">' + p.port + '/' + p.service + '</span>';
     }).join('');
     fpHtml = '<div class="text-xs text-gray-600 mt-1">'
-      + (fp.os_guess ? '<span class="font-medium">' + esc(fp.os_guess) + '</span><br>' : '')
+      + ((fp.os || fp.os_guess) ? '<span class="font-medium">' + esc(fp.os || fp.os_guess) + '</span><br>' : '')
       + ports
       + '</div>';
   } else if (fp && fp.error) {
     fpHtml = '<div class="text-xs text-red-500 mt-1">' + esc(fp.error) + '</div>';
   } else if (fp) {
-    fpHtml = '<div class="text-xs text-gray-600 mt-1">' + (fp.os_guess ? esc(fp.os_guess) : 'No open TCP ports found') + '</div>';
+    fpHtml = '<div class="text-xs text-gray-600 mt-1">' + ((fp.os || fp.os_guess) ? esc(fp.os || fp.os_guess) : 'No open TCP ports found') + '</div>';
   }
   var dot = d.status === 'online'
     ? '<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>'
@@ -323,11 +392,12 @@ function unclaimedCard(d) {
     + '<div class="flex justify-between items-start">'
     + '<div><div class="font-semibold text-gray-900 font-mono">' + dot + esc(d.ip_address) + '</div>'
     + '<div class="text-xs text-gray-500 mt-0.5">' + esc(d.name || 'unknown') + '</div>'
-    + (meta.length ? '<div class="text-xs mt-1 space-x-1.5">' + meta.join('') + '</div>' : '')
+    + '<div class="text-xs mt-1 space-x-1.5">' + meta.join('') + adoptionBadge(d) + '</div>'
     + fpHtml + '</div>'
     + '<div class="flex flex-col gap-1">'
     + '<button onclick="fingerprintDevice(' + d.id + ')" class="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700">Fingerprint</button>'
     + '<button onclick="openClaim(' + d.id + ',\'' + d.ip_address + '\')" class="px-3 py-1 bg-barenoc-600 text-white text-xs rounded hover:bg-barenoc-700">Claim</button>'
+    + '<button onclick="openAdopt(' + d.id + ',\'' + (d.name||'').replace(/'/g,'') + '\')" class="px-3 py-1 bg-teal-600 text-white text-xs rounded hover:bg-teal-700">🔐 Adopt</button>'
     + '<button onclick="deleteDevice(' + d.id + ')" class="px-3 py-1 bg-gray-200 text-gray-700 text-xs rounded hover:bg-gray-300">Dismiss</button>'
     + '</div></div></div>';
 }
@@ -394,6 +464,7 @@ async function fetchDevices(offset) {
     devices.forEach(function(d) {
       var cls = statusClasses(d.status);
       var pd = d.last_poll_data || {};
+      var fp = d.fingerprint || {};
       var latency = pd.ping && pd.ping.latency_ms ? pd.ping.latency_ms + ' ms' : '';
       var cpu = pd.cpu_load && pd.cpu_load !== '?' ? pd.cpu_load + '%' : '';
       var mem = pd.mem_used_pct && pd.mem_used_pct !== '?' ? pd.mem_used_pct + '%' : '';
@@ -406,7 +477,7 @@ async function fetchDevices(offset) {
       grid.innerHTML +=
         '<div id="card-' + d.id + '" class="bg-white shadow rounded-lg p-5 border-t-4 ' + cls.border + '">'
         + '<div class="flex justify-between items-start"><div>'
-        + '<h3 class="font-semibold text-gray-900">' + esc(d.name) + credBadge + '</h3>'
+        + '<h3 class="font-semibold text-gray-900">' + esc(d.name) + credBadge + ' ' + adoptionBadge(d) + '</h3>'
         + '<p class="text-sm text-gray-500">' + esc(d.ip_address) + '</p></div>'
         + '<div class="flex flex-col items-end gap-1">'
         + '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + cls.badge + '">' + d.status + '</span>'
@@ -417,6 +488,11 @@ async function fetchDevices(offset) {
         + (d.vendor ? ' · ' + esc(d.vendor) : '')
         + (d.model ? ' · ' + esc(d.model) : '')
         + '</div>'
+        + ((d.hostname || fp.os || fp.os_guess) ? '<div class="mt-1 text-xs text-gray-400">'
+          + (d.hostname ? esc(d.hostname) : '')
+          + ((d.hostname && (fp.os || fp.os_guess)) ? ' · ' : '')
+          + ((fp.os || fp.os_guess) ? esc(fp.os || fp.os_guess) : '')
+          + '</div>' : '')
         + '<div class="mt-3 grid grid-cols-3 gap-2">'
         + metricBadge('Latency', latency)
         + metricBadge('CPU', cpu)
@@ -425,7 +501,8 @@ async function fetchDevices(offset) {
         + '</div>'
         + '<div class="mt-3 flex gap-2 text-xs">'
         + '<button onclick="toggleDetail(' + d.id + ')" class="text-barenoc-600 hover:text-barenoc-800">Details</button>'
-        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\')" class="text-gray-500 hover:text-barenoc-700" title="Set SSH/SNMP credentials for control">Creds</button>'
+        + '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\',\'' + ((d.fingerprint||{}).os||'') + '\')" class="text-gray-500 hover:text-barenoc-700" title="Set SSH/SNMP credentials for control">Creds</button>'
+        + '<button onclick="fingerprintDevice(' + d.id + ')" class="text-indigo-600 hover:text-indigo-800" title="Re-run nmap fingerprint (identity, OS, open ports)">Fingerprint</button>'
         + (d.status === 'pending' || d.status === 'unreachable' ? '<button onclick="verifyDevice(' + d.id + ')" class="text-green-600 hover:text-green-800">Verify</button>' : '')
         + '<button onclick="toggleNotify(' + d.id + ',' + (d.notify_state_changes ? 'true' : 'false') + ')" class="' + (d.notify_state_changes ? 'text-amber-600' : 'text-gray-400') + ' hover:text-amber-700" title="Email me when this device goes down / recovers">' + (d.notify_state_changes ? '🔔' : '🔕') + '</button>'
         + '<button onclick="deleteDevice(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\')" class="text-red-600 hover:text-red-800">Delete</button>'
@@ -437,6 +514,7 @@ async function fetchDevices(offset) {
     var totalPages = Math.ceil(currentTotal / currentLimit) || 1;
     var currentPage = Math.floor(offset / currentLimit) + 1;
     document.getElementById('page-info').textContent = 'Page ' + currentPage + ' of ' + totalPages;
+    loadUnclaimed();
     document.getElementById('prev-page').disabled = (offset <= 0);
     document.getElementById('next-page').disabled = (offset + currentLimit >= currentTotal);
   } catch (err) { console.error(err); }
@@ -461,7 +539,7 @@ async function toggleDetail(id) {
       + '<div><span class="font-medium">MAC:</span> ' + esc(d.mac_address || '-') + '</div>'
       + '<div><span class="font-medium">SNMP:</span> ' + (d.snmp_configured ? 'Configured' : 'Not set') + '</div>'
       + '<div><span class="font-medium">SSH:</span> ' + (d.ssh_configured ? 'Configured' : 'Not set') + '</div>'
-      + '<div><span class="font-medium">Created:</span> ' + esc(d.created_at || '-') + '</div>'
+      + '<div><span class="font-medium">Created:</span> ' + esc(fmtTz(d.created_at || '-')) + '</div>'
       + '<div><span class="font-medium">Tags:</span> ' + esc((d.tags || []).join(', ') || 'None') + '</div>'
       + '</div>'
       + '<div class="mt-2"><span class="font-medium">Last Poll Data:</span><pre class="text-xs bg-white p-2 rounded border mt-1 overflow-x-auto">' + esc(pollText) + '</pre></div>'
@@ -519,16 +597,129 @@ function hideClaimModal() { document.getElementById('claim-modal').classList.add
 
 // Manage credentials for a claimed device (add SSH/SNMP control)
 var credsDeviceId = null;
-function openCreds(id, name, ip) {
+function openCreds(id, name, ip, os) {
   credsDeviceId = id;
   document.getElementById('creds-device').textContent = name;
   document.getElementById('creds-ip').textContent = ip;
   document.getElementById('creds-snmp').value = '';
-  document.getElementById('creds-ssh-user').value = '';
+  var o = (os || '').toLowerCase();
+  // The os-setup flow creates the dedicated `barenoc` control user on
+  // Linux/unknown; macOS/Windows connect as the device's own admin user.
+  document.getElementById('creds-ssh-user').value =
+    (o.indexOf('mac') < 0 && o.indexOf('windows') < 0) ? 'barenoc' : '';
   document.getElementById('creds-ssh-key').value = '';
+  document.getElementById('control-key-box').classList.add('hidden');
+  document.getElementById('creds-os').textContent = os || 'unknown';
   document.getElementById('creds-modal').classList.remove('hidden');
 }
 function hideCredsModal() { document.getElementById('creds-modal').classList.add('hidden'); }
+
+async function loadControlKey() {
+  try {
+    var r = await fetch('/api/v1/devices/control-key', {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var d = await r.json();
+    if (!r.ok) { alert('Could not fetch the appliance key: ' + (d.detail || 'failed')); return; }
+    document.getElementById('control-key-pub').textContent = d.public_key;
+    document.getElementById('creds-ssh-key').value = d.private_key;
+    document.getElementById('control-key-box').classList.remove('hidden');
+    showOsSetup((document.getElementById('creds-os').textContent || '').toLowerCase(), d.public_key);
+  } catch (e) { alert('Could not fetch the appliance key: ' + e.message); }
+}
+
+function showOsSetup(os, pub) {
+  var box = document.getElementById('os-setup-box');
+  var cmds = document.getElementById('os-setup-cmds');
+  var extra = document.getElementById('os-setup-extra');
+  var isWin = os.indexOf('windows') >= 0;
+  var isMac = os.indexOf('mac') >= 0 || os.indexOf('darwin') >= 0;
+  // sudoers requires FULLY-QUALIFIED paths (bare names = parse error).
+  // Package managers cover the major OS flavors; cp lets the appliance sync
+  // its own agent runner when it adopts itself as a device.
+  var scoped = '/usr/bin/cp, /usr/sbin/reboot, /usr/sbin/shutdown, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/journalctl, /usr/bin/log, /usr/bin/install, /usr/bin/systemctl, /usr/bin/tail, /usr/bin/curl';
+  if (isWin) {
+    cmds.textContent = 'Add-Content C:\\ProgramData\\ssh\\administrators_authorized_keys "' + pub + '"';
+    extra.textContent = 'Best run from an admin shell. The appliance connects as your admin user (use that name as the SSH User).';
+  } else if (isMac) {
+    cmds.textContent = 'mkdir -p ~/.ssh && echo "' + pub + '" >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys';
+    extra.textContent = 'BareNOC connects as THIS admin user (use it as the SSH User). Enable Remote Login: System Settings → General → Sharing. For root actions, add passwordless sudo: echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/barenoc';
+  } else {
+    // Linux: dedicated barenoc user + scoped passwordless sudo (recommended)
+    cmds.textContent = [
+      'sudo useradd -m -s /bin/bash barenoc',
+      'sudo mkdir -p /home/barenoc/.ssh',
+      'echo "' + pub + '" | sudo tee /home/barenoc/.ssh/authorized_keys',
+      'sudo chown -R barenoc:barenoc /home/barenoc/.ssh && sudo chmod 700 /home/barenoc/.ssh && sudo chmod 600 /home/barenoc/.ssh/authorized_keys',
+      'echo "barenoc ALL=(ALL) NOPASSWD: ' + scoped + '" | sudo tee /etc/sudoers.d/barenoc'
+    ].join('\n');
+    extra.textContent = 'Then use SSH User: barenoc. The sudo entry above is command-scoped (only what BareNOC runs). For a home box you can allow everything instead: echo "barenoc ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/barenoc. If sshd is not running: sudo systemctl enable --now sshd.';
+  }
+  box.classList.remove('hidden');
+}
+
+// ── Adopt with certificate (step-ca) ──
+var ADOPT_DEVICE = null;
+function copyText(id) {
+  var el = document.getElementById(id);
+  if (el) navigator.clipboard.writeText(el.textContent).catch(function(){});
+}
+function hideAdoptModal() { document.getElementById('adopt-modal').classList.add('hidden'); }
+
+function adoptionBadge(d) {
+  if (d.adoption_status === 'linked')
+    return '<span class="text-[10px] bg-teal-100 text-teal-700 rounded-full px-2 py-0.5" title="Adopted via certificate">🔐 cert</span>';
+  if (d.adoption_status === 'enrolling')
+    return '<span class="text-[10px] bg-amber-100 text-amber-700 rounded-full px-2 py-0.5" title="Enrollment in progress">🔐 enrolling</span>';
+  if (d.adoption_status === 'revoked')
+    return '<span class="text-[10px] bg-red-100 text-red-700 rounded-full px-2 py-0.5" title="Adoption revoked">🔐 revoked</span>';
+  return '';
+}
+
+async function openAdopt(id, name) {
+  ADOPT_DEVICE = id;
+  document.getElementById('adopt-name').textContent = name || ('device ' + id);
+  var revokeBtn = document.getElementById('adopt-revoke-btn');
+  revokeBtn.classList.add('hidden');
+  document.getElementById('adopt-status').textContent = 'Minting enrollment token…';
+  document.getElementById('adopt-modal').classList.remove('hidden');
+  try {
+    var r = await fetch('/api/v1/devices/' + id + '/adopt/cert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: '{}'
+    });
+    var d = await r.json();
+    if (!r.ok) { document.getElementById('adopt-status').textContent = '❌ ' + (d.detail || 'failed'); return; }
+    document.getElementById('adopt-cn').textContent = d.cn;
+    document.getElementById('adopt-ttl').textContent = d.ttl;
+    document.getElementById('adopt-cmd1').textContent =
+      'step ca bootstrap --ca-url ' + d.ca_url + ' --fingerprint ' + d.ca_fingerprint;
+    document.getElementById('adopt-cmd2').textContent =
+      'step ca certificate ' + d.cn + ' bareNOC.crt bareNOC.key --token ' + d.token;
+    document.getElementById('adopt-cmd3').textContent =
+      'curl --cert bareNOC.crt --key bareNOC.key -X POST https://<appliance>/api/v1/device/report';
+    document.getElementById('adopt-status').textContent =
+      '✅ Token minted (valid ' + d.ttl + 's). After the device reports in, it links automatically.';
+    revokeBtn.classList.remove('hidden');
+  } catch (e) {
+    document.getElementById('adopt-status').textContent = '❌ ' + e.message;
+  }
+}
+
+async function revokeAdoption() {
+  if (!ADOPT_DEVICE || !confirm('Revoke adoption? The device is de-trusted instantly.')) return;
+  try {
+    var r = await fetch('/api/v1/devices/' + ADOPT_DEVICE + '/adopt/revoke', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    var d = await r.json();
+    document.getElementById('adopt-status').textContent =
+      r.ok ? '✅ Revoked — the device now gets 403s even with its cert.' : '❌ ' + (d.detail || 'failed');
+    fetchDevices(currentOffset);
+  } catch (e) { document.getElementById('adopt-status').textContent = '❌ ' + e.message; }
+}
 
 async function saveCreds() {
   var snmp = document.getElementById('creds-snmp').value.trim();

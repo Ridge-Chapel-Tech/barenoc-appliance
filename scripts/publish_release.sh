@@ -1,19 +1,19 @@
 #!/bin/bash
 # publish_release.sh — sync the APPROVED-FOR-RELEASE tree from this (private
-# dev) repo into the public release repo.
+# dev) repo into the EARLY-ACCESS release repo (private, invite-only).
 #
 # The include list below is the RELEASE CONTRACT: only what's listed here ever
-# goes public. Anything not listed (or excluded) never leaves the private repo.
+# goes out. Anything not listed (or excluded) never leaves the private repo.
 #
 # Usage:
 #   bash scripts/publish_release.sh                  # sync + commit + push
 #   bash scripts/publish_release.sh --tag v2026.08.1 # also tag the release
-#                                                   # (public repo's release.yml
+#                                                   # (early-access repo's release.yml
 #                                                   #  then publishes the GitHub Release)
 #   DRY_RUN=1 bash scripts/publish_release.sh        # show what would change
 #
 # Env:
-#   PUBLIC_REPO   default Ridge-Chapel-Tech/barenoc-appliance
+#   PUBLIC_REPO   default Ridge-Chapel-Tech/barenoc-appliance (PRIVATE)
 set -euo pipefail
 
 PUBLIC_REPO="${PUBLIC_REPO:-Ridge-Chapel-Tech/barenoc-appliance}"
@@ -41,7 +41,7 @@ fi
 
 log "syncing approved-for-release tree -> $PUBLIC_REPO"
 git clone -q "https://github.com/$PUBLIC_REPO.git" "$TMP/pub" 2>/dev/null || {
-  log "create the public repo first: gh repo create $PUBLIC_REPO --public --description 'BareNOC — self-hosted network operations center (SMB)'"
+  log "create the early-access repo first: gh repo create $PUBLIC_REPO --private --accept-visibility-change-consequences --description 'BareNOC — self-hosted network operations center (early access)'"
   exit 1
 }
 cd "$TMP/pub"

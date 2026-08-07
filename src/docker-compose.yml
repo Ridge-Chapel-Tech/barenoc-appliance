@@ -19,6 +19,9 @@ services:
       - /opt/barenoc/volumes/backup_status:/opt/barenoc/volumes/backup_status
       - /opt/barenoc/volumes/remote_access:/opt/barenoc/volumes/remote_access:ro
       - /opt/barenoc/client:/opt/barenoc/client:ro
+      # step-ca device adoption (Phase F): provisioner key + CA root (ro)
+      - /opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem:/opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem:ro
+      - /opt/barenoc/volumes/step-ca/certs/root_ca.crt:/opt/barenoc/volumes/step-ca/certs/root_ca.crt:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=api
@@ -75,6 +78,7 @@ services:
     volumes:
       - ./nginx/barenoc.conf:/etc/nginx/conf.d/barenoc.conf:ro
       - /opt/barenoc/volumes/nginx/certs:/etc/nginx/certs:ro
+      - /opt/barenoc/volumes/static:/opt/barenoc/volumes/static:ro   # step-cli binary for device enrollment
     networks:
       - barenoc-net
 
@@ -87,7 +91,7 @@ services:
       # v2.12 reads APP_URL (PUBLIC_APP_URL is ignored) — this is the issuer/RP
       # for OIDC + WebAuthn; without it the wizard defaults to localhost and
       # passkey setup fails with "configured domain is invalid".
-      - APP_URL=https://pocket-id.barenoc.local:8443
+      - APP_URL=https://app.barenoc.com:8443
     volumes:
       - /opt/barenoc/volumes/pocket-id/data:/app/data
     healthcheck:
@@ -99,6 +103,58 @@ services:
     networks:
       - barenoc-net
     # No published ports — reached only via nginx /auth/pocket-id/ (UFW stays 443-only)
+
+  step-ca:
+    image: smallstep/step-ca:latest
+    container_name: barenoc-step-ca
+    restart: unless-stopped
+    environment:
+      # First boot only: initializes the CA (root + intermediate + admin
+      # provisioner + ACME) into /home/step. The password comes from a 0600
+      # file the bootstrap created (never an env var / docker inspect).
+      - DOCKER_STEPCA_INIT_NAME=BareNOC Internal CA
+      - DOCKER_STEPCA_INIT_DNS_NAMES=stepca.barenoc.local
+      - DOCKER_STEPCA_INIT_PROVISIONER_NAME=admin
+      - DOCKER_STEPCA_INIT_ADDRESS=:443
+      - DOCKER_STEPCA_INIT_ACME=true
+      - DOCKER_STEPCA_INIT_PASSWORD_FILE=/run/secrets/ca_password
+    volumes:
+      - /opt/barenoc/volumes/step-ca:/home/step
+      - /opt/barenoc/volumes/step-ca/password-in:/run/secrets/ca_password:ro
+    healthcheck:
+      # busybox wget verifies TLS strictly → --no-check-certificate: the CA's
+      # own self-signed cert is exactly what we're probing.
+      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://localhost/health"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - barenoc-net
+    # No published ports — reached via nginx (stepca.barenoc.local:8443)
+    # The CA issues SHORT-LIVED device certificates (mTLS identity for adopted
+    # gear); see docs/architecture/device_adoption_pocketid.md + wiki.
+
+  dns:
+    image: coredns/coredns:1.11.3
+    container_name: barenoc-dns
+    restart: unless-stopped
+    ports:
+      # Bind to the appliance's LAN IP only — 0.0.0.0:53 collides with
+      # systemd-resolved's loopback DNS stubs on the host.
+      - "${APPLIANCE_IP:-192.168.4.207}:53:53/udp"
+      - "${APPLIANCE_IP:-192.168.4.207}:53:53/tcp"
+    volumes:
+      - /opt/barenoc/volumes/dns:/config
+    command: ["-conf", "/config/Corefile"]
+    networks:
+      - barenoc-net
+    # Split-horizon DNS: authoritatively answers the appliance's OWN names
+    # (app.<domain>, *.barenoc.local -> the appliance IP) and forwards every
+    # other query upstream. Point your router/DHCP at this server (as a
+    # secondary DNS) and every machine + device resolves the appliance
+    # automatically — no hosts files. Corefile rendered at deploy from the
+    # appliance identity settings.
 
 networks:
   barenoc-net:

@@ -83,6 +83,15 @@ class AgentCredentialsTest(unittest.TestCase):
                                  "subnet": "192.168.50.1/24", "dhcp": "false"})
         self.assertEqual(cmd[2:], ["Cameras", "50", "192.168.50.1/24", "false"])
 
+    def test_build_cmd_enroll_device(self):
+        # target + resolved ssh creds + optional ttl
+        cmd = runner._build_cmd("enroll_device", "192.168.4.99", {})
+        self.assertEqual(cmd[0], "bash")
+        self.assertTrue(cmd[1].endswith("enroll_device.sh"))
+        self.assertEqual(cmd[-1], "600")
+        cmd = runner._build_cmd("enroll_device", "192.168.4.99", {"ttl": 300})
+        self.assertEqual(cmd[-1], "300")
+
     # ── SSH credential resolution (stored device creds for SSH actions) ──
 
     def test_resolve_ssh_uses_stored_creds(self):
@@ -94,7 +103,9 @@ class AgentCredentialsTest(unittest.TestCase):
             user, key = runner._resolve_ssh("192.0.2.99", {})
         self.assertEqual(user, "tech")
         with open(key) as f:
-            self.assertEqual(f.read(), "PRIVATE-KEY")
+            # the temp key is normalized to end with a newline (ssh-keygen
+            # rejects keys without it on OpenSSL 3.0)
+            self.assertEqual(f.read(), "PRIVATE-KEY\n")
         self.assertEqual(os.stat(key).st_mode & 0o777, 0o600)
         self.assertIn(key, runner._TEMP_KEYS)
         os.unlink(key)
@@ -112,7 +123,7 @@ class AgentCredentialsTest(unittest.TestCase):
         runner.DEVICE_BY_IP.pop("192.0.2.99", None)
         with patch("runner._device_ssh_creds", return_value=None):
             user, key = runner._resolve_ssh("192.0.2.99", {})
-        self.assertEqual(user, "root")
+        self.assertEqual(user, "barenoc")
         self.assertEqual(key, runner.DEFAULT_SSH_KEY)
 
     def test_ssh_cmd_uses_resolved_creds(self):

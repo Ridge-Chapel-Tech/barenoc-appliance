@@ -637,17 +637,28 @@ def _failure_context(ticket) -> str:
 
 
 def _device_inventory_context(db) -> str:
-    """Give the AI the managed-device list so it picks real targets (the runner
-    resolves names to MACs / AP uplinks). Empty string when nothing managed."""
+    """Give the AI the managed-device list so it picks real targets. Includes
+    every claimed device with its control channel(s): unifi (controller API),
+    ssh (stored control key), cert (step-ca identity). Monitoring-only devices
+    are listed too but marked. Empty string when nothing managed."""
     devs = (db.query(Device)
-            .filter(Device.claimed.is_(True), Device.unifi_managed.is_(True))
+            .filter(Device.claimed.is_(True))
             .order_by(Device.device_type, Device.name)
             .all())
     if not devs:
         return ""
-    lines = ["Available UniFi devices (use these EXACT names as targets):"]
+    lines = ["Managed devices (use these EXACT names/IPs as targets):"]
     for d in devs:
-        lines.append(f"  • {d.name} — {d.device_type}, {d.ip_address}")
+        ch = []
+        if d.unifi_managed:
+            ch.append("unifi")
+        if d.ssh_key_fingerprint:
+            ch.append("ssh")
+        if d.adoption_status == "linked":
+            ch.append("cert")
+        suffix = f" [{','.join(ch)}]" if ch else " (monitoring only)"
+        hn = f" ({d.hostname})" if d.hostname else ""
+        lines.append(f"  • {d.name}{hn} — {d.device_type}, {d.ip_address}{suffix}")
     return "\n".join(lines)
 
 
@@ -693,8 +704,24 @@ def _prior_agent_context(ticket, limit: int = 3) -> str:
 
 
 def _pi_task_context(db, ticket, ticket_text) -> str:
-    """Context for the Pi Coding Agent: the ticket thread + device inventory."""
+    """Context for the Pi Coding Agent: operations guide + ticket thread + the
+    managed-device inventory. The guide is first so truncation never drops it."""
     parts = []
+    parts.append(
+        "How to operate devices:\n"
+        "- A target matching a managed device's name/IP in the inventory below IS "
+        "manageable — cross-check that list before ever concluding a host is unmanaged.\n"
+        "- To SSH to a managed device, fetch its DECRYPTED credentials with the agent "
+        "token: GET /api/v1/devices/{id}/credentials (list /api/v1/devices to find ids). "
+        "Never try to read or decrypt key files under /opt/barenoc — they are "
+        "Fernet-encrypted at rest; the API decrypts server-side. This is the intended path.\n"
+        "- In sshd logs, 'Accepted publickey for X from <IP>' means the connection "
+        "ORIGINATED from <IP> (the SSH client), not that it connected to <IP>.\n"
+        "- OS flavors: Debian/Ubuntu=apt, Fedora/RHEL/Rocky=dnf, Alpine=apk, "
+        "openSUSE=zypper, macOS=no journald (use log show). Pick the right tool for the "
+        "device's OS; if no catalog action fits, say so honestly and offer alternatives — "
+        "never report a fabricated blocker."
+    )
     user_ctx = _recent_user_context(ticket)
     if user_ctx:
         parts.append(user_ctx)

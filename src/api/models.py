@@ -48,6 +48,13 @@ class Device(Base):
     last_seen = Column(DateTime, nullable=True)
     last_poll_data = Column(JSON, nullable=True)  # cached SNMP/ping results
     fingerprint = Column(JSON, nullable=True)  # nmap fingerprint (ports/vendor/os guess)
+    # Device adoption via step-ca certificates (Phase F)
+    adoption_method = Column(String(16), default="none")  # none | unifi | ssh | cert | manual
+    cert_cn = Column(String(128), nullable=True)      # certificate CN (device identity)
+    cert_serial = Column(String(64), nullable=True)   # last certificate serial
+    cert_enrolled_at = Column(DateTime, nullable=True)
+    cert_last_seen = Column(DateTime, nullable=True)
+    adoption_status = Column(String(16), default="none")  # none | enrolling | linked | revoked
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

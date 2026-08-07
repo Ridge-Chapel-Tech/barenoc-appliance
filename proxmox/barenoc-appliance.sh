@@ -35,6 +35,7 @@ PROFILE="m"
 STORAGE="local-lvm"
 BRIDGE="vmbr0"
 HOSTNAME="barenoc"
+APPLIANCE_HOST="app.barenoc.com"   # public name clients use (Corefile + nginx server_name; set APP_URL to your real domain before enrolling passkeys)
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
 ADMIN_PASSWORD=""
 SKIP_APP=0
@@ -197,6 +198,7 @@ AmbientCapabilities=CAP_NET_RAW
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
+systemctl enable pi-agent-runner   # survive reboots
 
 # firewall: ssh + 443 (+8443 for Pocket ID)
 ufw --force reset
@@ -278,6 +280,22 @@ for _ in $(seq 1 60); do
   if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 "barenoc@$IP" "test -f /opt/barenoc/.provisioned" 2>/dev/null; then break; fi
   sleep 5
 done
+
+# ── 4.5 .env bootstrap ─────────────────────────────────────────────────────
+# deploy.sh expects /opt/barenoc/.env to exist (it seeds the admin user + all
+# app config from it); the installer creates it from the repo template with
+# the seeded admin password and the appliance identity. Everything else (LLM
+# keys, UniFi, email) is set in the web UI → Settings after first login.
+JWT="$(openssl rand -hex 32)"
+if [[ $SKIP_APP -eq 0 ]]; then
+  echo "==> Bootstrapping /opt/barenoc/.env (template + seeded admin + identity)"
+  scp -q "$REPO/src/.env.example" "barenoc@$IP:/tmp/barenoc-env.example"
+  ssh "barenoc@$IP" "install -m 600 /tmp/barenoc-env.example /opt/barenoc/.env && sed -i \
+    's|^JWT_SECRET=.*|JWT_SECRET=${JWT}|;
+     s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|;
+     s|^# APPLIANCE_IP=.*|APPLIANCE_IP=${IP}|;
+     s|^# APPLIANCE_HOST=.*|APPLIANCE_HOST=${APPLIANCE_HOST}|' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
+fi
 
 # ── 5. application install (same path as updates) ──────────────────────────
 if [[ $SKIP_APP -eq 1 ]]; then

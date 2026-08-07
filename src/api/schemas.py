@@ -1,7 +1,8 @@
 import hashlib
 import json
+import os
 import datetime
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -73,6 +74,28 @@ class TicketResponse(BaseModel):
     updated_at: datetime
     resolved_at: Optional[datetime] = None
 
+    @field_validator("assigned_to", mode="before")
+    @classmethod
+    def _display_assignee(cls, v):
+        """Map internal assignee names to display names. Stored values stay
+        internal (worker logic uses them); only the API response is cosmetic.
+        The agent's display name is the configured assistant (BOT_ASSISTANT_NAME,
+        default "Lily") so the UI never shows the pi-agent service account."""
+        if v in ("pi-agent", "ai-tech"):
+            name = ""
+            try:
+                with open("/opt/barenoc/.env") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("BOT_ASSISTANT_NAME="):
+                            name = line.partition("=")[2].strip()
+                            break
+            except Exception:
+                pass
+            return name or os.getenv("BOT_ASSISTANT_NAME") or "Lily"
+        return {"human-tech": "Human tech", "customer": "Customer",
+                "system": "System"}.get(v, v)
+
     class Config:
         from_attributes = True
 
@@ -141,6 +164,9 @@ class DeviceResponse(BaseModel):
     snmp_configured: bool = False
     ssh_configured: bool = False
     unifi_managed: bool = False
+    adoption_status: Optional[str] = "none"
+    adoption_method: Optional[str] = "none"
+    cert_cn: Optional[str] = None
     created_at: datetime
 
     class Config:

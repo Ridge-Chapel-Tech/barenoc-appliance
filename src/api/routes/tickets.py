@@ -1,16 +1,34 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import func
 from typing import Optional
 from pydantic import BaseModel, Field
 import datetime
+import os
 from database import get_db
 from models import Ticket, Device, User
 from schemas import TicketCreate, TicketUpdate, TicketResponse, generate_ticket_id
-from auth import get_current_user, get_access_context
+from auth import get_current_user, get_access_context, require_any_role
 from worknotes import add_note
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
+
+
+def _assistant_name() -> str:
+    """The configured AI assistant display name (Settings, BOT_ASSISTANT_NAME)."""
+    try:
+        with open("/opt/barenoc/.env") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("BOT_ASSISTANT_NAME="):
+                    return line.partition("=")[2].strip() or "Lily"
+    except Exception:
+        pass
+    return os.getenv("BOT_ASSISTANT_NAME") or "Lily"
+
+
+class ProgressNote(BaseModel):
+    detail: str
 
 
 @router.get("")
@@ -29,7 +47,7 @@ def list_tickets(
         q = q.filter(Ticket.priority == priority)
 
     total = q.count()
-    tickets = q.order_by(desc(Ticket.created_at)).offset(offset).limit(limit).all()
+    tickets = q.order_by(func.datetime(Ticket.created_at).desc(), Ticket.id.desc()).offset(offset).limit(limit).all()
 
     return {
         "tickets": [TicketResponse.model_validate(t).model_dump() for t in tickets],
@@ -190,6 +208,28 @@ def update_ticket(
 
 class NoteCreate(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.post("/{ticket_id}/progress")
+def add_progress_note(
+    ticket_id: str,
+    note: "ProgressNote",
+    db: Session = Depends(get_db),
+    user: User = Depends(require_any_role("operator", "admin", "agent")),
+):
+    """Live 1-3 line status from the AI tech mid-task (agent_progress note).
+    The runner relays the agent's progress while a long-running pi task works,
+    so the operator sees the work happen instead of a silent wait."""
+    ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    detail = note.detail.strip()[:300]
+    if not detail:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    add_note(ticket, "agent_progress", detail, actor=_assistant_name())
+    ticket.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    return {"status": "ok", "note": detail}
 
 
 @router.post("/{ticket_id}/notes", response_model=TicketResponse)

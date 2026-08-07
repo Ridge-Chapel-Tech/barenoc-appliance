@@ -208,7 +208,7 @@ def _ticket_rows(db, since: datetime, now: datetime) -> list:
     rows = db.query(Ticket).filter(
         Ticket.created_at < now,
         or_(Ticket.resolved_at.is_(None), Ticket.resolved_at >= since),
-    ).order_by(Ticket.created_at.asc()).all()
+    ).order_by(func.datetime(Ticket.created_at).asc()).all()
 
     esc_first = {}   # ticket_id -> first escalation timestamp in period
     esc_count = {}   # ticket_id -> escalation events in period
@@ -497,7 +497,7 @@ def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_us
 
     recent = (
         db.query(Ticket)
-        .order_by(Ticket.created_at.desc())
+        .order_by(func.datetime(Ticket.created_at).desc())
         .limit(5)
         .all()
     )

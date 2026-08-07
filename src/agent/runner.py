@@ -89,7 +89,7 @@ ACTION_SCRIPTS = {
     "snmp_poll": "snmp_poll.sh",
     "device_status": "ping_check.sh",  # Use ping as basic status check
     "reboot_device": "reboot_device.sh",
-    "apply_patch": "patch_debian.sh",
+    "apply_patch": "apply_patch.sh",
     "collect_logs": "collect_logs.sh",
     "network_discovery": "discover.sh",
     "network_info": "network_info.sh",
@@ -107,6 +107,8 @@ ACTION_SCRIPTS = {
     "unifi_set_ssid_password": "unifi_set_ssid_password.sh",
     "unifi_network_create": "unifi_network_create.sh",
     "install_chat_client": "install_chat_client.sh",
+    "enroll_device": "enroll_device.sh",
+    "snmp_sweep": "snmp_sweep.sh",
     # escalate_human is a logical action, not a script
 }
 
@@ -209,11 +211,17 @@ def _resolve_ssh(target: str, params: dict) -> tuple:
                 ssh_user = creds["ssh_user"]
             if not ssh_key and creds.get("ssh_key"):
                 key_path = _temp_key_path()
+                key = creds["ssh_key"]
+                if not key.endswith("\n"):
+                    key += "\n"  # ssh-keygen rejects keys without the trailing newline (OpenSSL 3.0)
                 with open(key_path, "w") as f:
-                    f.write(creds["ssh_key"])
+                    f.write(key)
                 os.chmod(key_path, 0o600)
                 ssh_key = key_path
-    return ssh_user or "root", ssh_key or DEFAULT_SSH_KEY
+    # Last-resort default: the dedicated `barenoc` control user that the
+    # appliance's onboarding flows create (Linux). Stored creds / explicit
+    # params always win when present.
+    return ssh_user or "barenoc", ssh_key or DEFAULT_SSH_KEY
 
 
 def validate_job(job: dict) -> tuple[bool, str]:
@@ -324,6 +332,12 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
     if action == "install_chat_client":
         ssh_user, ssh_key = _resolve_ssh(target, params)
         return ["bash", script_path, target, ssh_user, ssh_key]
+    if action == "enroll_device":
+        ssh_user, ssh_key = _resolve_ssh(target, params)
+        ttl = str(params.get("ttl") or "600")
+        return ["bash", script_path, target, ssh_user, ssh_key, ttl]
+    if action == "snmp_sweep":
+        return ["bash", script_path, target, str(params.get("community", "public"))]
     if action == "unifi_set_ssid_password":
         return ["bash", script_path, str(params.get("ssid", "")),
                 str(params.get("password", ""))]
@@ -438,12 +452,32 @@ def _pi_provider_config() -> dict:
     return {"provider": provider, "model": model, "api_key": key}
 
 
+def _post_progress(ticket_id: str, text: str) -> None:
+    """Post a brief live progress note to the ticket (agent_progress event)."""
+    try:
+        token = _api_login()
+        if not token:
+            return
+        payload = json.dumps({"detail": text[:300]}).encode()
+        req = urllib.request.Request(
+            f"https://localhost/api/v1/tickets/{ticket_id}/progress",
+            data=payload, headers={"Content-Type": "application/json",
+                                   "Authorization": f"Bearer {token}"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
+    except Exception:
+        pass  # progress notes are best-effort; never fail the job for one
+
+
 def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
     """Run the Pi Coding Agent headlessly on a ticket task.
 
     Uses `pi -p` (non-interactive): the task + context are passed as system
     context and the final response is captured on stdout. Runs as the pi-agent
     user with the provider/model/api-key read live from BareNOC's .env.
+    While the agent works, its session transcript is polled and brief
+    assistant messages are relayed to the ticket as LIVE work notes.
     """
     pi_bin = os.getenv("PI_AGENT_BIN", "/home/pi-agent/.local/share/pi-node/current/bin/pi")
     pi_dir = os.path.dirname(os.path.dirname(pi_bin))
@@ -458,13 +492,17 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
         "API, and the bundled UniFi CLI scripts under /opt/barenoc/scripts). "
         "Work autonomously and answer the ticket request directly.\n\n"
         "RULES:\n"
-        "- Answer the request directly and concisely: a few sentences plus any concrete "
-        "findings (values, names, IPs). Do NOT narrate your process and never end with "
-        "'let me compile a summary' — your final message IS the customer answer and is "
-        "posted to the ticket automatically by the runner.\n"
+        "- Keep a LIVE work log: after each meaningful step, write a brief 1-3 line "
+        "progress update (e.g. 'Checking what is at 192.168.10.141…', 'Found device 46 — "
+        "fetching its control credentials', 'Running dnf check-update…'). These are "
+        "relayed to the ticket as live work notes, so write them as status updates a "
+        "human reads.\n"
+        "- Your FINAL message is the complete customer answer: concise, with concrete "
+        "findings (values, names, IPs), and it is posted to the ticket when you finish. "
+        "Do not end with 'let me compile a summary'.\n"
         "- NEVER write to the BareNOC web API yourself: no curl / POST / PUT / DELETE "
         "against https://localhost/api/v1 (no /jobs/result, no ticket or note updates, "
-        "no job files). The runner posts your result to the ticket when you finish. "
+        "no job files). The runner posts your progress notes and result. "
         "Reading the UniFi controller, reading local files, and running the scripts are fine.\n"
         "- If you truly cannot complete the request, say exactly what is missing or "
         "blocking you so a human can help.\n"
@@ -480,15 +518,72 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
     env["PATH"] = f"{pi_dir}/bin:" + env.get("PATH", "")   # so `node` resolves for pi
     logger.info(f"PI task started (ticket {ticket_id}, provider={cfg['provider']}/{cfg['model']}, timeout {timeout}s)")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
-        out = (proc.stdout or "").strip()
-        err = (proc.stderr or "").strip()
-        if proc.returncode == 0 and out:
-            return {"success": True, "output": {"response": out[:20000]}}
-        return {"success": False,
-                "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=env)
+    except Exception as e:
+        return {"success": False, "error": f"pi could not start: {e}"}
+
+    # Live progress: poll the session transcript while pi works.
+    posted = set()
+    pending = []   # (message_id, snippet) awaiting the rate-limit gap
+    last_ts = 0.0
+    cap = 15
+    deadline = time.time() + timeout
+    while time.time() < deadline and proc.poll() is None:
+        try:
+            files = sorted(f for f in os.listdir(session_dir) if f.endswith(".jsonl"))
+            if files:
+                newest = os.path.join(session_dir, files[-1])
+                with open(newest) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            m = json.loads(line)
+                        except Exception:
+                            continue
+                        if m.get("type") != "message":
+                            continue
+                        msg = m.get("message") or {}
+                        if msg.get("role") != "assistant":
+                            continue
+                        mid = m.get("id")
+                        if mid in posted or any(p[0] == mid for p in pending):
+                            continue
+                        text = "".join(
+                            (c.get("text") or "") for c in (msg.get("content") or [])
+                            if isinstance(c, dict) and c.get("type") == "text")
+                        text = text.strip()
+                        if not text:
+                            continue
+                        lines = [l.strip() for l in text.splitlines() if l.strip()]
+                        snippet = "\n".join(lines[:3])[:250]
+                        if snippet:
+                            pending.append((mid, snippet))
+            # Post at most one note per poll cycle, min 8s apart.
+            if pending and time.time() - last_ts >= 8 and len(posted) < cap:
+                mid, snippet = pending.pop(0)
+                _post_progress(ticket_id, snippet)
+                posted.add(mid)
+                last_ts = time.time()
+            if len(posted) >= cap:
+                pending = []
+        except Exception:
+            pass
+        time.sleep(4)
+
+    try:
+        out, err = proc.communicate(timeout=5)
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": f"pi timed out after {timeout}s"}
+        proc.kill()
+        out, err = proc.communicate()
+    out = (out or "").strip()
+    err = (err or "").strip()
+    if proc.returncode == 0 and out:
+        return {"success": True, "output": {"response": out[:20000]}}
+    return {"success": False,
+            "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
 
 
 def execute_job(job: dict) -> dict:
@@ -665,6 +760,21 @@ def _handle_callback(callback: dict, result: dict):
                 logger.info(f"Discovery added device {ip}")
             except Exception as e:
                 logger.error(f"Discovery add failed for {ip}: {e}")
+    elif ctype == "snmp_store":
+        found = (result.get("output") or {}).get("found") or []
+        if found:
+            try:
+                token = _api_login()
+                req = urllib.request.Request(
+                    "https://localhost/api/v1/devices/snmp-sweep-results",
+                    data=json.dumps({"found": found}).encode(),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=8, context=SSL_CTX)
+                logger.info(f"SNMP sweep stored {len(found)} devices")
+            except Exception as e:
+                logger.error(f"SNMP sweep store failed: {e}")
 
 
 def _ticket_status(ticket_id: str) -> str:
@@ -698,6 +808,18 @@ def run():
     # Ensure directories exist
     for d in [JOBS_INCOMING, JOBS_RUNNING, JOBS_COMPLETED, LOGS_DIR]:
         os.makedirs(d, exist_ok=True)
+
+    # Startup recovery: jobs stranded in running/ (e.g. by a restart mid-job)
+    # are re-queued so they finish instead of orphaning their ticket forever.
+    for f in sorted(os.listdir(JOBS_RUNNING)):
+        if f.endswith(".json"):
+            src = os.path.join(JOBS_RUNNING, f)
+            dst = os.path.join(JOBS_INCOMING, f)
+            try:
+                shutil.move(src, dst)
+                logger.info(f"Recovered stranded job {f} -> incoming")
+            except Exception as e:
+                logger.error(f"Could not recover job {f}: {e}")
 
     load_managed_devices()
     active_jobs = {}

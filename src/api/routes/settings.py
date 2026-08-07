@@ -82,6 +82,12 @@ SECTIONS = {
             "client_id": "OIDC_CLIENT_ID",
             "group_admin": "OIDC_GROUP_ADMIN",
             "group_operator": "OIDC_GROUP_OPERATOR",
+            # Appliance identity (drives nginx, Pocket ID origin, the DNS
+            # service, and step-ca) — set at install; changing requires a
+            # redeploy + passkey re-enrollment (WebAuthn RP ID)
+            "appliance_ip": "APPLIANCE_IP",
+            "appliance_domain": "APPLIANCE_DOMAIN",
+            "appliance_host": "APPLIANCE_HOST",
             # GitHub + Google OAuth login (config only for now — flows are
             # future work; toggles ship disabled until credentials exist)
             "github_enabled": "GITHUB_LOGIN_ENABLED",
@@ -402,6 +408,23 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         result["google_client_secret"] = "••••••••" if result["google_client_secret_configured"] else ""
         result["github_enabled"] = _env_bool(env.get("GITHUB_LOGIN_ENABLED", ""))
         result["google_enabled"] = _env_bool(env.get("GOOGLE_LOGIN_ENABLED", ""))
+        # Appliance identity + DNS helper (defaults when unset)
+        ip = result.get("appliance_ip") or "192.168.4.207"
+        host = result.get("appliance_host") or "app.barenoc.com"
+        domain = result.get("appliance_domain") or "barenoc.com"
+        result["appliance_ip"] = ip
+        result["appliance_host"] = host
+        result["appliance_domain"] = domain
+        # passkeys need a public-suffix registrable domain (no .local/.lan/etc.)
+        tld = (domain.rsplit(".", 1)[-1] if "." in domain else domain).lower()
+        private_tlds = {"local", "lan", "internal", "home", "corp", "home.arpa", "localhost"}
+        result["passkey_viable"] = tld not in private_tlds
+        result["passkey_warning"] = "" if result["passkey_viable"] else (
+            f"'{tld}' is not a public-suffix domain — Chrome/Edge/Safari refuse "
+            "passkeys on it. Use a real domain you own (it only needs to resolve "
+            "inside your network).")
+        result["dns_record"] = f"A {host} -> {ip}"
+        result["hosts_lines"] = f"{ip} {host}"
     if section == "policy":
         # Effective values: explicit env override wins, else the profile's
         # preset (mirrors worker policy.py). Never inject a default that

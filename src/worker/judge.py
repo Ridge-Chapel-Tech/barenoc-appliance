@@ -51,6 +51,7 @@ ACTION_CATALOG = [
     "unifi_port_bounce", "unifi_port_rename", "unifi_ensure_wireless_uplinks", "batch",
     "unifi_set_ssid_password",
     "unifi_network_create",
+    "enroll_device",
     "fingerprint_device", "install_chat_client", "complete_ticket",
     "request_customer_input", "escalate_human",
 ]
