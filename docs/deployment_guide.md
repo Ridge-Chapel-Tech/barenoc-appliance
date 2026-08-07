@@ -5,6 +5,42 @@
 
 ---
 
+## Table of Contents
+
+- [What BareNOC is](#what-barenoc-is)
+- [Part A — Shipped with hardware (the BareNOC appliance)](#part-a-shipped-with-hardware-the-barenoc-appliance)
+  - [A1. Unbox & rack](#a1-unbox-rack)
+  - [A2. First boot of the Proxmox host](#a2-first-boot-of-the-proxmox-host)
+  - [A3. Provision a fresh appliance (re-image / pre-ship)](#a3-provision-a-fresh-appliance-re-image-pre-ship)
+  - [A4. First login & configure](#a4-first-login-configure)
+  - [A5. Host-side finishing (appliance-specific)](#a5-host-side-finishing-appliance-specific)
+  - [A6. Trial lifecycle & factory reset](#a6-trial-lifecycle-factory-reset)
+  - [A — Verification checklist](#a-verification-checklist)
+- [Part B — VM deployment (your own hypervisor)](#part-b-vm-deployment-your-own-hypervisor)
+  - [B1. Create the VM](#b1-create-the-vm)
+  - [B2. Install the host prerequisites (inside the VM)](#b2-install-the-host-prerequisites-inside-the-vm)
+  - [B3. Get the code](#b3-get-the-code)
+  - [B4. Configure](#b4-configure)
+  - [B5. Deploy the application](#b5-deploy-the-application)
+  - [B6. Install the host-side agent runner](#b6-install-the-host-side-agent-runner)
+  - [B7. Backups (your hypervisor is your Layer 2)](#b7-backups-your-hypervisor-is-your-layer-2)
+  - [B8. Post-install configuration](#b8-post-install-configuration)
+  - [B — Verification checklist](#b-verification-checklist)
+- [Part C — Bare metal install](#part-c-bare-metal-install)
+  - [C1. Prereqs](#c1-prereqs)
+  - [C2–C5. Identical to B2–B5](#c2c5-identical-to-b2b5)
+  - [C6. Agent runner — identical to B6](#c6-agent-runner-identical-to-b6)
+  - [C7. Backups (no hypervisor — Layer 1 + your own tool)](#c7-backups-no-hypervisor-layer-1-your-own-tool)
+  - [C8. Security hardening (bare metal has no Proxmox firewall by default)](#c8-security-hardening-bare-metal-has-no-proxmox-firewall-by-default)
+  - [C — Verification checklist](#c-verification-checklist)
+- [Common: architecture, config, updates, troubleshooting](#common-architecture-config-updates-troubleshooting)
+  - [Services & ports](#services-ports)
+  - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference-env-srcenvexample-is-the-template)
+  - [Identity & DNS (all tracks)](#identity-dns-all-tracks)
+- [Updating](#updating)
+  - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
+  - [Troubleshooting & operations](#troubleshooting-operations)
+
 ## What BareNOC is
 
 BareNOC is a **single-node network operations appliance**: one Linux machine
