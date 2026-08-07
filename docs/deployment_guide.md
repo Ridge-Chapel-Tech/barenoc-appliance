@@ -7,39 +7,41 @@
 
 ## Table of Contents
 
+- [Who is this guide for?](#who-is-this-guide-for)
 - [What BareNOC is](#what-barenoc-is)
-- [Part A — Shipped with hardware (the BareNOC appliance)](#part-a-shipped-with-hardware-the-barenoc-appliance)
-  - [A1. Unbox & rack](#a1-unbox-rack)
-  - [A2. First boot of the Proxmox host](#a2-first-boot-of-the-proxmox-host)
-  - [A3. Provision a fresh appliance (re-image / pre-ship)](#a3-provision-a-fresh-appliance-re-image-pre-ship)
+- [Part A — Install on your existing Proxmox server](#part-a-install-on-your-existing-proxmox-server)
+  - [A1. Prerequisites](#a1-prerequisites)
+  - [A2. Let the host pull the release (one-time)](#a2-let-the-host-pull-the-release-one-time)
+  - [A3. Run the one-shot installer](#a3-run-the-one-shot-installer)
   - [A4. First login & configure](#a4-first-login-configure)
-  - [A5. Host-side finishing (appliance-specific)](#a5-host-side-finishing-appliance-specific)
-  - [A6. Trial lifecycle & factory reset](#a6-trial-lifecycle-factory-reset)
-  - [A — Verification checklist](#a-verification-checklist)
-- [Part B — VM deployment (your own hypervisor)](#part-b-vm-deployment-your-own-hypervisor)
-  - [B1. Create the VM](#b1-create-the-vm)
-  - [B2. Install the host prerequisites (inside the VM)](#b2-install-the-host-prerequisites-inside-the-vm)
-  - [B3. Get the code](#b3-get-the-code)
-  - [B4. Configure](#b4-configure)
-  - [B5. Deploy the application](#b5-deploy-the-application)
-  - [B6. Install the host-side agent runner](#b6-install-the-host-side-agent-runner)
-  - [B7. Backups (your hypervisor is your Layer 2)](#b7-backups-your-hypervisor-is-your-layer-2)
-  - [B8. Post-install configuration](#b8-post-install-configuration)
+  - [A5. Verification checklist](#a5-verification-checklist)
+- [Part B — Other hypervisors & cloud (manual VM install)](#part-b-other-hypervisors-cloud-manual-vm-install)
+  - [B1. Create the Ubuntu 24.04 VM — per platform](#b1-create-the-ubuntu-2404-vm-per-platform)
+  - [B2. Common manual install (all platforms)](#b2-common-manual-install-all-platforms)
+  - [B3. Backups & post-install](#b3-backups-post-install)
   - [B — Verification checklist](#b-verification-checklist)
-- [Part C — Bare metal install](#part-c-bare-metal-install)
-  - [C1. Prereqs](#c1-prereqs)
-  - [C2–C5. Identical to B2–B5](#c2c5-identical-to-b2b5)
-  - [C6. Agent runner — identical to B6](#c6-agent-runner-identical-to-b6)
-  - [C7. Backups (no hypervisor — Layer 1 + your own tool)](#c7-backups-no-hypervisor-layer-1-your-own-tool)
-  - [C8. Security hardening (bare metal has no Proxmox firewall by default)](#c8-security-hardening-bare-metal-has-no-proxmox-firewall-by-default)
+- [Part C — Shipped BareNOC appliance (customer quickstart)](#part-c-shipped-barenoc-appliance-customer-quickstart)
+  - [C1. Connect & power on](#c1-connect-power-on)
+  - [C2. Find the appliance IP](#c2-find-the-appliance-ip)
+  - [C3. Complete setup](#c3-complete-setup)
+  - [C4. Host-side finishing (appliance-specific)](#c4-host-side-finishing-appliance-specific)
   - [C — Verification checklist](#c-verification-checklist)
-- [Common: architecture, config, updates, troubleshooting](#common-architecture-config-updates-troubleshooting)
+- [Common — config, updates, troubleshooting](#common-config-updates-troubleshooting)
   - [Services & ports](#services-ports)
   - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference-env-srcenvexample-is-the-template)
   - [Identity & DNS (all tracks)](#identity-dns-all-tracks)
 - [Updating](#updating)
   - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
   - [Troubleshooting & operations](#troubleshooting-operations)
+
+## Who is this guide for?
+
+| Your situation | Start at |
+|---|---|
+| You **already run Proxmox VE** and want a BareNOC appliance VM | **Part A** — the standard install |
+| You use **ESXi, KVM, Hyper-V, a cloud VM, or any plain VM** | **Part B** — manual VM install |
+| You **bought a BareNOC appliance** (pre-provisioned hardware) | **Part C** — quickstart (plug in & set up) |
+| You want config, identity/DNS, updates, or troubleshooting | **Common** at the end |
 
 ## What BareNOC is
 
@@ -51,25 +53,12 @@ one **host-side service** (`pi-agent-runner`) that executes the action scripts
 SQLite + encrypted credential files under `/opt/barenoc/` — no external
 services are required.
 
-Everything below deploys **the same application**. The three tracks differ
-only in *how you provision the machine* and *which backup layers apply*:
-
-| | A — Shipped hardware | B — Your VM | C — Bare metal |
-|---|---|---|---|
-| Machine | The rack appliance (Mini PC, we provision it) | Your hypervisor's VM | Your own server |
-| Host OS | Proxmox VE + Ubuntu 24.04 VM | Your Ubuntu 24.04 VM | Ubuntu 24.04 on the metal |
-| Installer | `proxmox/barenoc-appliance.sh` (one-shot) | Manual + `deploy.sh` | Manual + `deploy.sh` |
-| Docker stack | ✅ identical | ✅ identical | ✅ identical |
-| Agent runner | ✅ host-side | ✅ host-side | ✅ host-side |
-| VM snapshots + encrypted USB stick | ✅ (appliance only) | ➖ (use your hypervisor's snapshots) | ➖ (use restic/Borg/Timeshift) |
-| App-data archive (every 6 h) | ✅ | ✅ | ✅ |
-
-**Hardware sizing** (from `docs/appliance/hardware_sizing.md`):
+**Hardware sizing** (endpoints ≈ adopted/managed network devices + clients):
 
 | Profile | Endpoints | vCPU | RAM | Disk | Typical box |
 |---|---|---|---|---|---|
-| **s** | ≤10 | 1 | 2 GB | 30 GB | Mini PC (N100/N150); can run bare-metal, no Proxmox |
-| **m** | ≤50 | 2 | 4 GB | 40 GB | Mini PC (Ryzen 5 / i5); the live reference config |
+| **s** | ≤10 | 1 | 2 GB | 30 GB | Mini PC (N100/N150) |
+| **m** | ≤50 | 2 | 4 GB | 40 GB | Mini PC (Ryzen 5 / i5) — the reference config |
 | **l** | ≤200 | 4 | 8 GB | 80 GB | NUC / small tower (i5/i7) |
 | **xl** | ≤500 | 6 | 16 GB | 160 GB | Small tower / server |
 
@@ -78,73 +67,77 @@ only in *how you provision the machine* and *which backup layers apply*:
 
 ---
 
-## Part A — Shipped with hardware (the BareNOC appliance)
+## Part A — Install on your existing Proxmox server
 
-The rack unit ships **pre-provisioned**: Proxmox VE on the Mini PC, the
-BareNOC VM, and the software already installed. What remains is power-on,
-network assignment, and configuration.
+The standard BareNOC install. You already have a **Proxmox VE host running**;
+the one-shot installer creates the appliance VM, provisions the OS + the Pi
+Agent runtime, and deploys the application — one command, no manual steps in
+between. All commands run **over SSH, in a terminal on the Proxmox host** (the
+web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 
-### A1. Unbox & rack
-Follow `docs/appliance/assembly_guide.md` (10-inch rack) — every cable is
-labeled; the sealed **rack card** in the lid holds the secrets you need later
-(the LUKS USB-stick passphrase and the Proxmox root password).
+### A1. Prerequisites
 
-### A2. First boot of the Proxmox host
-1. Connect the rack's uplink (the appliance LAN goes to the customer network).
-2. Power on. Proxmox boots the VM automatically (auto-start is configured).
-3. Find the VM's IP on your network (router DHCP table / console: `qm terminal 100`).
-   The reference layout uses a static IP like `192.0.2.207`; the web UI is
-   **https://<vm-ip>/**.
+- **Proxmox VE 8.x** running (web UI at `https://<host>:8006`).
+- **Host internet access** — the installer downloads the Ubuntu 24.04 cloud
+  image (~600 MB, cached once) and the VM installs Docker + tooling.
+- **An SSH keypair on the host**: `ls ~/.ssh/id_ed25519.pub` (create with
+  `ssh-keygen -t ed25519` if missing). The host uses it to reach the VM.
+- **A free static IP** for the appliance (e.g. `192.0.2.207`) + its gateway
+  (default: first usable IP of the /24) and DNS (default `1.1.1.1`).
+- A free VMID (the installer defaults to **1000**).
 
-### A3. Provision a fresh appliance (re-image / pre-ship)
-If you are standing up a *new* appliance from the repo (factory/pre-ship), run
-the one-shot installer **on the Proxmox host — over SSH, in a terminal** (the
-web UI at `https://<proxmox>:8006` is only needed later for the console / VM
-view). The installer needs the repo on the host (it runs `deploy.sh` from it)
-and your SSH keypair on the host (`--ssh-key` — the host's own key is used to
-reach the VM):
+### A2. Let the host pull the release (one-time)
+
+The release repo is **private and invite-only**. The cleanest host access is a
+**read-only deploy key** — no interactive login needed:
+
+1. On the host, note its public key: `cat /root/.ssh/id_ed25519.pub`
+2. GitHub → `Ridge-Chapel-Tech/barenoc-appliance` → **Settings → Deploy keys**
+   → paste that key, **untick** write access (read-only).
+   *(Alternative: `gh auth login` device flow on the host, or a PAT.)*
+
+Then pull the release:
 
 ```bash
-# 0. SSH into the Proxmox host from your workstation:
-ssh root@<proxmox-ip>      # e.g. ssh root@192.0.2.95
-
-# 1. one-time: let the host pull the (private, invite-only) release repo.
-#    Add the host's public key as a read-only DEPLOY KEY:
-#      GitHub → Ridge-Chapel-Tech/barenoc-appliance → Settings → Deploy keys
-#      (paste /root/.ssh/id_ed25519.pub, untick write access)
-#    (alternative: gh auth login device flow on the host, or a PAT)
-
-# 2. pull the release onto the host:
+ssh root@<proxmox-ip>                    # from your workstation
 git clone git@github.com:Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc
-
-# 3. from that checkout, run the one-shot installer:
-cd /root/barenoc
-bash proxmox/barenoc-appliance.sh \
-  --ip 192.0.2.210 \          # required: static IP for the VM
-  --ssh-key ~/.ssh/id_ed25519.pub \
-  --profile m \                # s | m | l | xl (default m)
-  --admin-password 'Change-Me-Now'   # optional; auto-generated otherwise
 ```
 
-What it does: downloads/caches the Ubuntu 24.04 cloud image → creates a VM
-sized by `--profile` with cloud-init (static IP, `barenoc` user + your SSH
-key, qemu-guest-agent) → provisions Docker, the pi-agent user + Pi Coding
-Agent runtime, the agent runner service (enabled at boot), UFW, and the
-`/opt/barenoc` skeleton → waits for the provisioning marker → bootstraps
-`/opt/barenoc/.env` from `src/.env.example` (your `--admin-password` is the
-seeded admin login; `JWT_SECRET`, `APPLIANCE_IP`, `APPLIANCE_HOST` are
-injected) → runs `./deploy.sh barenoc@<ip>` to install the application.
-**Result: a ready appliance at https://<ip>** — log in as `admin` with the
-seeded password (the UI forces a change). (`--skip-app` provisions the OS
-only; bootstrap `.env` and run `./deploy.sh` yourself later. A fully manual
-VM path — for hosts without the script — is in
-`docs/appliance/barenoc_vm_create.md`.)
+### A3. Run the one-shot installer
+
+```bash
+cd /root/barenoc
+bash proxmox/barenoc-appliance.sh \
+  --ip 192.0.2.207 \                  # required: static IP for the appliance
+  --ssh-key ~/.ssh/id_ed25519.pub \
+  --profile m \                       # s | m | l | xl (default m)
+  --admin-password 'Change-Me-Now'    # optional; auto-generated otherwise
+```
+
+What it does (≈10–15 min):
+
+1. Downloads/caches the Ubuntu 24.04 cloud image.
+2. Creates the VM sized by `--profile` with cloud-init (static IP, `barenoc`
+   user + your SSH key, qemu-guest-agent, boot-enabled).
+3. First boot provisions: Docker, the `pi-agent` user + Pi Coding Agent
+   runtime, the `pi-agent-runner` service (enabled at boot), UFW (22/443/8443),
+   and the `/opt/barenoc` skeleton.
+4. Bootstraps `/opt/barenoc/.env` from `src/.env.example` — your
+   `--admin-password` is the seeded admin login; `JWT_SECRET`, `APPLIANCE_IP`,
+   `APPLIANCE_HOST` are injected.
+5. Runs `./deploy.sh barenoc@<ip>` — the same single deploy path used for
+   updates — containers up, agent credentials, runner sync.
+
+**Result:** `https://<ip>` — log in as `admin` with the seeded password (the
+UI forces a change). `--skip-app` provisions the OS only; bootstrap `.env` and
+run `./deploy.sh barenoc@<ip>` yourself later.
 
 ### A4. First login & configure
+
 1. Log in with `admin` + the seeded password (the UI forces a change).
 2. **Before enrolling passkeys:** set **Settings → Identity** — your real
    domain for `APP_URL`/`APPLIANCE_HOST` (passkeys require a registrable
-domain + a trusted cert; `.local`/raw IPs fail).
+   domain + a trusted cert; `.local`/raw IPs fail).
 3. Configure in **Settings** (all audit-logged):
    - **UniFi** — controller URL/credentials, auto-sync interval, auto-adopt.
    - **LLM Providers** — the active provider(s) (DeepSeek/Gemini/Anthropic/Ollama).
@@ -153,137 +146,99 @@ domain + a trusted cert; `.local`/raw IPs fail).
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
    - **Tickets / Autonomy Policy** — lifecycle + approval profile for your site.
 
-### A5. Host-side finishing (appliance-specific)
-- **Encrypted USB backup stick (Layer 3):** plug the included stick into the
-  Proxmox host and run **once** per stick:
+### A5. Verification checklist
 
-  ```bash
-  # on the Proxmox host (destructive — wipes the stick)
-  bash /usr/local/bin/setup-usb-backup.sh --dev /dev/sdX
-  ```
-
-  It creates the LUKS2 volume, writes the host keyfile
-  (`/etc/barenoc-usb.key`, root-only) and prints a **recovery passphrase —
-  write it on the sealed rack card / your password manager** (it is never
-  stored on disk). Then verify **Settings → Backups** shows `🔐 LUKS2 · 2
-  keyslots` and the schedule (default: weekly Wednesday 2 AM, configurable in
-  Settings). First run: `bash /usr/local/bin/backup-to-usb.sh`.
-- **Verify the agent runner:** `systemctl status pi-agent-runner` on the VM —
-  active, runs as `pi-agent`. The autonomous "Lily" ticket mode requires
-  `PI_AGENT_ENABLED=true` (set via Settings) + the Pi Coding Agent runtime
-  (installed by the appliance installer).
-
-### A6. Trial lifecycle & factory reset
-Trial provisioning, conversion to paid, and wiping for the next customer:
-`docs/operations/trial_lifecycle.md` and `docs/runbook/factory_reset.md`
-(host-side `factory-reset.sh` restores from the pre-ship snapshot).
-
-### A — Verification checklist
 - [ ] `https://<vm-ip>/api/v1/health` → `200` (all 7 containers up)
 - [ ] First login forces a password change
+- [ ] `systemctl status pi-agent-runner` on the VM → active (runs as `pi-agent`)
 - [ ] UniFi sync discovers gear (`Settings → UniFi → Test connection`)
 - [ ] A test ticket completes (P4 "what time is it?" → Lily/worker answers)
-- [ ] `Settings → Backups` shows stick present + encrypted + last backup
-- [ ] A manual `backup-to-usb.sh` run completes; the archive appears on the stick
+- [ ] Hypervisor snapshot taken post-install (your Layer 2)
 
 ---
 
-## Part B — VM deployment (your own hypervisor)
+## Part B — Other hypervisors & cloud (manual VM install)
 
-You run BareNOC on a VM you create — Proxmox, ESXi, KVM, Hyper-V, cloud — or
-on a VM on the same box you manage. **The application itself is identical to
-Part A; you provide the platform.**
+BareNOC on a VM you create — **ESXi, KVM, Hyper-V, a cloud VM, or any plain
+VM**. The application is identical to Part A; **you provide the platform and
+follow the common manual path below.** No one-shot installer exists for these
+yet — the steps are a one-time ~15 min manual setup.
 
-### B1. Create the VM
-- **Guest OS:** Ubuntu 24.04 LTS Server (cloud image or installer ISO).
-- **Sizing:** use the profile table above (`m` = 2 vCPU / 4 GB / 40 GB is the
-  reference). Give the VM a **static IP** and a DNS-resolvable hostname.
-- Install the **qemu-guest-agent** in the VM if your hypervisor supports it
-  (snapshots + clean shutdown).
+### B1. Create the Ubuntu 24.04 VM — per platform
 
-### B2. Install the host prerequisites (inside the VM)
+Common to all: **Ubuntu 24.04 LTS Server** (cloud image or installer ISO),
+sizing from the profile table (`m` = 2 vCPU / 4 GB / 40 GB), a **static IP**,
+and the platform's guest agent.
+
+- **ESXi** — create a VM (guest OS: Linux / Ubuntu 24.04), attach the cloud
+  image or ISO, size per profile; configure the static IP via cloud-init or
+  guest customization; install **open-vm-tools** in the guest.
+- **KVM / libvirt** — `virt-install` (or virt-manager) with the Ubuntu 24.04
+  cloud image (`--cloud-init` for user/keys/IP); install **qemu-guest-agent**
+  in the guest.
+- **Hyper-V** — **Generation 2** VM, Ubuntu 24.04; static IP via cloud-init;
+  install the Hyper-V Linux integration services (guest agent).
+- **Cloud (AWS / Azure / GCP)** — launch an Ubuntu 24.04 instance, size per
+  profile, assign a **static / elastic IP**; open **22, 443, 8443** in the
+  security group / NSG / firewall (the web UI is 443, Pocket ID is 8443).
+- **Any other VM** — same requirements (Ubuntu 24.04, sizing, static IP,
+  guest agent if available).
+
+### B2. Common manual install (all platforms)
+
+Run these **inside the VM** (as a sudo user):
+
 ```bash
-# Docker Engine + compose v2
+# 1. Docker Engine + compose v2, and the agent tooling
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"
-
-# Agent tooling used by the action scripts
 sudo apt-get install -y nmap snmp snmp-mibs-downloader jq git
-```
 
-### B3. Get the code
-```bash
+# 2. get the code
 sudo mkdir -p /opt/barenoc && sudo chown "$USER" /opt/barenoc
-# from the release tarball (recommended) or a git clone:
-git clone https://github.com/<org>/BareNOC.git /opt/barenoc   # or: extract tarball here
-```
+git clone https://github.com/<org>/BareNOC.git /opt/barenoc   # or extract a release tarball
 
-### B4. Configure
-```bash
+# 3. configure .env  (holds all config + secrets; Settings rewrites it on save)
 cd /opt/barenoc
-cp src/.env.example .env
-chmod 600 .env
-$EDITOR .env     # set: JWT_SECRET, ADMIN_PASSWORD (min 8 chars), the LLM
-                 # provider block, UNIFI_* / GOOGLE_* if used, TZ, SITE_ID, CUSTOMER_NAME
-```
-`.env` holds **all** config + secrets; the Settings UI rewrites it on every
-save (so most values can also be set in the web UI after first login). The
-seeded `admin` login uses `ADMIN_PASSWORD`; the UI forces a change on first
-login.
+cp src/.env.example .env && chmod 600 .env
+$EDITOR .env    # set: JWT_SECRET, ADMIN_PASSWORD (min 8), the LLM provider
+                # block, UNIFI_* / GOOGLE_* if used, TZ, SITE_ID, CUSTOMER_NAME
 
-### B5. Deploy the application
-Two equivalent paths:
-
-**Option 1 — on the box itself (simplest for a single self-host):**
-```bash
-cd /opt/barenoc
+# 4. deploy — Option 1 (on the box): 
 docker compose up --build -d
-# wait for health, then provision the agent service account:
 curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1/api/v1/health   # → 200
 sudo bash /opt/barenoc/scripts/setup_agent_credentials.sh
-```
+#    — or Option 2 (from a control box): ./deploy.sh <user>@<vm-ip>
 
-**Option 2 — from a control box (the dev/deploy flow):**
-```bash
-# on your workstation: ./deploy.sh <user>@<vm-ip>
-./deploy.sh barenoc@192.0.2.210
-```
-`deploy.sh` rsyncs the code, rebuilds the stack, reloads nginx, provisions
-the agent credentials, and syncs the runner (sudo steps print a manual hint
-if passwordless sudo isn't configured — see B6).
-
-### B6. Install the host-side agent runner
-```bash
-# create the service account + runtime dirs
+# 5. install the host-side agent runner
 sudo useradd -r -m -s /bin/bash pi-agent
 sudo mkdir -p /opt/barenoc/agent /opt/barenoc/volumes/logs/agent
 sudo chown -R pi-agent:pi-agent /opt/barenoc/agent /opt/barenoc/volumes/logs/agent
-
-# install the unit + start
 sudo cp src/agent/pi-agent-runner.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now pi-agent-runner
 ```
+
 > **Autonomous "Lily" mode** (`PI_AGENT_ENABLED=true`) additionally needs the
-> Pi Coding Agent runtime under `/home/pi-agent/.local/share/pi-node`
-> (see `docs/02_iac_and_setup_manifests.md` §1.1 / the wiki autonomy page).
-> Without it, the safe-action scripts (ping/SNMP/reboot/UniFi) still work —
-> only the open-ended `pi_task` action is unavailable.
+> Pi Coding Agent runtime under `/home/pi-agent/.local/share/pi-node` (see
+> `docs/02_iac_and_setup_manifests.md` §1.1 / the wiki autonomy page). Without
+> it the safe-action scripts (ping/SNMP/reboot/UniFi) still work — only the
+> open-ended `pi_task` action is unavailable.
 
-### B7. Backups (your hypervisor is your Layer 2)
+### B3. Backups & post-install
+
 - **App data (Layer 1)** — automatic every 6 h, 30-day retention, in
-  `/opt/barenoc/backups/` (a `0600` archive with the DB, secrets, keys,
-  certs). Restore anywhere: `scripts/restore_app.sh --apply <archive>`.
-- **Machine level** — use **your hypervisor's snapshots** for the VM. That is
-  the equivalent of the appliance's daily `vzdump`.
+  `/opt/barenoc/backups/` (0600 archive with DB, secrets, keys, certs).
+  Restore anywhere: `scripts/restore_app.sh --apply <archive>`.
+- **Machine level** — **your hypervisor's snapshots** (the equivalent of the
+  appliance's daily `vzdump`).
 - **Off-site** — copy `/opt/barenoc/backups/` with your own tool (restic,
-  rclone to S3, …). No Proxmox host = no encrypted USB-stick layer; the
-  Settings → Backups page will correctly show the "not an appliance
-  deployment" notice.
-
-### B8. Post-install configuration
-Same as A4 (UniFi, LLM, Email, General, Identity, Tickets/Autonomy).
+  rclone to S3, …). No Proxmox host = no encrypted USB-stick layer; Settings →
+  Backups shows the "not an appliance deployment" notice.
+- **Post-install config** — same as A4 (UniFi, LLM, Email, General, Identity,
+  Tickets/Autonomy).
 
 ### B — Verification checklist
+
 - [ ] `https://<vm-ip>/api/v1/health` → `200`
 - [ ] First login forces a password change
 - [ ] Agent runner active (`systemctl status pi-agent-runner`)
@@ -293,57 +248,72 @@ Same as A4 (UniFi, LLM, Email, General, Identity, Tickets/Autonomy).
 
 ---
 
-## Part C — Bare metal install
+## Part C — Shipped BareNOC appliance (customer quickstart)
 
-BareNOC runs directly on a Linux server — no VM layer. This is the lightest
-option (the `s` profile explicitly calls out "can run bare-metal without
-Proxmox") and suits home/small-office owners who already run a box.
+The rack unit ships **pre-provisioned**: Proxmox VE on the Mini PC, the
+BareNOC VM, and the software already installed. Setup is: **connect → power on
+→ open the URL → configure.**
 
-### C1. Prereqs
-- Ubuntu 24.04 LTS Server installed on the machine (or any distro with
-  Docker + systemd; Ubuntu is the tested reference).
-- Static IP, DNS, and a user with sudo.
-- Sizing: profile table above (`s` = 1 vCPU / 2 GB / 30 GB is enough for a
-  home network; `m` for an SMB).
+### C1. Connect & power on
 
-### C2–C5. Identical to B2–B5
-Install Docker (`get.docker.com`) + agent tooling, get the code to
-`/opt/barenoc`, configure `.env`, deploy with **Option 1** (`docker compose
-up --build -d` + `setup_agent_credentials.sh`) or **Option 2** (`./deploy.sh
-user@<ip>` from a control box).
+1. Plug the appliance's **uplink** into your router or switch (the labelled
+   LAN port).
+2. Power on. The Proxmox host boots the VM automatically (auto-start is
+   configured; first boot takes a couple of minutes).
 
-### C6. Agent runner — identical to B6
-Same `pi-agent` user, unit file, and runtime (autonomous Lily mode optional).
+### C2. Find the appliance IP
 
-### C7. Backups (no hypervisor — Layer 1 + your own tool)
-- **Layer 1 app-data archive** — automatic (every 6 h, 30 days). This is your
-  portable recovery: `restore_app.sh --apply` on **any** Docker box.
-- **Machine level** — pick one: **restic** (local disk + S3/off-site),
-  **BorgBackup**, **Timeshift** (system snapshots), or a plain nightly rsync
-  of `/opt/barenoc/` + the archive. Keep a copy **off the same disk**.
-- No Proxmox host → no vzdump / encrypted USB layers; Settings → Backups
-  shows the BYO notice and disables the stick schedule.
+- **The rack card (sealed card in the lid) lists the static IP** of the
+  appliance and the admin credentials — use that if it's set.
+- Otherwise the appliance got an IP by DHCP; find it any of:
+  - your **router's DHCP lease table** (look for hostname `barenoc`), or
+  - **mDNS**: `ping bareNOC.local` from any machine on the network, or
+  - the **console**: on the Proxmox host, `qm terminal 100` shows the login
+    banner with the IP.
 
-### C8. Security hardening (bare metal has no Proxmox firewall by default)
-```bash
-sudo ufw allow OpenSSH && sudo ufw allow 443/tcp && sudo ufw allow 8443/tcp && sudo ufw enable
-```
-- Key-only SSH (`PermitRootLogin prohibit-password`), a non-root admin user.
-- `.env` stays `0600`; backups stay `0600` (both enforced by the scripts).
+### C3. Complete setup
+
+1. Open **`https://<appliance-ip>/`** (accept the self-signed cert).
+2. Log in as `admin` with the rack card's password (the UI forces a change).
+3. Configure **Settings** in the same order as Part A4 — most importantly set
+   your **real domain in Identity before enrolling passkeys**.
+
+### C4. Host-side finishing (appliance-specific)
+
+- **Encrypted USB backup stick (Layer 3):** plug the included stick into the
+  Proxmox host and run **once** per stick:
+
+  ```bash
+  # on the Proxmox host (destructive — wipes the stick)
+  bash /usr/local/bin/setup-usb-backup.sh --dev /dev/sdX
+  ```
+
+  It creates the LUKS2 volume, writes the host keyfile (`/etc/barenoc-usb.key`,
+  root-only) and prints a **recovery passphrase — write it on the sealed rack
+  card / your password manager** (it is never stored on disk). Then verify
+  **Settings → Backups** shows `🔐 LUKS2 · 2 keyslots` and the schedule
+  (default: weekly Wednesday 2 AM). First run:
+  `bash /usr/local/bin/backup-to-usb.sh`.
 
 ### C — Verification checklist
-- [ ] `https://<ip>/api/v1/health` → `200`
-- [ ] UFW active, only 22/443/8443 open
-- [ ] Agent runner active
-- [ ] A test ticket completes
-- [ ] A restic/Borg/Timeshift backup exists **and** the Layer-1 archive is
-      copied off-box
+
+- [ ] `https://<appliance-ip>/api/v1/health` → `200`
+- [ ] First login forces a password change
+- [ ] UniFi sync discovers gear (`Settings → UniFi → Test connection`)
+- [ ] A test ticket completes (P4 "what time is it?" → Lily answers)
+- [ ] `Settings → Backups` shows stick present + encrypted + last backup
+- [ ] A manual `backup-to-usb.sh` run completes; the archive appears on the stick
+
+> Trial lifecycle & factory reset: `docs/operations/trial_lifecycle.md` and
+> `docs/runbook/factory_reset.md` (host-side `factory-reset.sh` restores from
+> the pre-ship snapshot).
 
 ---
 
-## Common: architecture, config, updates, troubleshooting
+## Common — config, updates, troubleshooting
 
 ### Services & ports
+
 | Service | Role | Port |
 |---|---|---|
 | `barenoc-nginx` | TLS reverse proxy + Pocket ID at 8443 | 443, 8443 |
@@ -351,6 +321,8 @@ sudo ufw allow OpenSSH && sudo ufw allow 443/tcp && sudo ufw allow 8443/tcp && s
 | `barenoc-worker` | ticket pipeline, LLM calls, alerting | — |
 | `barenoc-scheduler` | UniFi auto-sync, periodic jobs | — |
 | `barenoc-pocket-id` | passkey/SSO identity | behind nginx |
+| `barenoc-step-ca` | short-lived device certificates (adoption) | behind nginx |
+| `barenoc-dns` | CoreDNS split-horizon (appliance names + upstream forward) | 53 |
 | `pi-agent-runner` | host-side job executor (systemd, user `pi-agent`) | — |
 
 Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client}` +
@@ -358,6 +330,7 @@ Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client
 `backups/`.
 
 ### Config reference (`.env` — `src/.env.example` is the template)
+
 - **Core:** `JWT_SECRET`, `ADMIN_USERNAME/PASSWORD`, `DATABASE_URL`, `TZ`,
   `SITE_ID`, `CUSTOMER_NAME`, `BOT_QUEUE_MANAGER_NAME` (Juniper),
   `BOT_ASSISTANT_NAME` (Lily), `CHAT_CLIENT_ENABLED`.
@@ -397,6 +370,7 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
 (WebAuthn origin) — set it right at first run.
 
 ## Updating
+
 - **Application code:** `./deploy.sh <user>@<ip>` (rsync → rebuild → health
   check → agent credentials → runner sync). Always snapshot the VM (or take
   your hypervisor's snapshot) before an update.
@@ -406,6 +380,7 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
   track), or rebuild from the last known-good `.env` + archive.
 
 ### First-test / smoke checklist (all tracks)
+
 - [ ] `GET /api/v1/health` → 200
 - [ ] Login → forced password change
 - [ ] `Settings → UniFi → Test connection` → `connected: true`
@@ -415,6 +390,7 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
       repo if you changed the runner
 
 ### Troubleshooting & operations
+
 - `docs/runbook/troubleshooting.md` — the common failure ladder.
 - `docs/03_post_deployment_runbook.md` — day-2 ops, restore, recovery.
 - `docs/security/secret_management.md` — credential handling + rotation.
