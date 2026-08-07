@@ -67,12 +67,18 @@ on the host (it runs `deploy.sh` from it) and your SSH keypair on the host
 (`--ssh-key` — the host's own key is used to reach the VM):
 
 ```bash
-# 1. copy this repo to the Proxmox host (git clone / rsync — the full tree;
-#    deploy.sh syncs src/ + client/ from it)
-rsync -a --exclude=.git /path/to/BareNOC/ root@<proxmox>:/root/barenoc/
+# 1. one-time: let the host pull the (private, invite-only) release repo.
+#    Add the host's public key as a read-only DEPLOY KEY:
+#      GitHub → Ridge-Chapel-Tech/barenoc-appliance → Settings → Deploy keys
+#      (paste /root/.ssh/id_ed25519.pub, untick write access)
+#    (alternative: gh auth login device flow on the host, or a PAT)
 
-# 2. on the host, from that checkout:
-bash /root/barenoc/proxmox/barenoc-appliance.sh \
+# 2. pull the release onto the host:
+git clone git@github.com:Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc
+
+# 3. from that checkout, run the one-shot installer:
+cd /root/barenoc
+bash proxmox/barenoc-appliance.sh \
   --ip 192.0.2.210 \          # required: static IP for the VM
   --ssh-key ~/.ssh/id_ed25519.pub \
   --profile m \                # s | m | l | xl (default m)
