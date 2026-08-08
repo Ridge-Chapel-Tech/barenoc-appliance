@@ -56,7 +56,7 @@ jobs:
       # via the BareNOC-Website push-to-deploy repo (downloads/ -> Hostinger).
       # Public during early access; updates are gated by the activation key.
       - name: Publish to barenoc.com (versions.json + tarball)
-        if: env.WEBSITE_PAT != ''
+        if: secrets.WEBSITE_PAT != ''
         env:
           WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
           VERSION: ${{ steps.ver.outputs.APP_VERSION }}
