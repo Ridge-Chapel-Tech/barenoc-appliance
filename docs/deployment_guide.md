@@ -107,6 +107,7 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 ### A1. Prerequisites
 
 - **Proxmox VE 8.x** running (web UI at `https://<host>:8006`).
+- **`git` on the host** (minimal installs lack it): `apt-get update && apt-get install -y git`
 - **Host internet access** — the installer downloads the Ubuntu 24.04 cloud
   image (~600 MB, cached once) and the VM installs Docker + tooling.
 - **An SSH keypair on the host**: `ls ~/.ssh/id_ed25519.pub` (create with
@@ -134,6 +135,8 @@ git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/baren
 > No GitHub CLI on the host? Use a **personal access token** (GitHub →
 > Settings → Developer settings → PAT, read access to that repo) in the URL:
 > `git clone https://<you>:<PAT>@github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc`
+>
+> (git itself may need installing first: `apt-get update && apt-get install -y git`)
 
 ### A3. Run the one-shot installer
 
