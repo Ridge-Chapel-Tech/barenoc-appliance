@@ -63,6 +63,35 @@
   - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
   - [Troubleshooting & operations](#troubleshooting-operations)
 
+## Table of Contents
+
+- [Who is this guide for?](#who-is-this-guide-for)
+- [What BareNOC is](#what-barenoc-is)
+- [Part A — Install on your existing Proxmox server](#part-a-install-on-your-existing-proxmox-server)
+  - [A1. Prerequisites](#a1-prerequisites)
+  - [A2. Get the release onto the host](#a2-get-the-release-onto-the-host)
+  - [A3. Run the one-shot installer](#a3-run-the-one-shot-installer)
+  - [A4. First login & configure](#a4-first-login-configure)
+  - [A5. Verification checklist](#a5-verification-checklist)
+- [Part B — Other hypervisors & cloud (manual VM install)](#part-b-other-hypervisors-cloud-manual-vm-install)
+  - [B1. Create the Ubuntu 24.04 VM — per platform](#b1-create-the-ubuntu-2404-vm-per-platform)
+  - [B2. Common manual install (all platforms)](#b2-common-manual-install-all-platforms)
+  - [B3. Backups & post-install](#b3-backups-post-install)
+  - [B — Verification checklist](#b-verification-checklist)
+- [Part C — Shipped BareNOC appliance (customer quickstart)](#part-c-shipped-barenoc-appliance-customer-quickstart)
+  - [C1. Connect & power on](#c1-connect-power-on)
+  - [C2. Find the appliance IP](#c2-find-the-appliance-ip)
+  - [C3. Complete setup](#c3-complete-setup)
+  - [C4. Host-side finishing (appliance-specific)](#c4-host-side-finishing-appliance-specific)
+  - [C — Verification checklist](#c-verification-checklist)
+- [Common — config, updates, troubleshooting](#common-config-updates-troubleshooting)
+  - [Services & ports](#services-ports)
+  - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference-env-srcenvexample-is-the-template)
+  - [Identity & DNS (all tracks)](#identity-dns-all-tracks)
+- [Updating](#updating)
+  - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
+  - [Troubleshooting & operations](#troubleshooting-operations)
+
 ## Who is this guide for?
 
 | Your situation | Start at |
@@ -106,7 +135,7 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 
 ### A1. Prerequisites
 
-- **Proxmox VE 8.x** running (web UI at `https://<host>:8006`).
+- **Proxmox VE 8.x or newer** running (web UI at `https://<host>:8006`).
 - **`git` on the host** (minimal installs lack it): `apt-get update && apt-get install -y git`
 - **Host internet access** — the installer downloads the Ubuntu 24.04 cloud
   image (~600 MB, cached once) and the VM installs Docker + tooling.
@@ -172,6 +201,10 @@ run `./deploy.sh barenoc@<ip>` yourself later.
 ### A4. First login & configure
 
 1. Log in with `admin` + the seeded password (the UI forces a change).
+2. **No real domain?** Password-only login works as-is — you can skip
+   Identity/passkeys entirely (a home user doesn't need a domain). If you
+   want passkeys, see Common → Identity & DNS (a cheap domain resolved
+   *internally only* is enough).
 2. **Before enrolling passkeys:** set **Settings → Identity** — your real
    domain for `APP_URL`/`APPLIANCE_HOST` (passkeys require a registrable
    domain + a trusted cert; `.local`/raw IPs fail).
@@ -181,7 +214,10 @@ run `./deploy.sh barenoc@<ip>` yourself later.
    - **Email** — Gmail OAuth2 (client id/secret/refresh token) + recipients/schedule.
    - **General** — site ID, customer name, timezone, bot names.
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
+   - **Licensing** — your early-access activation key (gates updates).
    - **Tickets / Autonomy Policy** — lifecycle + approval profile for your site.
+   - **Dashboard → Updates** — check for releases, **Update now / Schedule /
+     Rollback** (needs the Licensing key).
 
 ### A5. Verification checklist
 
@@ -406,6 +442,16 @@ appliance is never the sole resolver, so a reboot can't break the LAN.
 Changing the domain later requires a redeploy + re-enrolling passkeys
 (WebAuthn origin) — set it right at first run.
 
+**No real domain?** A home user has two options:
+- **Password-only (no domain at all):** skip Identity/passkeys and log in with
+  the local `admin` account (and any Users you add). Passkeys are an optional
+  login layer — everything else works without them.
+- **Cheap/free domain, internal-only resolution:** passkeys need a
+  *registrable* domain, but it never has to resolve publicly — the
+  appliance's split-horizon DNS (or a hosts line) makes `app.<domain>` work
+  on the LAN. A $10/yr domain or a free subdomain (e.g. `foo.duckdns.org`)
+  is enough; no public DNS records are required.
+
 ## Updating
 
 - **App code (releases):** the dashboard **Updates** card checks the public
@@ -436,6 +482,11 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
 
 ### Troubleshooting & operations
 
+- **A fresh install stalls mid-`deploy.sh`?** The installer is idempotent
+  *except* for the VM itself — if the app deploy step failed (SSH, perms,
+  certs), pull the latest fixes and re-run just the deploy:
+  `cd /root/barenoc && git pull && ./deploy.sh barenoc@<ip>` — it converges
+  the VM (fixes ownership, generates certs/keys, restarts services).
 - `docs/runbook/troubleshooting.md` — the common failure ladder.
 - `docs/03_post_deployment_runbook.md` — day-2 ops, restore, recovery.
 - `docs/security/secret_management.md` — credential handling + rotation.
