@@ -59,9 +59,17 @@ ssh "$VM" "sudo install -m 0755 /tmp/barenoc-self-update.sh /usr/local/bin/ && \
   sudo systemctl daemon-reload && sudo systemctl enable --now barenoc-self-update.path" 2>/dev/null \
   && echo "self-update units installed" || echo "!! self-update units not installed (manual: see deploy log)"
 
+# Convergence: pocket-id crashes without ENCRYPTION_KEY (>=16 bytes) — add it
+# to .env once if missing (Settings/other env keys untouched).
+ssh "$VM" 'grep -qE "^ENCRYPTION_KEY=.+" /opt/barenoc/.env || \
+  (echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/barenoc/.env && echo "ENCRYPTION_KEY added") || true'
+
 # Agent runner: /opt/barenoc/agent/ is owned by pi-agent, so only sync when changed
 if ! diff -q "$SRC/agent/runner.py" <(ssh "$VM" "cat /opt/barenoc/agent/runner.py" 2>/dev/null) >/dev/null 2>&1; then
   echo "==> Agent runner.py changed; copying via temp (needs pi-agent access)"
+  # ensure the runner's dir is pi-agent-owned (fresh installs create it via the
+  # skeleton as barenoc until the installer fix lands)
+  ssh "$VM" "sudo chown -R pi-agent:pi-agent /opt/barenoc/agent 2>/dev/null || true"
   scp -q "$SRC/agent/runner.py" "$VM:/tmp/runner.py"
   if ! ssh "$VM" "sudo -u pi-agent cp /tmp/runner.py /opt/barenoc/agent/runner.py && sudo systemctl restart pi-agent-runner" 2>/dev/null; then
     echo "!! Could not update agent runner (needs sudo). Deploy manually:"
