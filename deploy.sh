@@ -20,6 +20,53 @@ ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_st
 # The container reads it on first boot to init the CA, then keeps its own copy.
 ssh "$VM" "sudo chown 1000:1000 /opt/barenoc/volumes/step-ca; [ -s /opt/barenoc/volumes/step-ca/password-in ] || { umask 077; sudo openssl rand -base64 24 | sudo tee /opt/barenoc/volumes/step-ca/password-in >/dev/null; sudo chown 1000:1000 /opt/barenoc/volumes/step-ca/password-in; }"
 
+# step-ca: the container's entrypoint prompts for the ADMIN password (no TTY in
+# a container) — run the FULL entrypoint once, feeding the prompts via stdin,
+# so the CA initializes with secrets/password etc. and the real container just
+# starts the server. Idempotent.
+ssh "$VM" 'if [ ! -f /opt/barenoc/volumes/step-ca/config/ca.json ]; then
+  ADMINPW=$(cat /opt/barenoc/volumes/step-ca/password-in)
+  { printf "step\n%s\n" "$ADMINPW"; sleep 30; } | timeout 35 \
+    docker run --rm -i -v /opt/barenoc/volumes/step-ca:/home/step \
+      -e STEPPATH=/home/step \
+      -e DOCKER_STEPCA_INIT_NAME="BareNOC Internal CA" \
+      -e DOCKER_STEPCA_INIT_DNS_NAMES=stepca.barenoc.local \
+      -e DOCKER_STEPCA_INIT_PROVISIONER_NAME=admin \
+      -e DOCKER_STEPCA_INIT_ADDRESS=:443 \
+      -e DOCKER_STEPCA_INIT_ACME=true \
+      -e DOCKER_STEPCA_INIT_PASSWORD_FILE=/home/step/password-in \
+      smallstep/step-ca:latest >/dev/null 2>&1 || true
+  echo "step-ca CA initialized"
+fi'
+
+# barenoc-devices provisioner: the api signs device-enrollment tokens with this
+# key. Generate our own keypair and register it (--private-key/--public-key).
+ssh "$VM" 'if [ ! -f /opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem ]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out /tmp/barenoc-devices.pem
+  openssl ec -in /tmp/barenoc-devices.pem -pubout -out /tmp/barenoc-devices.pub 2>/dev/null
+  docker run --rm -v /opt/barenoc/volumes/step-ca:/home/step \
+    -v /tmp/barenoc-devices.pem:/tmp/bd.pem:ro -v /tmp/barenoc-devices.pub:/tmp/bd.pub:ro \
+    -v /opt/barenoc/volumes/step-ca/password-in:/run/secrets/ca_password:ro \
+    -e STEPPATH=/home/step smallstep/step-ca:latest step ca provisioner add \
+      barenoc-devices --type=JWK --private-key /tmp/bd.pem --public-key /tmp/bd.pub \
+      --ca-config /home/step/config/ca.json --password-file /run/secrets/ca_password \
+    && cp /tmp/barenoc-devices.pem /opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem \
+    && chown 1000:1000 /opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem \
+    && echo "barenoc-devices provisioner created"
+fi'
+
+# nginx needs the CA root (device mTLS) + the intermediate pair (stepca vhost);
+# the intermediate key is EC-encrypted with the CA password — decrypt it.
+ssh "$VM" 'ADMINPW=$(cat /opt/barenoc/volumes/step-ca/password-in)
+  sudo mkdir -p /opt/barenoc/volumes/nginx/certs
+  sudo cp /opt/barenoc/volumes/step-ca/certs/root_ca.crt /opt/barenoc/volumes/nginx/certs/ca-root.crt
+  sudo cp /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt /opt/barenoc/volumes/nginx/certs/stepca-intermediate.crt
+  sudo openssl ec -in /opt/barenoc/volumes/step-ca/secrets/intermediate_ca_key \
+    -passin pass:"$ADMINPW" -out /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key 2>/dev/null
+  sudo chmod 0644 /opt/barenoc/volumes/nginx/certs/ca-root.crt /opt/barenoc/volumes/nginx/certs/stepca-intermediate.crt
+  sudo chmod 0640 /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key
+  echo "step-ca certs -> nginx"'
+
 # Security: .env holds all API keys/secrets — never world-readable
 ssh "$VM" "chmod 600 /opt/barenoc/.env"
 
