@@ -110,9 +110,17 @@ DEPLOY="$REPO/deploy.sh"
 CLOUDIMG="/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img"
 CLOUDIMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 SNIPPET_DIR="/var/lib/vz/snippets"
-# cicustom wants Proxmox volume IDs (storage:snippets/file), not paths.
+# cicustom wants Proxmox volume IDs (storage:snippets/file) + the snippets
+# content type enabled on that storage — enable it if missing (idempotent).
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-$(pvesm status -content snippets 2>/dev/null | awk 'NR==2{print $1}')}"
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
+CUR="$(awk -v s="$SNIPPET_STORAGE" \
+  '$1 ~ /^[a-z]+:$/ && $2==s{f=1; next} f && /^[[:space:]]*content[[:space:]]/{sub(/^[[:space:]]*content[[:space:]]*/,""); print; exit}' \
+  /etc/pve/storage.cfg)"
+case ",${CUR}," in
+  *,snippets,*) echo "snippets already enabled on $SNIPPET_STORAGE" ;;
+  *) pvesm set "$SNIPPET_STORAGE" --content "${CUR},snippets" && echo "enabled snippets on $SNIPPET_STORAGE" ;;
+esac
 USERDATA="$SNIPPET_DIR/barenoc-${VM_ID}-user.yml"
 META="$SNIPPET_DIR/barenoc-${VM_ID}-meta.yml"
 CICUSTOM="user=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-user.yml,meta=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-meta.yml"
