@@ -32,7 +32,7 @@ ssh "$VM" "sudo ufw allow 53/udp 2>/dev/null; sudo ufw allow 53/tcp 2>/dev/null;
 
 # Backup: let the backup cron read the DB dir (root-owned; root still writes fine).
 # Run via the api container (root) since the barenoc user has no sudo.
-ssh "$VM" 'docker exec barenoc-api chown -R "$(id -u barenoc):$(id -g barenoc)" /opt/barenoc/volumes/db' || true
+ssh "$VM" 'docker ps -q -f name=^barenoc-api$ | grep -q . && docker exec barenoc-api chown -R "$(id -u barenoc):$(id -g barenoc)" /opt/barenoc/volumes/db || true'
 
 # Backup: install app-data backup cron (every 6h, idempotent)
 ssh "$VM" "crontab -l 2>/dev/null | grep -q backup_app.sh || (crontab -l 2>/dev/null; echo '0 */6 * * * /opt/barenoc/scripts/backup_app.sh >> /opt/barenoc/backups/backup.log 2>&1') | crontab -"
@@ -52,11 +52,11 @@ rsync -rltz --no-o --no-g "$SRC/docker-compose.yml" "$VM:/opt/barenoc/docker-com
 
 # Self-update (L3): install the host-side apply service + the .path watcher
 # that fires it when the API writes an update/rollback request.
-scp -q "$SRC/scripts/barenoc-self-update.sh" "$VM:/usr/local/bin/barenoc-self-update.sh"
-ssh "$VM" "chmod 755 /usr/local/bin/barenoc-self-update.sh && \
-  install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && \
-  install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && \
-  systemctl daemon-reload && systemctl enable --now barenoc-self-update.path" 2>/dev/null \
+scp -q "$SRC/scripts/barenoc-self-update.sh" "$VM:/tmp/barenoc-self-update.sh"
+ssh "$VM" "sudo install -m 0755 /tmp/barenoc-self-update.sh /usr/local/bin/ && \
+  sudo install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && \
+  sudo install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && \
+  sudo systemctl daemon-reload && sudo systemctl enable --now barenoc-self-update.path" 2>/dev/null \
   && echo "self-update units installed" || echo "!! self-update units not installed (manual: see deploy log)"
 
 # Agent runner: /opt/barenoc/agent/ is owned by pi-agent, so only sync when changed
