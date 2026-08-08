@@ -14,7 +14,7 @@ SRC="$ROOT/src"
 echo "==> Deploying to $VM:/opt/barenoc"
 
 # Ensure runtime directories exist (docker auto-creates mounts, but own them)
-ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_status /opt/barenoc/volumes/pocket-id/data /opt/barenoc/volumes/step-ca /opt/barenoc/volumes/dns"
+ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_status /opt/barenoc/volumes/update_status /opt/barenoc/volumes/pocket-id/data /opt/barenoc/volumes/step-ca /opt/barenoc/volumes/dns"
 
 # step-ca: bootstrap the CA password file (uid 1000 = the step container user).
 # The container reads it on first boot to init the CA, then keeps its own copy.
@@ -49,6 +49,15 @@ rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/nginx/"          "$VM:/opt
 rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/scripts/"        "$VM:/opt/barenoc/scripts/"
 rsync -rltz --no-o --no-g --exclude=__pycache__ "$ROOT/client/"       "$VM:/opt/barenoc/client/"
 rsync -rltz --no-o --no-g "$SRC/docker-compose.yml" "$VM:/opt/barenoc/docker-compose.yml"
+
+# Self-update (L3): install the host-side apply service + the .path watcher
+# that fires it when the API writes an update/rollback request.
+scp -q "$SRC/scripts/barenoc-self-update.sh" "$VM:/usr/local/bin/barenoc-self-update.sh"
+ssh "$VM" "chmod 755 /usr/local/bin/barenoc-self-update.sh && \
+  install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && \
+  install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && \
+  systemctl daemon-reload && systemctl enable --now barenoc-self-update.path" 2>/dev/null \
+  && echo "self-update units installed" || echo "!! self-update units not installed (manual: see deploy log)"
 
 # Agent runner: /opt/barenoc/agent/ is owned by pi-agent, so only sync when changed
 if ! diff -q "$SRC/agent/runner.py" <(ssh "$VM" "cat /opt/barenoc/agent/runner.py" 2>/dev/null) >/dev/null 2>&1; then

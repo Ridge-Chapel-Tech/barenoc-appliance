@@ -178,8 +178,30 @@ v2025.07.2  — second release in July 2025
 v2025.08.1  — first release in August 2025
 ```
 
-> Versioning is historical; current releases are tracked by git commit + the
-> version shown in the web UI footer / System page.
+### Release manifest + gated self-updates (early access)
+
+Releases publish `versions.json` + the release tarball to
+**https://barenoc.com/downloads/** (via the BareNOC-Website push-to-deploy
+repo). The manifest is public; the **tarball is public during early access** —
+updates are **gated by the activation key**: the appliance verifies its
+`ACTIVATION_KEY` (Settings → Licensing / installer `--activation-key`) against
+the public allowlist (`downloads/activation-keys.json`, key + hashed email +
+active). A revoked/missing key disables updates (soft — the appliance keeps
+running).
+
+**Update now / Schedule / Rollback** (dashboard → Updates):
+- `GET/POST /api/v1/updates/…` — status, check, now, rollback, schedule,
+  licensing (the scheduler applies scheduled updates at the configured
+day/hour).
+- The api writes a trigger file → the host-side `barenoc-self-update.path`
+  systemd unit runs `barenoc-self-update.sh` as root: optional Proxmox
+  snapshot (restricted `qm snapshot`/`qm rollback` key) → download the tarball
+  → verify SHA256 → back up the current code to `.previous` → map the release
+tree onto `/opt/barenoc` → `compose up --build -d` → health check → runner
+restart. On health failure: restore `.previous` (+ `qm rollback`). `.env`,
+`volumes/`, `jobs/` and `backups/` are never touched.
+- **Outage:** only the container recreate phase (~15–45 s); schedule in a
+  low-traffic window. Blue/green (clone + promote) is the GA upgrade path.
 
 ---
 

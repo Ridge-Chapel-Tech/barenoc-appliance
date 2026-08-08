@@ -1,0 +1,10 @@
+[Unit]
+Description=BareNOC self-update (apply released versions)
+After=network-online.target docker.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/barenoc-self-update.sh
+TimeoutStartSec=1800

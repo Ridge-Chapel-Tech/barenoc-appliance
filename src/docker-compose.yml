@@ -17,6 +17,7 @@ services:
       - /opt/barenoc/.env:/opt/barenoc/.env
       - /opt/barenoc/backups:/opt/barenoc/backups:ro
       - /opt/barenoc/volumes/backup_status:/opt/barenoc/volumes/backup_status
+      - /opt/barenoc/volumes/update_status:/opt/barenoc/volumes/update_status
       - /opt/barenoc/volumes/remote_access:/opt/barenoc/volumes/remote_access:ro
       - /opt/barenoc/client:/opt/barenoc/client:ro
       # step-ca device adoption (Phase F): provisioner key + CA root (ro)

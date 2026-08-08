@@ -23,16 +23,25 @@ dev laptop). State lives in `scripts/.early-access-state.json` (**gitignored** �
 usernames/due dates never enter the repos).
 
 ```bash
-python3 scripts/early_access.py grant <username>              # invite collaborator (read) + due in 1 month
-python3 scripts/early_access.py grant <username> --free       # free slot (max 2) — never auto-revoked
-python3 scripts/early_access.py grant <username> --months 3   # paid for 3 months
-python3 scripts/early_access.py revoke <username>             # remove collaborator + state
-python3 scripts/early_access.py mark-paid <username>          # payment received → extend due (webhook target)
-python3 scripts/early_access.py free <username> | unfree <username>
-python3 scripts/early_access.py list                          # collaborators + state
-python3 scripts/early_access.py check                         # monthly sweep: revoke past-due non-free users
-python3 scripts/early_access.py install-timer                 # systemd user timer: check on the 1st (Persistent=true)
+python3 scripts/early_access.py grant <user> <email> [--free|--months N]  collaborator + activation key
+python3 scripts/early_access.py issue-key <user> <email> [--months N]      key only (replace)
+python3 scripts/early_access.py revoke <user>                             collaborator + key
+python3 scripts/early_access.py revoke-key <user>                         key only
+python3 scripts/early_access.py mark-paid <user>                          payment received → extend due (webhook)
+python3 scripts/early_access.py free <user> | unfree <user>
+python3 scripts/early_access.py list
+python3 scripts/early_access.py check                                     monthly sweep: revoke past-due (collab + key)
+python3 scripts/early_access.py publish-keys [--no-push]                  regen + push the public allowlist
+python3 scripts/early_access.py install-timer                             systemd user timer: check on the 1st
 ```
+
+`grant` issues a **`BARC-XXXX-XXXX-XXXX` activation key bound to the purchase
+email** and publishes the public allowlist to barenoc.com
+(`downloads/activation-keys.json` — key + **hashed** email + active flag; raw
+emails stay in the local state only). The appliance verifies its key against
+that list: valid → updates allowed; revoked/missing → updates disabled (soft —
+the appliance keeps running). The key is entered on the appliance via the
+installer `--activation-key` or Settings → Licensing.
 
 `check` never touches: the **owner** (the `gh` account running it) or **free**
 users. It logs what it revoked; a dry view is `python3 scripts/early_access.py list`.

@@ -14,7 +14,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard, updates
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 
@@ -245,6 +245,7 @@ app.include_router(unifi_sync.router)
 app.include_router(system.router)
 app.include_router(settings.router)
 app.include_router(users.router)
+app.include_router(updates.router)
 app.include_router(branding.router)
 app.include_router(chat.router)
 app.include_router(client.router)

@@ -144,6 +144,8 @@ bash proxmox/barenoc-appliance.sh \
   --ssh-key ~/.ssh/id_ed25519.pub \
   --profile m \                       # s | m | l | xl (default m)
   --admin-password 'Change-Me-Now'    # optional; auto-generated otherwise
+  --activation-key 'BARC-…'           # optional: early-access key (gates updates)
+  --activation-email 'you@example.com'
 ```
 
 What it does (≈10–15 min):
@@ -403,13 +405,21 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
 
 ## Updating
 
-- **Application code:** `./deploy.sh <user>@<ip>` (rsync → rebuild → health
-  check → agent credentials → runner sync). Always snapshot the VM (or take
-  your hypervisor's snapshot) before an update.
-- **OS + Docker images on the machine:** `sudo /opt/barenoc/scripts/barenoc-update.sh`
+- **App code (releases):** the dashboard **Updates** card checks the public
+  manifest (gated by your **activation key** — Settings → Licensing, or the
+  installer's `--activation-key`) and offers **Update now / Schedule /
+  Rollback**. The update snapshots the VM (when the host key is configured),
+  downloads the release, verifies the checksum, rebuilds, health-checks, and
+  auto-restores on failure. Outage ≈ 15–45 s — schedule in a low-traffic
+  window.
+- **OS + Docker images:** `sudo /opt/barenoc/scripts/barenoc-update.sh`
   (`--dry-run` to preview, `--no-apt` for images only; never auto-reboots).
-- **Rollback:** VM snapshot rollback (A/B), `restore_app.sh --apply` (any
-  track), or rebuild from the last known-good `.env` + archive.
+- **Vendor path (dev/control box):** `./deploy.sh <user>@<ip>` (rsync →
+  rebuild → health check → agent credentials → runner sync). Always snapshot
+  the VM before an update.
+- **Rollback:** the Updates card's Rollback (restores the pre-update code
+  copy), `qm rollback` of the pre-update snapshot, or `restore_app.sh --apply`
+  from a Layer-1 archive.
 
 ### First-test / smoke checklist (all tracks)
 

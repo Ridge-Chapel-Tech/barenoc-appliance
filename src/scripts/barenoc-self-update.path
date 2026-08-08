@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch BareNOC update / rollback requests
+
+[Path]
+PathModified=/opt/barenoc/volumes/update_status/update_request.json
+PathModified=/opt/barenoc/volumes/update_status/rollback_request.json
+
+[Install]
+WantedBy=multi-user.target

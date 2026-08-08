@@ -89,6 +89,21 @@ def _api_patch(path: str, data: dict, token: str):
     urllib.request.urlopen(req, timeout=10)
 
 
+def _api_post(path: str, data: dict, token: str):
+    """Make authenticated POST request to API (accepts non-200 gracefully)."""
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(
+        f"{API_BASE}{path}",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=10)
+
+
 _VERIFY_COOLDOWN = {}   # dev_id -> last queued timestamp (stop the flood)
 VERIFY_COOLDOWN_SECONDS = 3600   # one verify attempt per device per hour
 
@@ -195,6 +210,38 @@ def _unifi_autosync_config() -> tuple:
     return enabled, interval
 
 
+def check_update_schedule(token: str, last_triggered: dict):
+    """Settings → Updates schedule: at the configured day/hour, queue the
+    update (POST /updates/now — the host service applies it). Runs at most
+    once per calendar day."""
+    try:
+        sched = _api_get("/updates/schedule", token)
+    except Exception as e:
+        logger.debug(f"update schedule read failed: {e}")
+        return
+    if not sched.get("enabled"):
+        return
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    day = str(sched.get("day", "daily"))
+    if day != "daily":
+        # config 0=Sunday..6=Saturday; python weekday() 0=Monday..6=Sunday
+        sun0 = (now.weekday() + 1) % 7
+        if sun0 != int(day):
+            return
+    if int(sched.get("hour", 2)) != now.hour:
+        return
+    key = f"{day}-{now.date().isoformat()}"
+    if last_triggered.get("update") == key:
+        return
+    try:
+        _api_post("/updates/now", {}, token)
+        last_triggered["update"] = key
+        logger.info(f"Scheduled update queued ({key})")
+    except Exception as e:
+        logger.warning(f"Scheduled update not queued: {e}")
+
+
 def run():
     """Main scheduler loop."""
     logger.info("BareNOC Scheduler starting...")
@@ -203,6 +250,8 @@ def run():
     last_health = 0
     last_snmp = 0
     last_unifi = 0
+    last_upd_sched = 0
+    _last_triggered = {}
 
     while True:
         try:
@@ -228,6 +277,11 @@ def run():
                 logger.info(f"Running UniFi auto-sync (every {interval_min}m)...")
                 _sync_unifi(token)
                 last_unifi = now
+
+            # Scheduled update (Settings → Updates) — checked every 60s.
+            if now - last_upd_sched >= 60:
+                check_update_schedule(token, _last_triggered)
+                last_upd_sched = now
 
         except Exception as e:
             logger.error(f"Scheduler error: {e}")

@@ -28,11 +28,18 @@ jobs:
           python3 scripts/changelog_section.py "${{ steps.ver.outputs.APP_VERSION }}" > /tmp/notes.md
           echo "notes_size=$(wc -c < /tmp/notes.md)" >> "$GITHUB_OUTPUT"
 
+      - name: Build release manifest + tarball
+        run: |
+          python3 scripts/build_release_manifest.py --out /tmp/release-dist \
+            --changelog "https://github.com/Ridge-Chapel-Tech/barenoc-appliance/releases/tag/v${{ steps.ver.outputs.APP_VERSION }}"
+          ls -la /tmp/release-dist
+
       - name: Collect release assets + checksums
         run: |
           mkdir -p /tmp/assets
           cp install.sh proxmox/barenoc-appliance.sh proxmox/build_barenoc_iso.sh \
              proxmox/setup-usb-backup.sh /tmp/assets/
+          cp /tmp/release-dist/* /tmp/assets/
           ( cd /tmp/assets && sha256sum * > SHA256SUMS )
           ls -la /tmp/assets
 
@@ -45,35 +52,22 @@ jobs:
             --title "v${VERSION}" \
             --notes-file /tmp/notes.md
 
-      - name: Publish versions.json (release artifact)
+      # Early access: publish versions.json + the release tarball to barenoc.com
+      # via the BareNOC-Website push-to-deploy repo (downloads/ -> Hostinger).
+      # Public during early access; updates are gated by the activation key.
+      - name: Publish to barenoc.com (versions.json + tarball)
+        if: env.WEBSITE_PAT != ''
+        env:
+          WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
+          VERSION: ${{ steps.ver.outputs.APP_VERSION }}
         run: |
-          VERSION="${{ steps.ver.outputs.APP_VERSION }}"
-          python3 - "$VERSION" <<'EOF'
-          import json, sys, hashlib, pathlib
-          v = sys.argv[1]
-          assets = pathlib.Path("/tmp/assets")
-          sha = lambda name: hashlib.sha256((assets / name).read_bytes()).hexdigest()
-          manifest = {
-            "version": v,
-            "channel": "stable",
-            "released_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-            "iso": {"url": "", "sha256": "", "size_bytes": 0},  # uploaded manually (R2/B2)
-            "appliance_script": {
-              "url": f"https://github.com/<org>/BareNOC/releases/download/v{v}/barenoc-appliance.sh",
-              "sha256": sha("barenoc-appliance.sh"),
-            },
-            "installer": {
-              "url": f"https://github.com/<org>/BareNOC/releases/download/v{v}/install.sh",
-              "sha256": sha("install.sh"),
-            },
-            "changelog_url": f"https://github.com/<org>/BareNOC/releases/tag/v{v}",
-          }
-          pathlib.Path("versions.json").write_text(json.dumps(manifest, indent=2))
-          EOF
-          echo "versions.json written (publish to https://barenoc.com/download/ + R2 per marketing/download_distribution.md)"
-          cat versions.json
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: versions.json
-          path: versions.json
+          git clone -q "https://x-access-token:${WEBSITE_PAT}@github.com/Ridge-Chapel-Tech/BareNOC-Website.git" /tmp/site
+          mkdir -p /tmp/site/downloads
+          cp /tmp/release-dist/* /tmp/site/downloads/
+          cd /tmp/site
+          git config user.email "release@barenoc.com"
+          git config user.name "BareNOC Release"
+          git add downloads/
+          git commit -q -m "release v${VERSION}: manifest + tarball" || true
+          git push -q
+          echo "published v${VERSION} -> barenoc.com/downloads (auto-deploy via website repo)"

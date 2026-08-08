@@ -17,6 +17,30 @@
     <!-- Stat Cards -->
     <div id="stat-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
 
+    <!-- Updates (update now / schedule / rollback) -->
+    <div id="updates-card" class="mt-8 bg-white shadow rounded-lg p-6 hidden">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">Updates</h3>
+        <div class="flex gap-2 text-xs">
+          <button onclick="updCheck()" class="rounded-md bg-gray-100 px-3 py-1.5 hover:bg-gray-200">Check now</button>
+          <button onclick="updNow()" id="upd-now-btn" class="rounded-md bg-barenoc-600 text-white px-3 py-1.5 hover:bg-barenoc-700" disabled>Update now</button>
+          <button onclick="updToggleSchedule()" class="rounded-md bg-gray-100 px-3 py-1.5 hover:bg-gray-200">Schedule</button>
+          <button onclick="updRollback()" class="rounded-md bg-red-50 text-red-700 px-3 py-1.5 hover:bg-red-100">Rollback</button>
+        </div>
+      </div>
+      <div id="upd-body" class="mt-3 text-sm text-gray-600"></div>
+      <div id="upd-schedule" class="mt-3 hidden border-t pt-3 text-xs text-gray-500">
+        <label><input type="checkbox" id="upd-sched-enable" class="mr-1"> enable scheduled update</label>
+        <select id="upd-sched-day" class="ml-2 rounded border px-1 py-0.5">
+          <option value="daily">daily</option><option value="0">Sun</option><option value="1">Mon</option>
+          <option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option>
+          <option value="5">Fri</option><option value="6">Sat</option>
+        </select>
+        <input type="number" id="upd-sched-hour" min="0" max="23" value="2" class="ml-1 w-14 rounded border px-1 py-0.5"> :00
+        <button onclick="updSaveSchedule()" class="ml-2 rounded-md bg-gray-100 px-2 py-1 hover:bg-gray-200">Save schedule</button>
+      </div>
+    </div>
+
     <!-- Recent Tickets -->
     <div id="recent-section" class="mt-8 hidden">
         <h2 class="text-lg font-medium text-gray-900">Recent Tickets</h2>
@@ -83,6 +107,60 @@
 
 <script>
 const TOKEN = () => localStorage.getItem('access_token');
+
+// Minimal escape helper (dashboard uses template literals elsewhere).
+function esc(t) { if (t === null || t === undefined) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ── Updates (Update now / Schedule / Rollback) ──
+async function updFetch(path, opts) {
+  const r = await fetch('/api/v1/updates' + path, Object.assign({
+    headers: { 'Authorization': 'Bearer ' + TOKEN(), 'Content-Type': 'application/json' }
+  }, opts || {}));
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + r.status)); }
+  return r.json();
+}
+function updKind(k) { return k === 'major' ? '🟥 major' : k === 'minor' ? '🟧 minor' : k === 'patch' ? '🟨 patch' : ''; }
+async function updLoad() {
+  try {
+    const s = await updFetch('/status');
+    const acc = s.update_access || {};
+    const card = document.getElementById('updates-card');
+    const el = document.getElementById('upd-body');
+    card.classList.remove('hidden');
+    const avail = s.available
+      ? ' &nbsp;→&nbsp; <b>' + esc(s.latest) + '</b> <span class="text-xs">' + updKind(s.kind) + '</span>'
+        + (s.changelog ? ' <a class="text-barenoc-600 underline" href="' + esc(s.changelog) + '" target="_blank">notes</a>' : '')
+      : '';
+    let accTxt;
+    if (acc.key_set === false) accTxt = '⚙️ no activation key — <a href="/settings" class="text-barenoc-600 underline">Settings → Licensing</a>';
+    else if (acc.revoked) accTxt = '⛔ ' + esc(acc.reason || 'update access revoked');
+    else if (!acc.valid) accTxt = '⚠️ ' + esc(acc.reason || 'update access inactive');
+    else accTxt = '✅ update access active';
+    el.innerHTML = '<div>Version: <b>' + esc(s.current || '?') + '</b>' + avail + '</div>'
+      + '<div class="mt-1">' + accTxt + '</div>'
+      + (s.last_update && s.last_update.at ? '<div class="mt-1 text-xs text-gray-400">Last update: ' + (s.last_update.ok ? '✅ ' : '❌ ') + esc((s.last_update.version || '') + (s.last_update.error ? ' — ' + s.last_update.error : '')) + '</div>' : '')
+      + (s.checked_at ? '<div class="mt-1 text-xs text-gray-400">Checked ' + esc(fmtTz(s.checked_at)) + '</div>' : '');
+    document.getElementById('upd-now-btn').disabled = !(s.available && acc.valid);
+    const sc = s.schedule || {};
+    document.getElementById('upd-sched-enable').checked = !!sc.enabled;
+    document.getElementById('upd-sched-day').value = sc.day || 'daily';
+    document.getElementById('upd-sched-hour').value = sc.hour != null ? sc.hour : 2;
+  } catch (e) { console.error('updates:', e); }
+}
+async function updCheck() { await updFetch('/check', { method: 'POST' }); updLoad(); }
+async function updNow() { if (!confirm('Apply the pending update now? The appliance restarts briefly.')) return; try { const r = await updFetch('/now', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
+async function updRollback() { if (!confirm('Roll back to the previous release?')) return; try { const r = await updFetch('/rollback', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
+async function updSaveSchedule() {
+  try {
+    await updFetch('/schedule', { method: 'POST', body: JSON.stringify({
+      enabled: document.getElementById('upd-sched-enable').checked,
+      day: document.getElementById('upd-sched-day').value,
+      hour: parseInt(document.getElementById('upd-sched-hour').value)
+    })});
+    alert('schedule saved'); updLoad();
+  } catch (e) { alert(e.message); }
+}
+function updToggleSchedule() { document.getElementById('upd-schedule').classList.toggle('hidden'); }
 
 // Timestamps are stored as naive UTC — render them in the viewer's local time.
 function fmtTz(ts) {
@@ -172,7 +250,7 @@ async function loadDashboard() {
     document.getElementById('loading-dashboard').style.display = 'none';
 }
 
-document.addEventListener('DOMContentLoaded', loadDashboard);
+document.addEventListener('DOMContentLoaded', function () { loadDashboard(); updLoad(); });
 
 // ── Performance & Reporting ──
 let _charts = [];
