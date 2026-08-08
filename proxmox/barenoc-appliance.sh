@@ -189,6 +189,9 @@ install -d -o barenoc -g docker -m 0750 /opt/barenoc
 for d in volumes/db volumes/logs/api volumes/logs/worker volumes/logs/scheduler volumes/logs/agent volumes/secrets/ssh volumes/nginx/certs volumes/branding volumes/backup_status volumes/pocket-id/data jobs/incoming jobs/running jobs/completed backups pi-work agent; do
   install -d -o barenoc -g docker /opt/barenoc/$d
 done
+# install -d only chowns the FINAL dir — fix the intermediates (volumes/, jobs/,
+# backups/, pi-work/) so deploy.sh (and the runner) can write into them.
+chown barenoc:docker /opt/barenoc/volumes /opt/barenoc/jobs /opt/barenoc/backups /opt/barenoc/pi-work
 
 # agent runner systemd unit (runs as pi-agent; ProtectHome=no for the pi runtime)
 cat > /etc/systemd/system/pi-agent-runner.service <<'UNIT'
