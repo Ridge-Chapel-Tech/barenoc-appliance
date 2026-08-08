@@ -186,9 +186,11 @@ rm -f /tmp/node.tar.xz
 
 # /opt/barenoc skeleton (deploy.sh fills the rest)
 install -d -o barenoc -g docker -m 0750 /opt/barenoc
-for d in volumes/db volumes/logs/api volumes/logs/worker volumes/logs/scheduler volumes/logs/agent volumes/secrets/ssh volumes/nginx/certs volumes/branding volumes/backup_status volumes/pocket-id/data jobs/incoming jobs/running jobs/completed backups pi-work agent; do
+for d in volumes/db volumes/logs/api volumes/logs/worker volumes/logs/scheduler volumes/logs/agent volumes/secrets/ssh volumes/nginx/certs volumes/branding volumes/backup_status volumes/pocket-id/data volumes/static jobs/incoming jobs/running jobs/completed backups pi-work; do
   install -d -o barenoc -g docker /opt/barenoc/$d
 done
+# the runner's dir is pi-agent-owned (deploy syncs runner.py into it)
+install -d -o pi-agent -g pi-agent /opt/barenoc/agent
 # install -d only chowns the FINAL dir — fix the intermediates (volumes/, jobs/,
 # backups/, pi-work/) so deploy.sh (and the runner) can write into them.
 chown barenoc:docker /opt/barenoc/volumes /opt/barenoc/jobs /opt/barenoc/backups /opt/barenoc/pi-work
@@ -320,6 +322,7 @@ fi
 # the seeded admin password and the appliance identity. Everything else (LLM
 # keys, UniFi, email) is set in the web UI → Settings after first login.
 JWT="$(openssl rand -hex 32)"
+ENCRYPTION_KEY="$(openssl rand -hex 32)"   # pocket-id requires >=16 bytes
 if [[ $SKIP_APP -eq 0 ]]; then
   echo "==> Bootstrapping /opt/barenoc/.env (template + seeded admin + identity)"
   scp -q "$REPO/src/.env.example" "barenoc@$IP:/tmp/barenoc-env.example"
