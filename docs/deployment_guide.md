@@ -34,6 +34,35 @@
   - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
   - [Troubleshooting & operations](#troubleshooting-operations)
 
+## Table of Contents
+
+- [Who is this guide for?](#who-is-this-guide-for)
+- [What BareNOC is](#what-barenoc-is)
+- [Part A — Install on your existing Proxmox server](#part-a-install-on-your-existing-proxmox-server)
+  - [A1. Prerequisites](#a1-prerequisites)
+  - [A2. Get the release onto the host](#a2-get-the-release-onto-the-host)
+  - [A3. Run the one-shot installer](#a3-run-the-one-shot-installer)
+  - [A4. First login & configure](#a4-first-login-configure)
+  - [A5. Verification checklist](#a5-verification-checklist)
+- [Part B — Other hypervisors & cloud (manual VM install)](#part-b-other-hypervisors-cloud-manual-vm-install)
+  - [B1. Create the Ubuntu 24.04 VM — per platform](#b1-create-the-ubuntu-2404-vm-per-platform)
+  - [B2. Common manual install (all platforms)](#b2-common-manual-install-all-platforms)
+  - [B3. Backups & post-install](#b3-backups-post-install)
+  - [B — Verification checklist](#b-verification-checklist)
+- [Part C — Shipped BareNOC appliance (customer quickstart)](#part-c-shipped-barenoc-appliance-customer-quickstart)
+  - [C1. Connect & power on](#c1-connect-power-on)
+  - [C2. Find the appliance IP](#c2-find-the-appliance-ip)
+  - [C3. Complete setup](#c3-complete-setup)
+  - [C4. Host-side finishing (appliance-specific)](#c4-host-side-finishing-appliance-specific)
+  - [C — Verification checklist](#c-verification-checklist)
+- [Common — config, updates, troubleshooting](#common-config-updates-troubleshooting)
+  - [Services & ports](#services-ports)
+  - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference-env-srcenvexample-is-the-template)
+  - [Identity & DNS (all tracks)](#identity-dns-all-tracks)
+- [Updating](#updating)
+  - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
+  - [Troubleshooting & operations](#troubleshooting-operations)
+
 ## Who is this guide for?
 
 | Your situation | Start at |
@@ -86,22 +115,25 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
   (default: first usable IP of the /24) and DNS (default `1.1.1.1`).
 - A free VMID (the installer defaults to **1000**).
 
-### A2. Let the host pull the release (one-time)
+### A2. Get the release onto the host
 
-The release repo is **private and invite-only**. The cleanest host access is a
-**read-only deploy key** — no interactive login needed:
-
-1. On the host, note its public key: `cat /root/.ssh/id_ed25519.pub`
-2. GitHub → `Ridge-Chapel-Tech/barenoc-appliance` → **Settings → Deploy keys**
-   → paste that key, **untick** write access (read-only).
-   *(Alternative: `gh auth login` device flow on the host, or a PAT.)*
-
-Then pull the release:
+The release repo is **private and invite-only** — you'll have received a
+**collaborator invitation** on your GitHub account (check your email / GitHub
+notifications; you need a free GitHub account). On the Proxmox host,
+authenticate **as yourself** once and clone:
 
 ```bash
 ssh root@<proxmox-ip>                    # from your workstation
-git clone git@github.com:Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc
+
+# one-time auth on the host — the GitHub CLI (device flow) is easiest:
+apt-get install -y gh && gh auth login   # scopes: repo
+
+git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc
 ```
+
+> No GitHub CLI on the host? Use a **personal access token** (GitHub →
+> Settings → Developer settings → PAT, read access to that repo) in the URL:
+> `git clone https://<you>:<PAT>@github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc`
 
 ### A3. Run the one-shot installer
 

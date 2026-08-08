@@ -26,3 +26,4 @@ client_secret_*.json
 
 # Internal ops log — contains test-build detail; kept local only
 SESSION_LOG.md
+scripts/.early-access-state.json
