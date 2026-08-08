@@ -16,6 +16,13 @@ set -u
 AGENT_DIR="/opt/barenoc/agent"
 CREDS_FILE="$AGENT_DIR/credentials"
 
+# Guard: a stale DIRECTORY at the credentials path (created when the agent dir
+# wasn't pi-agent-owned on a fresh install) breaks the agent login — clear it.
+if [ -d "$CREDS_FILE" ]; then
+  echo "removing stale credentials directory: $CREDS_FILE"
+  rm -rf "$CREDS_FILE"
+fi
+
 # 1. Generate a fresh random password (rotate on every run)
 PASSWORD=$(openssl rand -hex 24)
 
