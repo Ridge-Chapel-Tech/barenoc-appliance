@@ -18,7 +18,7 @@ ssh "$VM" "mkdir -p /opt/barenoc/volumes/branding /opt/barenoc/volumes/backup_st
 
 # step-ca: bootstrap the CA password file (uid 1000 = the step container user).
 # The container reads it on first boot to init the CA, then keeps its own copy.
-ssh "$VM" "chown 1000:1000 /opt/barenoc/volumes/step-ca; [ -s /opt/barenoc/volumes/step-ca/password-in ] || { umask 077; openssl rand -base64 24 | tr '+/' '_-' > /opt/barenoc/volumes/step-ca/password-in; chown 1000:1000 /opt/barenoc/volumes/step-ca/password-in; }"
+ssh "$VM" "sudo chown 1000:1000 /opt/barenoc/volumes/step-ca; [ -s /opt/barenoc/volumes/step-ca/password-in ] || { umask 077; sudo openssl rand -base64 24 | sudo tee /opt/barenoc/volumes/step-ca/password-in >/dev/null; sudo chown 1000:1000 /opt/barenoc/volumes/step-ca/password-in; }"
 
 # Security: .env holds all API keys/secrets — never world-readable
 ssh "$VM" "chmod 600 /opt/barenoc/.env"
@@ -111,8 +111,20 @@ echo "dns Corefile rendered (IP=$IP host=$HOST)"
 docker restart barenoc-dns >/dev/null 2>&1 && echo "dns restarted" || echo "dns container not up yet"
 RENDER
 
+# TLS cert for nginx — self-signed with the appliance SANs (app.barenoc.com +
+# .local names + IP). Generated once; without it nginx crash-loops on fresh
+# installs. The browser gets a warning until the CA is trusted (see the wiki).
+IP="${APPLIANCE_IP:-$(grep -E '^APPLIANCE_IP=' <(ssh "$VM" 'cat /opt/barenoc/.env') | head -1 | cut -d= -f2-)}"
+ssh "$VM" "sudo mkdir -p /opt/barenoc/volumes/nginx/certs && \
+  [ -s /opt/barenoc/volumes/nginx/certs/barenoc.crt ] || \
+  sudo openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
+    -keyout /opt/barenoc/volumes/nginx/certs/barenoc.key \
+    -out /opt/barenoc/volumes/nginx/certs/barenoc.crt \
+    -subj '/CN=app.barenoc.com' \
+    -addext 'subjectAltName=DNS:app.barenoc.com,DNS:bareNOC.local,DNS:pocket-id.barenoc.local,DNS:stepca.barenoc.local,IP:${IP:-192.168.4.207}'"
+
 # step-cli builds for self-service onboarding (Linux + macOS; fetched once)
-ssh "$VM" 'mkdir -p /opt/barenoc/volumes/static && for p in "step:step_linux_amd64" "step-cli-darwin_amd64:step_darwin_amd64" "step-cli-darwin_arm64:step_darwin_arm64"; do out="${p%%:*}"; src="${p##*:}"; [ -s "/opt/barenoc/volumes/static/$out" ] && continue; (cd /tmp && curl -sL "https://dl.smallstep.com/gh-release/cli/gh-release-header/v0.30.2/${src}.tar.gz" -o s.tgz && tar xzf s.tgz && find "${src}" -name step -type f -exec cp {} "/opt/barenoc/volumes/static/$out" \; && chmod 755 "/opt/barenoc/volumes/static/$out" && rm -rf s.tgz "${src}" && echo "fetched $out") || true; done'
+ssh "$VM" 'sudo mkdir -p /opt/barenoc/volumes/static && sudo chown barenoc:docker /opt/barenoc/volumes/static && for p in "step:step_linux_amd64" "step-cli-darwin_amd64:step_darwin_amd64" "step-cli-darwin_arm64:step_darwin_arm64"; do out="${p%%:*}"; src="${p##*:}"; [ -s "/opt/barenoc/volumes/static/$out" ] && continue; (cd /tmp && curl -sL "https://dl.smallstep.com/gh-release/cli/gh-release-header/v0.30.2/${src}.tar.gz" -o s.tgz && tar xzf s.tgz && find "${src}" -name step -type f -exec cp {} "/opt/barenoc/volumes/static/$out" \; && chmod 755 "/opt/barenoc/volumes/static/$out" && rm -rf s.tgz "${src}" && echo "fetched $out") || true; done'
 
 # Agent service credentials: create/rotate the `agent` service account + 0600
 # credential file (needs the api container up). Idempotent.

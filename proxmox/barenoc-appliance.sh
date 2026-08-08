@@ -326,6 +326,7 @@ if [[ $SKIP_APP -eq 0 ]]; then
   ssh "barenoc@$IP" "install -m 600 /tmp/barenoc-env.example /opt/barenoc/.env && sed -i \
     's|^JWT_SECRET=.*|JWT_SECRET=${JWT}|;
      s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|;
+     s|^# ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENCRYPTION_KEY}|;
      s|^# APPLIANCE_IP=.*|APPLIANCE_IP=${IP}|;
      s|^# APPLIANCE_HOST=.*|APPLIANCE_HOST=${APPLIANCE_HOST}|;
      s|^# ACTIVATION_KEY=.*|ACTIVATION_KEY=${ACTIVATION_KEY}|;
