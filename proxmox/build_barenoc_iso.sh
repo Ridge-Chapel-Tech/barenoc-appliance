@@ -71,7 +71,7 @@ tar czf "$APP_TARBALL" -C "$REPO" \
 APP_TARBALL_B64="$(base64 -w0 "$APP_TARBALL")"
 
 # ── 3. provisioning script (first boot, after OS install) ──────────────────
-read -r -d '' PROVISION <<'PROVEOF'
+read -r -d '' PROVISION <<'PROVEOF' || true
 #!/bin/bash
 set -euxo pipefail
 exec > /var/log/barenoc-provision.log 2>&1

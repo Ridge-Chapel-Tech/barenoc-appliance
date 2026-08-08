@@ -143,7 +143,8 @@ fi
 
 # ── 2. OS-provisioning user-data (runs once on first boot) ─────────────────
 # The provisioning script is base64-embedded so YAML quoting can't mangle it.
-read -r -d '' PROVISION <<'PROVEOF'
+# `read -d ''` returns 1 at EOF (no NUL found) — `|| true` keeps set -e happy.
+read -r -d '' PROVISION <<'PROVEOF' || true
 #!/bin/bash
 set -euxo pipefail
 exec > /var/log/barenoc-provision.log 2>&1
