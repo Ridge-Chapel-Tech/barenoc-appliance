@@ -172,6 +172,8 @@ apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin \
   nmap snmp snmp-mibs-downloader
 usermod -aG docker barenoc
+# pi-agent needs the docker group to traverse /opt/barenoc (0750 barenoc:docker)
+usermod -aG docker pi-agent
 
 # pi-agent user + Pi Coding Agent runtime (node + the pi npm package)
 useradd -r -m -s /bin/bash pi-agent
@@ -194,6 +196,8 @@ install -d -o pi-agent -g pi-agent /opt/barenoc/agent
 # install -d only chowns the FINAL dir — fix the intermediates (volumes/, jobs/,
 # backups/, pi-work/) so deploy.sh (and the runner) can write into them.
 chown barenoc:docker /opt/barenoc/volumes /opt/barenoc/jobs /opt/barenoc/backups /opt/barenoc/pi-work
+# the runner's writable trees are pi-agent-owned (job queue + its log)
+chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent
 
 # agent runner systemd unit (runs as pi-agent; ProtectHome=no for the pi runtime)
 cat > /etc/systemd/system/pi-agent-runner.service <<'UNIT'

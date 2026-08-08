@@ -67,9 +67,12 @@ ssh "$VM" 'grep -qE "^ENCRYPTION_KEY=.+" /opt/barenoc/.env || \
 # Agent runner: /opt/barenoc/agent/ is owned by pi-agent, so only sync when changed
 if ! diff -q "$SRC/agent/runner.py" <(ssh "$VM" "cat /opt/barenoc/agent/runner.py" 2>/dev/null) >/dev/null 2>&1; then
   echo "==> Agent runner.py changed; copying via temp (needs pi-agent access)"
-  # ensure the runner's dir is pi-agent-owned (fresh installs create it via the
-  # skeleton as barenoc until the installer fix lands)
-  ssh "$VM" "sudo chown -R pi-agent:pi-agent /opt/barenoc/agent 2>/dev/null || true"
+  # runner identity convergence: docker-group traversal of /opt/barenoc + the
+  # pi-agent-owned job queue and log (fresh installs get this via the provision;
+  # existing installs converge here).
+  ssh "$VM" "sudo usermod -aG docker pi-agent 2>/dev/null; \
+    sudo chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent 2>/dev/null; \
+    sudo chown -R pi-agent:pi-agent /opt/barenoc/agent 2>/dev/null || true"
   scp -q "$SRC/agent/runner.py" "$VM:/tmp/runner.py"
   if ! ssh "$VM" "sudo -u pi-agent cp /tmp/runner.py /opt/barenoc/agent/runner.py && sudo systemctl restart pi-agent-runner" 2>/dev/null; then
     echo "!! Could not update agent runner (needs sudo). Deploy manually:"
