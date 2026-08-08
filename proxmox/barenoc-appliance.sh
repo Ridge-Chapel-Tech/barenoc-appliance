@@ -301,6 +301,17 @@ for _ in $(seq 1 60); do
 done
 
 # ── 4.5 .env bootstrap ─────────────────────────────────────────────────────
+# First contact with the fresh VM: drop any stale host key (an earlier
+# appliance at this IP) and accept the new one so deploy.sh's ssh/scp work.
+ssh-keygen -f /root/.ssh/known_hosts -R "$IP" 2>/dev/null || true
+mkdir -p /root/.ssh
+if ! grep -q "^Host $IP$" /root/.ssh/config 2>/dev/null; then
+  cat >> /root/.ssh/config <<CONF
+
+Host $IP
+    StrictHostKeyChecking accept-new
+CONF
+fi
 # deploy.sh expects /opt/barenoc/.env to exist (it seeds the admin user + all
 # app config from it); the installer creates it from the repo template with
 # the seeded admin password and the appliance identity. Everything else (LLM
