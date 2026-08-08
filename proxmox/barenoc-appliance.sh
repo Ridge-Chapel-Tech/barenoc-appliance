@@ -267,9 +267,7 @@ qm create "$VM_ID" \
   --cpu cputype=host \
   --net0 "virtio,bridge=$BRIDGE" \
   --scsihw virtio-scsi-pci \
-  --scsi0 "$STORAGE:0,size=${DISK_GB}G,ssd=1" \
   --ide2 "$STORAGE:cloudinit" \
-  --boot order=scsi0 \
   --serial0 socket \
   --vga serial0 \
   --agent enabled=1 \
@@ -281,9 +279,10 @@ qm create "$VM_ID" \
 
 echo "==> Importing cloud image (this can take a minute)…"
 qm importdisk "$VM_ID" "$CLOUDIMG" "$STORAGE" 2>/dev/null
-# use the imported disk as scsi0 (replaces the empty disk created above)
+# the imported cloud image becomes scsi0 (no pre-created disk to replace);
+# ide2 (cloudinit) already exists from qm create — don't re-specify it.
 IMPORTED="$(qm config "$VM_ID" | awk '/unused0/ {print $2}')"
-qm set "$VM_ID" --scsi0 "$IMPORTED" --ide2 "$STORAGE:cloudinit" --boot order=scsi0
+qm set "$VM_ID" --scsi0 "$IMPORTED" --boot order=scsi0
 qm resize "$VM_ID" scsi0 "${DISK_GB}G"
 
 echo "==> Starting VM $VM_ID (first boot: OS provisioning, ~2-4 min)…"
