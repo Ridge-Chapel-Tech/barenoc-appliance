@@ -110,8 +110,12 @@ DEPLOY="$REPO/deploy.sh"
 CLOUDIMG="/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img"
 CLOUDIMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 SNIPPET_DIR="/var/lib/vz/snippets"
+# cicustom wants Proxmox volume IDs (storage:snippets/file), not paths.
+SNIPPET_STORAGE="${SNIPPET_STORAGE:-$(pvesm status -content snippets 2>/dev/null | awk 'NR==2{print $1}')}"
+SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
 USERDATA="$SNIPPET_DIR/barenoc-${VM_ID}-user.yml"
 META="$SNIPPET_DIR/barenoc-${VM_ID}-meta.yml"
+CICUSTOM="user=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-user.yml,meta=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-meta.yml"
 
 [[ "$IP" ]] || { echo "ERROR: --ip is required" >&2; usage; exit 1; }
 [[ -f "$SSH_KEY" ]] || { echo "ERROR: SSH key not found: $SSH_KEY" >&2; exit 1; }
@@ -265,7 +269,7 @@ qm create "$VM_ID" \
   --onboot 1 \
   --ipconfig0 "ip=$IP/24,gw=$GATEWAY" \
   --nameserver "$DNS" \
-  --cicustom "user=$USERDATA,meta=$META"
+  --cicustom "$CICUSTOM"
 
 echo "==> Importing cloud image (this can take a minute)…"
 qm importdisk "$VM_ID" "$CLOUDIMG" "$STORAGE" 2>/dev/null
