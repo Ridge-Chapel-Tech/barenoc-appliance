@@ -14,6 +14,11 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-24.04
+    env:
+      # Job-level env: the `secrets` context is NOT allowed in step-level
+      # `if:` conditions (workflow-parse failure) — expose it here and gate
+      # the publish step on env.WEBSITE_PAT instead.
+      WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,13 +57,12 @@ jobs:
             --title "v${VERSION}" \
             --notes-file /tmp/notes.md
 
-      # Early access: publish versions.json + the release tarball to barenoc.com
-      # via the BareNOC-Website push-to-deploy repo (downloads/ -> Hostinger).
-      # Public during early access; updates are gated by the activation key.
+      # Publish versions.json + the release tarball to barenoc.com via the
+      # BareNOC-Website push-to-deploy repo (downloads/ -> Hostinger).
+      # BareNOC is free & open — no activation-key gating.
       - name: Publish to barenoc.com (versions.json + tarball)
-        if: secrets.WEBSITE_PAT != ''
+        if: env.WEBSITE_PAT != ''
         env:
-          WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
           VERSION: ${{ steps.ver.outputs.APP_VERSION }}
         run: |
           git clone -q "https://x-access-token:${WEBSITE_PAT}@github.com/Ridge-Chapel-Tech/BareNOC-Website.git" /tmp/site
