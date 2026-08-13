@@ -210,9 +210,10 @@ class DeviceAdoptionTest(unittest.TestCase):
     def test_report_links_device(self):
         from routes.device_certs import device_report
         from types import SimpleNamespace as NS
+        import asyncio
         req = NS(headers={"x-ssl-client-dn": "CN=device-Cam01,OU=bareNOC"})
         db = SessionLocal()
-        r = device_report(request=req, db=db)
+        r = asyncio.run(device_report(request=req, db=db))
         d = db.query(Device).get(self.device_id)
         self.assertEqual(r["adopted"], "linked")
         self.assertEqual(r["method"], "cert")
@@ -224,22 +225,32 @@ class DeviceAdoptionTest(unittest.TestCase):
         from routes.device_certs import device_report
         from types import SimpleNamespace as NS
         from fastapi import HTTPException
+        import asyncio
         db = SessionLocal()
         d = db.query(Device).get(self.device_id)
         d.adoption_status = "revoked"
         db.commit()
         req = NS(headers={"x-ssl-client-dn": "CN=device-Cam01"})
         with self.assertRaises(HTTPException):
-            device_report(request=req, db=db)
+            asyncio.run(device_report(request=req, db=db))
         db.close()
 
-    def test_report_unknown_cn_404(self):
+    def test_report_unknown_cn_self_registers(self):
+        """A valid cert for an unknown CN self-registers the device (Phase F:
+        the /onboard portal enrolls a cert and the first report links it)."""
         from routes.device_certs import device_report
         from types import SimpleNamespace as NS
-        from fastapi import HTTPException
+        import asyncio
         req = NS(headers={"x-ssl-client-dn": "CN=device-Nope"})
-        with self.assertRaises(HTTPException):
-            device_report(request=req, db=SessionLocal())
+        db = SessionLocal()
+        r = asyncio.run(device_report(request=req, db=db))
+        self.assertEqual(r["ok"], True)
+        d = db.query(Device).filter(Device.cert_cn == "device-Nope").first()
+        self.assertIsNotNone(d)
+        self.assertEqual(d.adoption_status, "linked")
+        self.assertEqual(d.adoption_method, "cert")
+        self.assertIn("self-onboarded", d.tags or [])
+        db.close()
 
     def test_snmp_sweep_results_create_and_update(self):
         from routes.devices import snmp_sweep_results

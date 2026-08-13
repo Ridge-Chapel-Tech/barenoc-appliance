@@ -84,8 +84,11 @@ git commit -q -m "release sync from private dev repo @ $SRC_SHA
 
 Approved-for-release tree — see scripts/publish_release.sh for the contract."
 if [ -n "$TAG" ]; then
-  git tag "$TAG"
-  git push -q origin main --tags
+  # -f: re-tagging is allowed — a failed workflow run leaves the tag on the
+  # old commit; re-publishing moves it to the newly approved tree (no release
+  # is ever created from the old one since the release job needs green CI).
+  git tag -f "$TAG"
+  git push -q -f origin main --tags
   log "pushed $PUBLIC_REPO @ $(git rev-parse --short HEAD) (tag $TAG)"
 else
   git push -q origin main
