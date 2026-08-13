@@ -13,6 +13,7 @@ class AllowedAction(str, enum.Enum):
     COLLECT_LOGS = "collect_logs"
     NETWORK_DISCOVERY = "network_discovery"
     NETWORK_INFO = "network_info"  # logical: AI Tech answers network/VLAN queries from UniFi
+    SYSTEM_TIME = "system_time"  # read-only: appliance current time + timezone
     UNIFI_CLIENTS = "unifi_clients"  # read-only: who is online (UniFi)
     UNIFI_DEVICES = "unifi_devices"  # read-only: device health/uptime (UniFi)
     UNIFI_PORTS = "unifi_ports"      # read-only: switch port table (UniFi)
@@ -46,6 +47,7 @@ ACTION_SCRIPTS = {
     AllowedAction.COLLECT_LOGS: "scripts/collect_logs.sh",
     AllowedAction.NETWORK_DISCOVERY: "scripts/discover.sh",
     AllowedAction.NETWORK_INFO: "scripts/network_info.sh",
+    AllowedAction.SYSTEM_TIME: "scripts/system_time.sh",
     AllowedAction.UNIFI_CLIENTS: "scripts/unifi_clients.sh",
     AllowedAction.UNIFI_DEVICES: "scripts/unifi_devices.sh",
     AllowedAction.UNIFI_PORTS: "scripts/unifi_ports.sh",

@@ -32,6 +32,14 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Migration: add owner_id (tenant ownership) to existing databases
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN owner_id INTEGER"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: add must_change_password to existing databases
     try:
         with engine.begin() as conn:

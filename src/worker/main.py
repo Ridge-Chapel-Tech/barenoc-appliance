@@ -86,6 +86,14 @@ def write_job_file(ticket, llm_response, requires_approval: bool = False) -> str
     """Write a validated job file to the incoming directory.
     requires_approval=True: the agent holds the job until the human approves
     the ticket (status -> in_progress)."""
+    # The runner runs as pi-agent, which cannot read the 0600 .env — carry
+    # the timezone (and other runtime config the scripts need) in the job.
+    _tz = ""
+    try:
+        from llm_providers import read_env_file
+        _tz = (read_env_file().get("TZ") or "").strip()
+    except Exception:
+        pass
     job = {
         "ticket_id": ticket.ticket_id,
         "action": llm_response.action,
@@ -95,6 +103,7 @@ def write_job_file(ticket, llm_response, requires_approval: bool = False) -> str
         "confidence": llm_response.confidence,
         "created_at": datetime.datetime.utcnow().isoformat(),
         "source": "barenoc-worker",
+        "tz": _tz,
     }
     if requires_approval:
         job["requires_approval"] = True
@@ -150,6 +159,21 @@ def process_ticket(db, ticket):
             device_context = f"Device: {device.name} ({device.ip_address}), type: {device.device_type}, status: {device.status}"
 
     ticket_text = f"{ticket.title}\n{ticket.description or ''}"
+
+    # Hard restrictions (Settings → Restrictions): pattern denies block the
+    # request outright BEFORE any LLM/judge/pi work — even in autonomous mode.
+    from restrictions import blocks_request
+    _blocked = blocks_request(ticket_text)
+    if _blocked:
+        add_note(ticket, "escalated", f"🔒 Blocked by restriction: {_blocked}")
+        ticket.status = "escalated"
+        ticket.resolution = f"Blocked by restriction: {_blocked}"
+        ticket.assigned_to = "human-tech"
+        db.commit()
+        log_event(db, "restriction_blocked", "system", {
+            "ticket_id": ticket_id, "reason": _blocked, "stage": "request"},
+            ticket_id)
+        return
 
     # Autonomous + Lily mode: route open-ended tickets straight to the
     # local agent, Lily (full tool access, no gates — experimental).
@@ -399,10 +423,28 @@ def process_ticket(db, ticket):
         return
 
     READ_ONLY_ACTIONS = {"ping_test", "snmp_poll", "device_status", "network_discovery",
-                          "network_info", "unifi_clients", "unifi_devices", "unifi_ports",
+                          "network_info", "system_time", "unifi_clients", "unifi_devices", "unifi_ports",
                           "unifi_client_port", "unifi_firewall_rules",
                           "fingerprint_device"}
     conf = llm_response.confidence
+
+    # Hard restrictions: action/device denies are the final gate before
+    # execution (covers both the judge→executor and direct-LLM paths).
+    from restrictions import check as _restrictions_check
+    _blocked = _restrictions_check(ticket_text, llm_response.action, llm_response.target)
+    if _blocked:
+        add_note(ticket, "escalated", f"🔒 Blocked by restriction: {_blocked}")
+        ticket.status = "escalated"
+        ticket.resolution = (f"Blocked by restriction: {_blocked} "
+                             f"(action: {llm_response.action}, target: {llm_response.target})")
+        ticket.assigned_to = "human-tech"
+        db.commit()
+        log_event(db, "restriction_blocked", "system", {
+            "ticket_id": ticket_id, "reason": _blocked,
+            "action": llm_response.action, "target": llm_response.target,
+            "stage": "execution"},
+            ticket_id)
+        return
 
     # Autonomy policy: profile set -> policy gates; none -> exact legacy gates.
     if policy.legacy:

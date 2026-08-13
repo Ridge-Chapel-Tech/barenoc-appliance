@@ -12,7 +12,7 @@ class User(Base):
     email = Column(String(128), unique=True, nullable=True)
     display_name = Column(String(128), nullable=True)
     hashed_password = Column(String(256), nullable=False)
-    role = Column(String(16), default="admin")  # admin | operator | readonly
+    role = Column(String(16), default="admin")  # admin | operator | readonly | tenant
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     default_ticket_status = Column(String(24), nullable=True)   # tickets page default status filter
@@ -55,6 +55,7 @@ class Device(Base):
     cert_enrolled_at = Column(DateTime, nullable=True)
     cert_last_seen = Column(DateTime, nullable=True)
     adoption_status = Column(String(16), default="none")  # none | enrolling | linked | revoked
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # tenant who adopted it (tenant view = own devices only)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

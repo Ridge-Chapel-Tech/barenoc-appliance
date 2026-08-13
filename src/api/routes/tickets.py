@@ -31,6 +31,17 @@ class ProgressNote(BaseModel):
     detail: str
 
 
+def _tenant_scope(q, user):
+    """Tenants see only their own tickets (submitter == self)."""
+    if user.role == "tenant":
+        return q.filter(Ticket.submitter_id == user.id)
+    return q
+
+
+def _tenant_owns(ticket, user) -> bool:
+    return user.role != "tenant" or (ticket.submitter_id == user.id)
+
+
 @router.get("")
 def list_tickets(
     status: Optional[str] = None,
@@ -45,6 +56,7 @@ def list_tickets(
         q = q.filter(Ticket.status == status)
     if priority:
         q = q.filter(Ticket.priority == priority)
+    q = _tenant_scope(q, user)
 
     total = q.count()
     tickets = q.order_by(func.datetime(Ticket.created_at).desc(), Ticket.id.desc()).offset(offset).limit(limit).all()
@@ -85,6 +97,8 @@ def set_ticket_prefs(body: dict, db: Session = Depends(get_db),
 def get_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if not _tenant_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
 
@@ -163,6 +177,19 @@ def update_ticket(
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Tenants: own tickets only, and only close them (no re-prioritizing,
+    # no assignment, no editing the resolution).
+    if ctx["user"].role == "tenant":
+        if ticket.submitter_id != ctx["user"].id:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        if update.assigned_to is not None or update.priority is not None \
+                or update.resolution is not None:
+            raise HTTPException(status_code=403,
+                                detail="Tenants can only close their own tickets")
+        if update.status is not None and update.status != "closed":
+            raise HTTPException(status_code=403,
+                                detail="Tenants can only close their own tickets")
 
     # Approving a control action on a grouped device requires a passkey-
     # authenticated (Pocket ID) operator with access to that device group.
@@ -243,6 +270,8 @@ def add_ticket_note(
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    if not _tenant_owns(ticket, user):
+        raise HTTPException(status_code=404, detail="Ticket not found")
 
     message = note.message.strip()
     if not message:
@@ -260,6 +289,8 @@ def retry_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Dep
     """Reset a failed/escalated ticket back to open for reprocessing."""
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if not _tenant_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
     if ticket.status not in ("failed", "escalated"):
         raise HTTPException(status_code=400, detail="Can only retry failed or escalated tickets")

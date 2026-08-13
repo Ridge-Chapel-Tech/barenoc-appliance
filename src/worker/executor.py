@@ -78,6 +78,8 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
         params, reason = {}, "Checking device status"
     elif action == "network_info":
         params, reason = {}, "Fetching network/VLAN/SSID configuration"
+    elif action == "system_time":
+        params, reason = {}, "Reading appliance time and timezone"
     elif action == "unifi_clients":
         params, reason = {}, "Listing known + active clients from UniFi"
     elif action == "unifi_devices":

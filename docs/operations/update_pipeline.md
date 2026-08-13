@@ -178,20 +178,17 @@ v2025.07.2  — second release in July 2025
 v2025.08.1  — first release in August 2025
 ```
 
-### Release manifest + gated self-updates (early access)
+### Release manifest + open self-updates (free & open, beta)
 
 Releases publish `versions.json` + the release tarball to
 **https://barenoc.com/downloads/** (via the BareNOC-Website push-to-deploy
-repo). The manifest is public; the **tarball is public during early access** —
-updates are **gated by the activation key**: the appliance verifies its
-`ACTIVATION_KEY` (Settings → Licensing / installer `--activation-key`) against
-the public allowlist (`downloads/activation-keys.json`, key + hashed email +
-active). A revoked/missing key disables updates (soft — the appliance keeps
-running).
+repo). The manifest and **tarball are public — updates are OPEN, no key
+required** (BareNOC is free & open in beta; paid support is the only thing
+that's separate).
 
 **Update now / Schedule / Rollback** (dashboard → Updates):
-- `GET/POST /api/v1/updates/…` — status, check, now, rollback, schedule,
-  licensing (the scheduler applies scheduled updates at the configured
+- `GET/POST /api/v1/updates/…` — status, check, now, rollback, schedule
+  (the scheduler applies scheduled updates at the configured
 day/hour).
 - The api writes a trigger file → the host-side `barenoc-self-update.path`
   systemd unit runs `barenoc-self-update.sh` as root: optional Proxmox

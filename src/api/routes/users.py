@@ -44,8 +44,8 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_role(
 
 @router.post("", status_code=201)
 def create_user(data: UserCreate, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    if data.role not in ("admin", "operator", "readonly"):
-        raise HTTPException(status_code=400, detail="Invalid role. Use admin, operator, readonly, or agent")
+    if data.role not in ("admin", "operator", "readonly", "tenant"):
+        raise HTTPException(status_code=400, detail="Invalid role. Use admin, operator, readonly, tenant, or agent")
     existing = db.query(User).filter(User.username == data.username).first()
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
@@ -72,7 +72,7 @@ def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), u
         raise HTTPException(status_code=404, detail="User not found")
 
     if data.role is not None:
-        if data.role not in ("admin", "operator", "readonly", "agent"):
+        if data.role not in ("admin", "operator", "readonly", "tenant", "agent"):
             raise HTTPException(status_code=400, detail="Invalid role")
         target.role = data.role
     if data.email is not None:

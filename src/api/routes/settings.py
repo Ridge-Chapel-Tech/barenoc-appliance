@@ -111,6 +111,14 @@ SECTIONS = {
         },
         "redact": set(),
     },
+    "restrictions": {
+        "fields": {
+            "block_actions": "RESTRICT_ACTIONS",
+            "block_devices": "RESTRICT_DEVICES",
+            "block_patterns": "RESTRICT_PATTERNS",
+        },
+        "redact": set(),
+    },
 }
 
 
@@ -455,6 +463,13 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         # LLM-call retries (worker schedules retries instead of failing instantly)
         result["llm_retry_interval_min"] = _env_int(env.get("LLM_RETRY_INTERVAL_MIN", "2"), 2)
         result["llm_retry_max_attempts"] = _env_int(env.get("LLM_RETRY_MAX_ATTEMPTS", "10"), 10)
+    if section == "restrictions":
+        # Hard deny caps (comma lists) — enforced by the worker even in
+        # autonomous mode: actions never allowed, devices never acted on,
+        # request phrases that get blocked outright.
+        result["block_actions"] = env.get("RESTRICT_ACTIONS", "")
+        result["block_devices"] = env.get("RESTRICT_DEVICES", "")
+        result["block_patterns"] = env.get("RESTRICT_PATTERNS", "")
     if section == "general":
         result["chat_client_enabled"] = _env_bool(env.get("CHAT_CLIENT_ENABLED", "true"))
     if section == "tickets":

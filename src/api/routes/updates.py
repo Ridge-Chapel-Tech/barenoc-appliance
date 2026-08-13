@@ -1,9 +1,8 @@
-"""Updates & licensing — the appliance's update entitlement and apply triggers.
+"""Updates — the appliance's self-update machinery (free & open, beta).
 
 - The update CHECK is pure api-side: installed version (version.APP_VERSION)
-  vs the public manifest at barenoc.com, gated by the activation key against
-  the public allowlist (soft revocation: a revoked/missing key disables
-  updates; the appliance keeps working).
+  vs the public manifest at barenoc.com. Updates are NOT gated by any key —
+  BareNOC is free and open; paid support is the only thing that's separate.
 - The APPLY runs on the HOST as root via a systemd .path unit watching a
   trigger file (update_request.json / rollback_request.json) written here.
 
@@ -11,10 +10,8 @@ Auth: operator/admin (UI) and agent (the scheduler's scheduled updates).
 """
 
 import datetime
-import hashlib
 import json
 import os
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -23,7 +20,7 @@ from sqlalchemy.orm import Session
 from auth import require_any_role
 from database import get_db
 from models import User
-from routes.settings import _read_env_file, _write_env_file
+from routes.settings import _read_env_file
 
 router = APIRouter(prefix="/api/v1/updates", tags=["updates"])
 
@@ -35,8 +32,6 @@ SCHEDULE_FILE = os.path.join(STATUS_DIR, "update_schedule.conf")
 
 MANIFEST_URL = os.getenv(
     "UPDATE_MANIFEST_URL", "https://barenoc.com/downloads/versions.json")
-ACTIVATION_URL = os.getenv(
-    "ACTIVATION_LIST_URL", "https://barenoc.com/downloads/activation-keys.json")
 
 
 def _now() -> str:
@@ -76,36 +71,10 @@ def _write_status(status: dict):
 
 
 def _update_access(env: dict) -> dict:
-    """Verify the activation key against the public allowlist (soft: a bad key
-    only disables updates)."""
-    key = (env.get("ACTIVATION_KEY") or "").strip()
-    if not key:
-        return {"key_set": False, "valid": False, "revoked": False,
-                "reason": "no activation key configured — set it in Settings → Licensing"}
-    try:
-        allowlist = _fetch_json(ACTIVATION_URL + "?v=" + datetime.date.today().isoformat())
-    except Exception as e:
-        return {"key_set": True, "valid": False, "revoked": False,
-                "reason": f"could not reach the activation list: {e}"}
-    email = (env.get("LICENSE_EMAIL") or "").strip().lower()
-    for k in allowlist.get("keys", []):
-        if k.get("key") == key:
-            if not k.get("active", True):
-                return {"key_set": True, "valid": False, "revoked": True,
-                        "reason": "update access revoked — contact the vendor"}
-            if email and k.get("email_hash"):
-                want = hashlib.sha256(email.encode()).hexdigest()
-                if k.get("email_hash") != want:
-                    return {"key_set": True, "valid": False, "revoked": False,
-                            "reason": "email does not match the activation key"}
-            return {"key_set": True, "valid": True, "revoked": False, "reason": ""}
-    return {"key_set": True, "valid": False, "revoked": True,
-            "reason": "update access revoked — contact the vendor"}
-
-
-class LicensingBody(BaseModel):
-    activation_key: str
-    license_email: Optional[str] = None
+    """Updates are free & open — no activation key (kept as a stable status
+    shape so the UI can render the open state)."""
+    return {"valid": True, "open": True, "key_set": True, "revoked": False,
+            "reason": "", "note": "free & open (beta)"}
 
 
 class ScheduleBody(BaseModel):
@@ -130,20 +99,19 @@ def _run_check() -> dict:
         "update_access": access,
         "manifest_error": "",
     }
-    if access["valid"]:
-        try:
-            m = _fetch_json(MANIFEST_URL + "?v=" + datetime.date.today().isoformat())
-            latest = str(m.get("version") or cur)
-            status.update({
-                "latest": latest,
-                "kind": m.get("kind", ""),
-                "changelog": m.get("changelog", ""),
-                "tarball": (m.get("assets") or {}).get("tarball", ""),
-                "checksum": (m.get("assets") or {}).get("checksums", ""),
-                "available": latest != cur,
-            })
-        except Exception as e:
-            status["manifest_error"] = str(e)
+    try:
+        m = _fetch_json(MANIFEST_URL + "?v=" + datetime.date.today().isoformat())
+        latest = str(m.get("version") or cur)
+        status.update({
+            "latest": latest,
+            "kind": m.get("kind", ""),
+            "changelog": m.get("changelog", ""),
+            "tarball": (m.get("assets") or {}).get("tarball", ""),
+            "checksum": (m.get("assets") or {}).get("checksums", ""),
+            "available": latest != cur,
+        })
+    except Exception as e:
+        status["manifest_error"] = str(e)
     _write_status(status)
     return status
 
@@ -174,9 +142,6 @@ def update_check(user: User = Depends(require_any_role("operator", "admin", "age
 @router.post("/now")
 def update_now(user: User = Depends(require_any_role("operator", "admin", "agent"))):
     status = _read_status() or _run_check()
-    access = status.get("update_access") or {}
-    if not access.get("valid"):
-        raise HTTPException(403, access.get("reason") or "update access is not active")
     if not status.get("available"):
         raise HTTPException(400, "already up to date (or the manifest is unreachable)")
     payload = {"version": status.get("latest"), "kind": status.get("kind"),
@@ -249,14 +214,3 @@ def set_schedule(body: ScheduleBody,
     except Exception as e:
         raise HTTPException(500, f"could not save the schedule: {e}")
     return {"status": "ok", "schedule": _read_schedule()}
-
-
-@router.post("/licensing")
-def set_licensing(body: LicensingBody,
-                  user: User = Depends(require_any_role("operator", "admin"))):
-    env = _read_env_file()
-    env["ACTIVATION_KEY"] = body.activation_key.strip()
-    if body.license_email:
-        env["LICENSE_EMAIL"] = body.license_email.strip().lower()
-    _write_env_file(env)
-    return _run_check()

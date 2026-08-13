@@ -93,6 +93,7 @@ ACTION_SCRIPTS = {
     "collect_logs": "collect_logs.sh",
     "network_discovery": "discover.sh",
     "network_info": "network_info.sh",
+    "system_time": "system_time.sh",
     "unifi_clients": "unifi_clients.sh",
     "unifi_devices": "unifi_devices.sh",
     "unifi_ports": "unifi_ports.sh",
@@ -347,7 +348,7 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
                 str(params.get("vlan", "")),
                 str(params.get("subnet", "")),
                 str(params.get("dhcp", "true"))]
-    if action in ("network_info", "unifi_firewall_rules", "unifi_ensure_wireless_uplinks"):
+    if action in ("network_info", "unifi_firewall_rules", "unifi_ensure_wireless_uplinks", "system_time"):
         return ["bash", script_path]
     if action == "unifi_devices":
         # optional filters: device_type (ap|switch|gateway), status (online|offline)
@@ -372,7 +373,8 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
     return ["bash", script_path, target]
 
 
-def _run_single(action: str, target: str, params: dict, ticket_id: str) -> dict:
+def _run_single(action: str, target: str, params: dict, ticket_id: str,
+                env_tz: str = "") -> dict:
     """Run ONE action script and parse its JSON output."""
     script = ACTION_SCRIPTS.get(action)
     if not script:
@@ -382,9 +384,14 @@ def _run_single(action: str, target: str, params: dict, ticket_id: str) -> dict:
         return {"success": False, "error": f"Script not found: {script_path}"}
     cmd = _build_cmd(action, target, params)
     logger.info(f"Executing: {' '.join(cmd[:4])}... (ticket {ticket_id})")
+    env = os.environ.copy()
+    if env_tz:
+        # The appliance timezone (worker reads .env; pi-agent can't).
+        env["TZ"] = env_tz
     try:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=JOB_TIMEOUT)
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=JOB_TIMEOUT, env=env)
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
             try:
@@ -615,7 +622,8 @@ def execute_job(job: dict) -> dict:
             sub = dict(sj)
             sub_target = resolve_target(sub.get("target", ""))
             res = _run_single(str(sub.get("action", "")), sub_target,
-                              sub.get("params") or {}, ticket_id)
+                              sub.get("params") or {}, ticket_id,
+                              env_tz=job.get("tz", ""))
             res["action"] = sub.get("action")
             res["target"] = sub_target
             results.append(res)
@@ -632,7 +640,7 @@ def execute_job(job: dict) -> dict:
             "action": "batch",
         }
 
-    return _run_single(action, target, params, ticket_id)
+    return _run_single(action, target, params, ticket_id, env_tz=job.get("tz", ""))
 
 
 def write_result(job: dict, result: dict):

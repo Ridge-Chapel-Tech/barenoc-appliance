@@ -15,8 +15,8 @@
       <button onclick="switchTab('unifi')" id="tab-unifi" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">UniFi</button>
       <button onclick="switchTab('identity')" id="tab-identity" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Identity</button>
       <button onclick="switchTab('tickets')" id="tab-tickets" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Tickets</button>
+      <button onclick="switchTab('restrictions')" id="tab-restrictions" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Restrictions</button>
       <button onclick="switchTab('backups')" id="tab-backups" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Backups</button>
-      <button onclick="switchTab('licensing')" id="tab-licensing" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Licensing</button>
     </nav>
   </div>
 
@@ -426,6 +426,34 @@
   </div>
 </div>
 
+  <!-- Restrictions -->
+  <div id="panel-restrictions" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">Restrictions <span class="text-xs font-normal text-gray-400">— hard caps, even in Autonomous mode</span></h3>
+      <p class="text-xs text-gray-500 mt-1">These are <b>hard denies</b> — independent of the Autonomy Policy. A blocked request
+        is escalated to a human and <b>never executed or even sent to the AI</b>. Comma-separated lists.</p>
+      <div class="mt-4 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Blocked actions <span class="text-gray-400 font-normal">(never allowed)</span></label>
+          <input id="res-actions" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="e.g. reboot_device, unifi_network_create">
+          <p class="text-xs text-gray-400 mt-1">Pick from the action catalog: reboot_device, unifi_network_create, unifi_restart, apply_patch, enroll_device, …</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Blocked devices <span class="text-gray-400 font-normal">(never acted on)</span></label>
+          <input id="res-devices" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="e.g. nas, switch-01, 192.168.4.50">
+          <p class="text-xs text-gray-400 mt-1">Name, hostname or IP — any action targeting a match is blocked.</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Blocked request phrases <span class="text-gray-400 font-normal">(outright)</span></label>
+          <input id="res-patterns" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="e.g. hvac, door lock, factory reset">
+          <p class="text-xs text-gray-400 mt-1">Any ticket containing one of these phrases is blocked before the AI even reads it.</p>
+        </div>
+        <p id="res-status" class="text-sm"></p>
+        <button onclick="saveRestrictions()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save restrictions</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Backups -->
   <div id="panel-backups" class="mt-6 max-w-xl hidden">
     <div id="bk-not-appliance" class="hidden bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-3 text-xs mb-4">
@@ -481,28 +509,6 @@
     </div>
   </div>
 
-  <!-- Licensing -->
-  <div id="panel-licensing" class="mt-6 max-w-xl hidden">
-    <div class="bg-white shadow rounded-lg p-6">
-      <h3 class="text-lg font-medium">Licensing</h3>
-      <p class="text-xs text-gray-500 mt-1">Your early-access <b>activation key</b> — it gates updates (see the
-        dashboard <b>Updates</b> card). A revoked key disables updates but the appliance keeps working.
-        The key is bound to the email used at purchase.</p>
-      <div class="mt-4 space-y-3">
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Activation key</label>
-          <input id="lic-key" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="BARC-XXXX-XXXX-XXXX">
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700">Purchase email</label>
-          <input id="lic-email" type="email" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="you@example.com">
-        </div>
-        <p id="lic-status" class="text-sm"></p>
-        <button onclick="saveLicensing()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save &amp; verify</button>
-      </div>
-    </div>
-  </div>
-
 <script>
 function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -526,41 +532,9 @@ function switchTab(tab) {
   if (tab === 'unifi') loadUnifi();
   if (tab === 'identity') loadIdentity();
   if (tab === 'tickets') loadTickets();
+  if (tab === 'restrictions') loadRestrictions();
   if (tab === 'backups') loadBackups();
-  if (tab === 'licensing') loadLicensing();
   if (tab === 'general') loadRemoteAccess();
-}
-
-// ── Licensing (early-access activation key — gates updates) ──
-async function loadLicensing() {
-  try {
-    var r = await fetch('/api/v1/updates/status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
-    if (!r.ok) throw new Error('failed');
-    var d = await r.json();
-    var acc = d.update_access || {};
-    var st = document.getElementById('lic-status');
-    if (acc.key_set === false) st.textContent = 'No activation key set yet — updates are disabled until one is saved.';
-    else if (acc.revoked) st.textContent = '⛔ ' + (acc.reason || 'update access revoked');
-    else if (!acc.valid) st.textContent = '⚠️ ' + (acc.reason || 'update access inactive');
-    else st.textContent = '✅ Key valid — update access active (latest ' + (d.latest || d.current || '?') + ').';
-    st.className = 'text-sm ' + (acc.valid ? 'text-green-700' : 'text-amber-700');
-  } catch (e) { console.error('licensing:', e); }
-}
-
-async function saveLicensing() {
-  try {
-    var r = await fetch('/api/v1/updates/licensing', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-      body: JSON.stringify({ activation_key: document.getElementById('lic-key').value.trim(),
-                            license_email: document.getElementById('lic-email').value.trim() })
-    });
-    if (!r.ok) { var e = await r.json(); throw new Error(e.detail || 'failed'); }
-    var d = await r.json();
-    var acc = d.update_access || {};
-    document.getElementById('lic-status').textContent = acc.valid
-      ? '✅ Key valid — update access active.' : (acc.reason || 'Saved, but update access is not active.');
-    document.getElementById('lic-status').className = 'text-sm ' + (acc.valid ? 'text-green-700' : 'text-amber-700');
-  } catch (e) { alert('Licensing: ' + e.message); }
 }
 
 // ── General ──
@@ -1362,6 +1336,34 @@ async function saveTickets() {
       msg.className = 'text-sm text-red-600';
     }
   } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Restrictions (hard denies — enforced even in Autonomous mode) ──
+async function loadRestrictions() {
+  try {
+    var r = await fetch('/api/v1/settings/restrictions', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    if (!r.ok) throw new Error('failed');
+    var d = await r.json();
+    document.getElementById('res-actions').value = d.block_actions || '';
+    document.getElementById('res-devices').value = d.block_devices || '';
+    document.getElementById('res-patterns').value = d.block_patterns || '';
+  } catch (e) { console.error('restrictions:', e); }
+}
+
+async function saveRestrictions() {
+  try {
+    var r = await fetch('/api/v1/settings/restrictions', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ block_actions: document.getElementById('res-actions').value.trim(),
+                            block_devices: document.getElementById('res-devices').value.trim(),
+                            block_patterns: document.getElementById('res-patterns').value.trim() })
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.detail || 'failed'); }
+    await r.json();
+    var st = document.getElementById('res-status');
+    st.textContent = '✅ Saved — the worker hot-reloads these on its next cycle.';
+    st.className = 'text-sm text-green-700';
+  } catch (e) { alert('Restrictions: ' + e.message); }
 }
 
 // ── Backups ──

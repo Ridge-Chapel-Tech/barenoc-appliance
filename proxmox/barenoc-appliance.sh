@@ -38,8 +38,6 @@ HOSTNAME="barenoc"
 APPLIANCE_HOST="app.barenoc.com"   # public name clients use (Corefile + nginx server_name; set APP_URL to your real domain before enrolling passkeys)
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
 ADMIN_PASSWORD=""
-ACTIVATION_KEY=""
-ACTIVATION_EMAIL=""
 SKIP_APP=0
 BRANCH="$(git -C "$(dirname "$0")/.." rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 
@@ -77,9 +75,6 @@ Optional:
   --bridge <iface>       Network bridge (default vmbr0)
   --admin-password <pw>  Seed admin password for the web UI (min 8 chars;
                          default: auto-generated, printed at the end)
-  --activation-key <key>  Early-access activation key (gates updates; bind to
-                         the purchase email at issue time)
-  --activation-email <em> Purchase email bound to the activation key
   --skip-app             Provision the OS only; run ./deploy.sh yourself later
   --help                 This help
 EOF
@@ -97,8 +92,6 @@ while [[ $# -gt 0 ]]; do
     --hostname) HOSTNAME="$2"; shift 2 ;;
     --ssh-key) SSH_KEY="$2"; shift 2 ;;
     --admin-password) ADMIN_PASSWORD="$2"; shift 2 ;;
-    --activation-key) ACTIVATION_KEY="$2"; shift 2 ;;
-    --activation-email) ACTIVATION_EMAIL="$2"; shift 2 ;;
     --skip-app) SKIP_APP=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -336,8 +329,7 @@ if [[ $SKIP_APP -eq 0 ]]; then
      s|^# ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENCRYPTION_KEY}|;
      s|^# APPLIANCE_IP=.*|APPLIANCE_IP=${IP}|;
      s|^# APPLIANCE_HOST=.*|APPLIANCE_HOST=${APPLIANCE_HOST}|;
-     s|^# ACTIVATION_KEY=.*|ACTIVATION_KEY=${ACTIVATION_KEY}|;
-     s|^# LICENSE_EMAIL=.*|LICENSE_EMAIL=${ACTIVATION_EMAIL}|' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
+' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
 fi
 
 # ── 5. application install (same path as updates) ──────────────────────────

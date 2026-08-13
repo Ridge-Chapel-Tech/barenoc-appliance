@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#1d4ed8">
+    <title>{{ site_name }} — Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        barenoc: {
+                            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe',
+                            600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        html, body { height: 100%; margin: 0; background: #f9fafb; }
+    </style>
+</head>
+<body>
+<!-- Mobile chat front door: home users & tenants talk to the Queue Manager.
+     First login creates the admin; self-registered accounts are tenants. -->
+<div id="app" style="height:100dvh; display:flex; flex-direction:column;" class="bg-gray-50">
+
+  <!-- ══ Header ══ -->
+  <header class="bg-barenoc-700 text-white px-4 py-3 flex items-center gap-2 shrink-0"
+          style="padding-top:max(0.75rem, env(safe-area-inset-top))">
+    <button id="btn-back" onclick="showList()" class="hidden -ml-1 p-1 rounded-full hover:bg-white/10" aria-label="Back">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+    </button>
+    <div class="flex-1 min-w-0">
+      <div class="font-semibold leading-tight truncate">{{ site_name }}</div>
+      <div class="text-xs text-white/70 leading-tight">Chat with your network</div>
+    </div>
+    <button id="btn-logout" onclick="logout()" class="hidden text-sm px-2 py-1 rounded-full hover:bg-white/10">Sign out</button>
+  </header>
+
+  <!-- ══ Auth screen ══ -->
+  <div id="screen-auth" class="hidden flex-1 overflow-y-auto" style="display:none">
+    <div class="p-6 max-w-md mx-auto w-full">
+      <div class="bg-white rounded-2xl shadow p-5">
+        <div class="flex rounded-lg bg-gray-100 p-1 mb-4">
+          <button id="tab-signin" onclick="authTab('signin')" class="flex-1 py-2 text-sm font-medium rounded-md bg-white shadow">Sign in</button>
+          <button id="tab-register" onclick="authTab('register')" class="flex-1 py-2 text-sm font-medium rounded-md text-gray-500">Create account</button>
+        </div>
+
+        <div id="form-signin">
+          <label class="block text-sm font-medium text-gray-700">Username</label>
+          <input id="in-user" class="mt-1 mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" autocomplete="username">
+          <label class="block text-sm font-medium text-gray-700">Password</label>
+          <input id="in-pass" type="password" class="mt-1 mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" autocomplete="current-password">
+          <button onclick="doLogin()" class="w-full rounded-lg bg-barenoc-600 py-2.5 text-sm font-semibold text-white hover:bg-barenoc-700">Sign in</button>
+        </div>
+
+        <div id="form-register" class="hidden">
+          <p class="text-xs text-gray-500 mb-3">New here? Create a guest account to chat with the house/network team. Your account only ever sees your own conversations and devices.</p>
+          <label class="block text-sm font-medium text-gray-700">Username</label>
+          <input id="rg-user" class="mt-1 mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" autocomplete="username" placeholder="e.g. guest-42">
+          <label class="block text-sm font-medium text-gray-700">Email <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input id="rg-email" type="email" class="mt-1 mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" autocomplete="email">
+          <label class="block text-sm font-medium text-gray-700">Password</label>
+          <input id="rg-pass" type="password" class="mt-1 mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" autocomplete="new-password" placeholder="8+ characters">
+          <button onclick="doRegister()" class="w-full rounded-lg bg-barenoc-600 py-2.5 text-sm font-semibold text-white hover:bg-barenoc-700">Create account</button>
+        </div>
+
+        <p id="auth-msg" class="mt-3 text-sm text-red-600 hidden"></p>
+      </div>
+      <p class="text-center text-xs text-gray-400 mt-4">BareNOC · free &amp; open (beta)</p>
+    </div>
+  </div>
+
+  <!-- ══ Chat list screen ══ -->
+  <div id="screen-list" class="hidden flex-1 flex flex-col overflow-hidden" style="display:none">
+    <div class="p-3 pb-0 shrink-0">
+      <div class="flex gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-2">
+        <input id="new-msg" class="flex-1 text-sm px-2 outline-none" placeholder="Ask about your internet, wifi, devices…" enterkeyhint="send">
+        <button onclick="sendNew()" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white">Send</button>
+      </div>
+    </div>
+    <div id="ticket-list" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    <div id="list-empty" class="hidden flex-1 flex flex-col items-center justify-center text-gray-400 p-6">
+      <div class="text-4xl mb-2">💬</div>
+      <div class="text-sm text-center">No conversations yet.<br>Ask anything — a technician will pick it up.</div>
+    </div>
+  </div>
+
+  <!-- ══ Thread screen ══ -->
+  <div id="screen-thread" class="hidden flex-1 flex flex-col overflow-hidden" style="display:none">
+    <div id="thread-head" class="shrink-0 px-4 py-2 bg-white border-b border-gray-200">
+      <div class="flex items-center gap-2">
+        <span id="th-status" class="text-xs font-semibold px-2 py-0.5 rounded-full"></span>
+        <span id="th-title" class="text-sm text-gray-600 truncate"></span>
+      </div>
+    </div>
+    <div id="thread-body" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    <div id="th-actions" class="shrink-0 px-3 pb-1 flex gap-2"></div>
+    <div class="shrink-0 p-3 border-t border-gray-200 bg-white"
+         style="padding-bottom:max(0.75rem, env(safe-area-inset-bottom))">
+      <div class="flex gap-2">
+        <input id="reply-msg" class="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none" placeholder="Reply…" enterkeyhint="send">
+        <button onclick="sendReply()" class="rounded-xl bg-barenoc-600 px-4 text-sm font-semibold text-white">Send</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const TOKEN_KEY = 'access_token';
+const $ = (id) => document.getElementById(id);
+let curTicket = null;
+let listTimer = null, threadTimer = null;
+
+function token() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); }
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({
+    headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' }
+  }, opts || {}));
+  if (r.status === 401) { setToken(null); showAuth(); throw new Error('session expired'); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
+  return body;
+}
+
+function showAuth() { stopPolling(); curTicket = null;
+  $('screen-auth').style.display = 'block';
+  $('screen-list').style.display = 'none'; $('screen-thread').style.display = 'none';
+  $('btn-logout').style.display = 'none'; $('btn-back').style.display = 'none';
+}
+function showList() { curTicket = null; if (!token()) return showAuth();
+  $('screen-list').style.display = 'flex'; $('screen-thread').style.display = 'none';
+  $('screen-auth').style.display = 'none'; $('btn-logout').style.display = 'block';
+  $('btn-back').style.display = 'none'; loadList(); listTimer = setInterval(loadList, 10000);
+}
+function showThread(id) { curTicket = id;
+  $('screen-thread').style.display = 'flex'; $('screen-list').style.display = 'none';
+  $('screen-auth').style.display = 'none'; $('btn-back').style.display = 'block';
+  loadThread(); threadTimer = setInterval(loadThread, 4000);
+}
+function stopPolling() { clearInterval(listTimer); clearInterval(threadTimer); listTimer = threadTimer = null; }
+
+function authTab(t) {
+  const sign = t === 'signin';
+  $('form-signin').style.display = sign ? 'block' : 'none';
+  $('form-register').style.display = sign ? 'none' : 'block';
+  $('tab-signin').className = 'flex-1 py-2 text-sm font-medium rounded-md ' + (sign ? 'bg-white shadow' : 'text-gray-500');
+  $('tab-register').className = 'flex-1 py-2 text-sm font-medium rounded-md ' + (!sign ? 'bg-white shadow' : 'text-gray-500');
+  $('auth-msg').style.display = 'none';
+}
+function authErr(msg) { const e = $('auth-msg'); e.textContent = msg; e.style.display = 'block'; }
+
+async function doLogin() {
+  try {
+    const d = await fetch('/api/v1/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('in-user').value.trim(), password: $('in-pass').value }) });
+    const b = await d.json().catch(() => ({}));
+    if (!d.ok) throw new Error(b.detail || 'login failed');
+    if (b.password_change_required) { authErr('Please set a new password on the desktop site first (Settings → your account).'); return; }
+    setToken(b.access_token); $('in-pass').value = ''; showList();
+  } catch (e) { authErr(e.message); }
+}
+
+async function doRegister() {
+  try {
+    const d = await fetch('/api/v1/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('rg-user').value.trim(), password: $('rg-pass').value, email: $('rg-email').value.trim() || null }) });
+    const b = await d.json().catch(() => ({}));
+    if (!d.ok) throw new Error(b.detail || 'registration failed');
+    setToken(b.access_token); $('rg-pass').value = ''; showList();
+  } catch (e) { authErr(e.message); }
+}
+
+function logout() { setToken(null); showAuth(); }
+
+// ── status helpers ──
+const STATUS = {
+  open: ['Open', 'bg-gray-100 text-gray-700'],
+  in_progress: ['Working…', 'bg-amber-100 text-amber-700'],
+  customer_action: ['Needs your reply', 'bg-blue-100 text-blue-700'],
+  awaiting_approval: ['Awaiting approval', 'bg-purple-100 text-purple-700'],
+  escalated: ['Escalated', 'bg-red-100 text-red-700'],
+  failed: ['Failed', 'bg-red-100 text-red-700'],
+  closed: ['Closed', 'bg-gray-100 text-gray-500'],
+  completed: ['Resolved', 'bg-green-100 text-green-700'],
+};
+function statusChip(s) { const c = STATUS[s] || [s, 'bg-gray-100 text-gray-700']; return '<span class="text-xs font-semibold px-2 py-0.5 rounded-full ' + c[1] + '">' + c[0] + '</span>'; }
+function fmtTime(iso) { if (!iso) return ''; const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z'); if (isNaN(d)) return ''; return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+
+// ── list ──
+async function loadList() {
+  try {
+    const d = await api('/api/v1/tickets?limit=50');
+    const box = $('ticket-list');
+    box.innerHTML = '';
+    $('list-empty').style.display = (d.tickets || []).length > 0 ? 'none' : 'flex';
+    (d.tickets || []).forEach(t => {
+      const el = document.createElement('div');
+      el.className = 'bg-white rounded-xl shadow-sm border border-gray-200 p-3 flex items-center gap-3 cursor-pointer active:bg-gray-50';
+      el.onclick = () => showThread(t.ticket_id);
+      el.innerHTML = statusChip(t.status) +
+        '<div class="flex-1 min-w-0"><div class="text-sm font-medium truncate">' + esc(t.title) + '</div>' +
+        '<div class="text-xs text-gray-400">' + (t.priority || '') + ' · ' + fmtTime(t.updated_at) + '</div></div>' +
+        '<svg class="w-4 h-4 text-gray-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>';
+      box.appendChild(el);
+    });
+  } catch (e) { /* silent — 401 handled by api() */ }
+}
+
+async function sendNew() {
+  const msg = $('new-msg').value.trim(); if (!msg) return;
+  $('new-msg').value = '';
+  try {
+    const t = await api('/api/v1/tickets', { method: 'POST',
+      body: JSON.stringify({ title: msg.slice(0, 200), description: msg, priority: 'P3' }) });
+    showThread(t.ticket_id);
+  } catch (e) { alert(e.message); }
+}
+
+// ── thread ──
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function loadThread() {
+  if (!curTicket) return;
+  try {
+    const t = await api('/api/v1/tickets/' + curTicket);
+    $('th-title').textContent = t.title;
+    const sc = STATUS[t.status] || [t.status, 'bg-gray-100 text-gray-700'];
+    const st = $('th-status');
+    st.textContent = sc[0]; st.className = 'text-xs font-semibold px-2 py-0.5 rounded-full ' + sc[1];
+    const box = $('thread-body');
+    box.innerHTML = '';
+    box.appendChild(bubble('user', t.title, fmtTime(t.created_at),
+      (t.description && t.description !== t.title) ? t.description : null));
+    let notes = [];
+    try { notes = JSON.parse(t.work_notes || '[]'); } catch (e) {}
+    notes.forEach(n => {
+      if (!n || typeof n !== 'object') return;
+      const ev = n.event || '';
+      if (ev === 'user_message') box.appendChild(bubble('user', n.detail, fmtTime(n.timestamp), null));
+      else if (ev === 'agent_response' || ev === 'completed' || ev === 'agent_progress' || ev === 'agent_retry')
+        box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
+      else box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
+    });
+    if (t.resolution && !['open','in_progress'].includes(t.status))
+      box.appendChild(bubble('agent', '✓ ' + t.resolution, fmtTime(t.resolved_at), null));
+    box.scrollTop = box.scrollHeight;
+    const acts = $('th-actions'); acts.innerHTML = '';
+    if (t.status === 'failed' || t.status === 'escalated')
+      acts.innerHTML = '<button onclick="retryTicket()" class="flex-1 rounded-lg bg-amber-500 py-2 text-sm font-semibold text-white">Retry</button>';
+    if (!['closed','completed'].includes(t.status))
+      acts.innerHTML += '<button onclick="closeTicket()" class="flex-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-600">Close</button>';
+  } catch (e) { /* silent */ }
+}
+
+function bubble(who, text, time, extra) {
+  const mine = who === 'user';
+  return el('div', 'flex ' + (mine ? 'justify-end' : 'justify-start'),
+    el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm ' + (mine ? 'bg-barenoc-600 text-white rounded-br-sm' : 'bg-white border border-gray-200 rounded-bl-sm'),
+      extra ? '<div class="text-xs text-gray-400 whitespace-pre-wrap">' + esc(extra) + '</div>' : '',
+      '<div class="whitespace-pre-wrap break-words">' + esc(text) + '</div>',
+      '<div class="text-[10px] mt-0.5 ' + (mine ? 'text-white/60' : 'text-gray-400') + '">' + time + '</div>'));
+}
+function systemLine(ev, detail, time) {
+  return el('div', 'flex justify-center',
+    '<span class="text-[11px] text-gray-400 bg-gray-100 rounded-full px-2 py-0.5 text-center max-w-[90%]">' + esc(symbol(ev) + detail) + (time ? ' · ' + time : '') + '</span>');
+}
+function symbol(ev) {
+  return { processing: '⏳ ', auto_execute: '🤖 ', awaiting_approval: '🕓 ', escalated: '🔀 ',
+           checkin_request: '⏰ ', agent_retry: '🔁 ', priority_change: '🏷️ ',
+           autoclosed: '🗄️ ', agent_failed: '❌ ', completed: '✅ ' }[ev] || '';
+}
+function el(tag, cls, ...children) {
+  const d = document.createElement(tag); d.className = cls;
+  children.forEach(c => { if (c) d.insertAdjacentHTML('beforeend', c); });
+  return d;
+}
+
+async function sendReply() {
+  const msg = $('reply-msg').value.trim(); if (!msg || !curTicket) return;
+  $('reply-msg').value = '';
+  try { await api('/api/v1/tickets/' + curTicket + '/notes', { method: 'POST', body: JSON.stringify({ message: msg }) }); loadThread(); }
+  catch (e) { alert(e.message); }
+}
+async function retryTicket() { try { await api('/api/v1/tickets/' + curTicket + '/retry', { method: 'POST' }); loadThread(); } catch (e) { alert(e.message); } }
+async function closeTicket() {
+  try { await api('/api/v1/tickets/' + curTicket, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); showList(); }
+  catch (e) { alert(e.message); }
+}
+
+// keyboard: Enter to send
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea') return;
+  if (e.target.id === 'new-msg') sendNew();
+  else if (e.target.id === 'reply-msg') sendReply();
+  else if (e.target.id === 'in-pass') doLogin();
+  else if (e.target.id === 'rg-pass') doRegister();
+});
+
+// boot
+(function () { authTab('signin'); token() ? showList() : showAuth(); })();
+</script>
+</body>
+</html>

@@ -11,6 +11,15 @@
     </div>
     <p id="brand-customer" class="mt-2 text-sm font-medium text-barenoc-700 hidden"></p>
 
+    {% if not setup_complete %}
+    <!-- First-run setup banner -->
+    <div class="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
+        <span class="font-semibold text-blue-800">🚀 Your network is almost ready!</span>
+        <span class="text-blue-700">Finish the one-time setup (AI key, timezone, backups, first device, chat link).</span>
+        <a href="/setup" class="ml-1 font-semibold text-barenoc-700 underline">Continue setup →</a>
+    </div>
+    {% endif %}
+
     <!-- Health Banner -->
     <div id="health-banner" class="mt-4 hidden"></div>
 
@@ -131,16 +140,14 @@ async function updLoad() {
       ? ' &nbsp;→&nbsp; <b>' + esc(s.latest) + '</b> <span class="text-xs">' + updKind(s.kind) + '</span>'
         + (s.changelog ? ' <a class="text-barenoc-600 underline" href="' + esc(s.changelog) + '" target="_blank">notes</a>' : '')
       : '';
-    let accTxt;
-    if (acc.key_set === false) accTxt = '⚙️ no activation key — <a href="/settings" class="text-barenoc-600 underline">Settings → Licensing</a>';
-    else if (acc.revoked) accTxt = '⛔ ' + esc(acc.reason || 'update access revoked');
-    else if (!acc.valid) accTxt = '⚠️ ' + esc(acc.reason || 'update access inactive');
-    else accTxt = '✅ update access active';
+    const accTxt = acc.open
+      ? '🟢 free &amp; open (beta) — updates enabled'
+      : '✅ update access active';
     el.innerHTML = '<div>Version: <b>' + esc(s.current || '?') + '</b>' + avail + '</div>'
       + '<div class="mt-1">' + accTxt + '</div>'
       + (s.last_update && s.last_update.at ? '<div class="mt-1 text-xs text-gray-400">Last update: ' + (s.last_update.ok ? '✅ ' : '❌ ') + esc((s.last_update.version || '') + (s.last_update.error ? ' — ' + s.last_update.error : '')) + '</div>' : '')
       + (s.checked_at ? '<div class="mt-1 text-xs text-gray-400">Checked ' + esc(fmtTz(s.checked_at)) + '</div>' : '');
-    document.getElementById('upd-now-btn').disabled = !(s.available && acc.valid);
+    document.getElementById('upd-now-btn').disabled = !s.available;
     const sc = s.schedule || {};
     document.getElementById('upd-sched-enable').checked = !!sc.enabled;
     document.getElementById('upd-sched-day').value = sc.day || 'daily';

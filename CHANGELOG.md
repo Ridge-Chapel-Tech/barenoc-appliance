@@ -15,6 +15,44 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.13] — 2026-08-13
+
+### Added
+- **Free & open (beta)** — licensing removed entirely: no activation keys, no
+  gating. Updates are open; everyone downloads BareNOC. Paid support is the
+  only thing that's separate (bareNOC.com).
+- **Mobile chat front door (`/chat`)** — phone-first page for home users and
+  tenants: sign in or create a guest account, chat with the Queue Manager,
+  reply/retry/close tickets from your phone.
+- **Tenant role** — first login = admin, every self-registered account = tenant.
+  Tenants see only their own tickets and devices (hard isolation), can adopt
+  their own devices, and can only close their own tickets. Admin can promote
+  anyone (Settings → Users). Self-registration toggle: `TENANT_REGISTRATION_ENABLED`.
+- **Restrictions (hard denies)** — Settings → Restrictions: blocked actions,
+  blocked devices, and blocked request phrases. Enforced even in Autonomous
+  mode, before the AI ever reads a blocked request.
+- **First-run setup wizard (`/setup`)** — one-sitting onboarding: admin account,
+  LLM key, timezone, site name, alert email, autonomy profile, backups, adopt
+  your first device, and share the chat URL (QR included).
+- **step-ca device identity (Phase F)** — internal CA, one-time enrollment
+  JWTs, short-lived mTLS device certs, self-service `/onboard` portal.
+- **UniFi integration** — controller login, auto-discover/adopt, clients/devices/
+  ports, VLAN create, port config, firewall read — all behind the action catalog.
+
+### Changed
+- `system_time` action now emits JSON and resolves to a human-readable answer
+  (timezone + uptime) in tickets instead of raw output.
+- Timezone now reaches the AI runner end-to-end (runner runs as `pi-agent`,
+  which can't read the 0600 `.env`; the worker carries TZ in the job file).
+
+### Fixed
+- Worker image missing `restrictions.py` in its build context (COPY trap).
+- `system_time` reported "tz unset" through the pipeline even when TZ was set.
+
+### Docs
+- Deployment guide, update pipeline, and versioning docs updated for the
+  open/beta model.
+
 ## [2026.08] — 2026-08-05
 
 ### Added

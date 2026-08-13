@@ -14,7 +14,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard, updates
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard, updates, setup
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 
@@ -246,6 +246,7 @@ app.include_router(system.router)
 app.include_router(settings.router)
 app.include_router(users.router)
 app.include_router(updates.router)
+app.include_router(setup.router)
 app.include_router(branding.router)
 app.include_router(chat.router)
 app.include_router(client.router)
@@ -300,6 +301,23 @@ def login_page(request: Request, db: Session = Depends(get_db)):
     })
 
 
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page(request: Request):
+    """Mobile chat front door — home users & tenants talk to the Queue
+    Manager here. Public page: the client JS handles login/register; new
+    self-registered accounts are role=tenant (see /api/v1/auth/register)."""
+    site = ""
+    try:
+        from llm_providers import read_env_file
+        site = (read_env_file().get("CUSTOMER_NAME") or "").strip()
+    except Exception:
+        pass
+    return templates.TemplateResponse("chat.html", {
+        "request": request,
+        "site_name": site or "BareNOC",
+    })
+
+
 @app.get("/change-password", response_class=HTMLResponse)
 def change_password_page(request: Request, _: User = Depends(require_page_session)):
     return templates.TemplateResponse("change-password.html", {"request": request})
@@ -307,7 +325,24 @@ def change_password_page(request: Request, _: User = Depends(require_page_sessio
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard_page(request: Request, _: User = Depends(require_page_session)):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    setup_complete = True
+    try:
+        from routes.settings import _read_env_file
+        env = _read_env_file()
+        setup_complete = str(env.get("SETUP_COMPLETE", "")).strip().lower() in ("1", "true", "yes")
+    except Exception:
+        pass
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "setup_complete": setup_complete,
+    })
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(request: Request, _: User = Depends(require_page_session)):
+    """First-run wizard: account → LLM → TZ → site → email → autonomy →
+    backups → adopt first device → share the chat URL."""
+    return templates.TemplateResponse("setup.html", {"request": request})
 
 
 @app.get("/tickets", response_class=HTMLResponse)

@@ -45,7 +45,7 @@ from llm_client import get_provider
 # (unifi_port_config lives only in the chat-client path today; see action_validator.)
 ACTION_CATALOG = [
     "ping_test", "snmp_poll", "device_status", "apply_patch", "reboot_device",
-    "collect_logs", "network_discovery", "network_info",
+    "collect_logs", "network_discovery", "network_info", "system_time",
     "unifi_clients", "unifi_devices", "unifi_ports", "unifi_port_config",
     "unifi_client_port", "unifi_firewall_rules", "unifi_restart",
     "unifi_port_bounce", "unifi_port_rename", "unifi_ensure_wireless_uplinks", "batch",

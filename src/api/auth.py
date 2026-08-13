@@ -117,7 +117,7 @@ def _resolve_token_user(
 def require_role(role: str):
     """Dependency factory: require specific role."""
     def role_checker(user: User = Depends(get_current_user)):
-        roles = {"admin": 3, "operator": 2, "readonly": 1}
+        roles = {"admin": 3, "operator": 2, "readonly": 1, "tenant": 0}
         required = roles.get(role, 0)
         actual = roles.get(user.role, 0)
         if actual < required:

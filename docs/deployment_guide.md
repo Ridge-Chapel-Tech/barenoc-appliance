@@ -9,18 +9,18 @@
 
 - [Who is this guide for?](#who-is-this-guide-for)
 - [What BareNOC is](#what-barenoc-is)
-- [Part A — Install on your existing Proxmox server](#part-a-install-on-your-existing-proxmox-server)
+- [Part A — Install on your existing Proxmox server](#part-a)
   - [A1. Prerequisites](#a1-prerequisites)
   - [A2. Get the release onto the host](#a2-get-the-release-onto-the-host)
   - [A3. Run the one-shot installer](#a3-run-the-one-shot-installer)
   - [A4. First login & configure](#a4-first-login-configure)
   - [A5. Verification checklist](#a5-verification-checklist)
-- [Part B — Other hypervisors & cloud (manual VM install)](#part-b-other-hypervisors-cloud-manual-vm-install)
+- [Part B — Other hypervisors & cloud (manual VM install)](#part-b)
   - [B1. Create the Ubuntu 24.04 VM — per platform](#b1-create-the-ubuntu-2404-vm-per-platform)
   - [B2. Common manual install (all platforms)](#b2-common-manual-install-all-platforms)
   - [B3. Backups & post-install](#b3-backups-post-install)
   - [B — Verification checklist](#b-verification-checklist)
-- [Part C — Shipped BareNOC appliance (customer quickstart)](#part-c-shipped-barenoc-appliance-customer-quickstart)
+- [Part C — Shipped BareNOC appliance (customer quickstart)](#part-c)
   - [C1. Connect & power on](#c1-connect-power-on)
   - [C2. Find the appliance IP](#c2-find-the-appliance-ip)
   - [C3. Complete setup](#c3-complete-setup)
@@ -28,12 +28,13 @@
   - [C — Verification checklist](#c-verification-checklist)
 - [Common — config, updates, troubleshooting](#common-config-updates-troubleshooting)
   - [Services & ports](#services-ports)
-  - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference-env-srcenvexample-is-the-template)
+  - [Config reference (`.env` — `src/.env.example` is the template)](#config-reference)
   - [Identity & DNS (all tracks)](#identity-dns-all-tracks)
 - [Updating](#updating)
   - [First-test / smoke checklist (all tracks)](#first-test-smoke-checklist-all-tracks)
   - [Troubleshooting & operations](#troubleshooting-operations)
 
+<a id="who-is-this-guide-for"></a>
 ## Who is this guide for?
 
 | Your situation | Start at |
@@ -43,6 +44,7 @@
 | You **bought a BareNOC appliance** (pre-provisioned hardware) | **Part C** — quickstart (plug in & set up) |
 | You want config, identity/DNS, updates, or troubleshooting | **Common** at the end |
 
+<a id="what-barenoc-is"></a>
 ## What BareNOC is
 
 BareNOC is a **single-node network operations appliance**: one Linux machine
@@ -67,6 +69,7 @@ services are required.
 
 ---
 
+<a id="part-a"></a>
 ## Part A — Install on your existing Proxmox server
 
 The standard BareNOC install. You already have a **Proxmox VE host running**;
@@ -75,6 +78,7 @@ Agent runtime, and deploys the application — one command, no manual steps in
 between. All commands run **over SSH, in a terminal on the Proxmox host** (the
 web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 
+<a id="a1-prerequisites"></a>
 ### A1. Prerequisites
 
 - **Proxmox VE 8.x or newer** running (web UI at `https://<host>:8006`).
@@ -87,6 +91,7 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
   (default: first usable IP of the /24) and DNS (default `1.1.1.1`).
 - A free VMID (the installer defaults to **1000**).
 
+<a id="a2-get-the-release-onto-the-host"></a>
 ### A2. Get the release onto the host
 
 The release repo is **private and invite-only** — you'll have received a
@@ -109,6 +114,7 @@ git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/baren
 >
 > (git itself may need installing first: `apt-get update && apt-get install -y git`)
 
+<a id="a3-run-the-one-shot-installer"></a>
 ### A3. Run the one-shot installer
 
 ```bash
@@ -118,8 +124,6 @@ bash proxmox/barenoc-appliance.sh \
   --ssh-key ~/.ssh/id_ed25519.pub \
   --profile m \                       # s | m | l | xl (default m)
   --admin-password 'Change-Me-Now'    # optional; auto-generated otherwise
-  --activation-key 'BARC-…'           # optional: early-access key (gates updates)
-  --activation-email 'you@example.com'
 ```
 
 What it does (≈10–15 min):
@@ -140,6 +144,7 @@ What it does (≈10–15 min):
 UI forces a change). `--skip-app` provisions the OS only; bootstrap `.env` and
 run `./deploy.sh barenoc@<ip>` yourself later.
 
+<a id="a4-first-login-configure"></a>
 ### A4. First login & configure
 
 1. Log in with `admin` + the seeded password (the UI forces a change).
@@ -156,11 +161,11 @@ run `./deploy.sh barenoc@<ip>` yourself later.
    - **Email** — Gmail OAuth2 (client id/secret/refresh token) + recipients/schedule.
    - **General** — site ID, customer name, timezone, bot names.
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
-   - **Licensing** — your early-access activation key (gates updates).
    - **Tickets / Autonomy Policy** — lifecycle + approval profile for your site.
    - **Dashboard → Updates** — check for releases, **Update now / Schedule /
-     Rollback** (needs the Licensing key).
+     Rollback** (free & open — no key needed).
 
+<a id="a5-verification-checklist"></a>
 ### A5. Verification checklist
 
 - [ ] `https://<vm-ip>/api/v1/health` → `200` (all 7 containers up)
@@ -172,6 +177,7 @@ run `./deploy.sh barenoc@<ip>` yourself later.
 
 ---
 
+<a id="part-b"></a>
 ## Part B — Other hypervisors & cloud (manual VM install)
 
 BareNOC on a VM you create — **ESXi, KVM, Hyper-V, a cloud VM, or any plain
@@ -179,6 +185,7 @@ VM**. The application is identical to Part A; **you provide the platform and
 follow the common manual path below.** No one-shot installer exists for these
 yet — the steps are a one-time ~15 min manual setup.
 
+<a id="b1-create-the-ubuntu-2404-vm-per-platform"></a>
 ### B1. Create the Ubuntu 24.04 VM — per platform
 
 Common to all: **Ubuntu 24.04 LTS Server** (cloud image or installer ISO),
@@ -199,6 +206,7 @@ and the platform's guest agent.
 - **Any other VM** — same requirements (Ubuntu 24.04, sizing, static IP,
   guest agent if available).
 
+<a id="b2-common-manual-install-all-platforms"></a>
 ### B2. Common manual install (all platforms)
 
 Run these **inside the VM** (as a sudo user):
@@ -239,6 +247,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now pi-agent-runner
 > it the safe-action scripts (ping/SNMP/reboot/UniFi) still work — only the
 > open-ended `pi_task` action is unavailable.
 
+<a id="b3-backups-post-install"></a>
 ### B3. Backups & post-install
 
 - **App data (Layer 1)** — automatic every 6 h, 30-day retention, in
@@ -252,6 +261,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now pi-agent-runner
 - **Post-install config** — same as A4 (UniFi, LLM, Email, General, Identity,
   Tickets/Autonomy).
 
+<a id="b-verification-checklist"></a>
 ### B — Verification checklist
 
 - [ ] `https://<vm-ip>/api/v1/health` → `200`
@@ -263,12 +273,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now pi-agent-runner
 
 ---
 
+<a id="part-c"></a>
 ## Part C — Shipped BareNOC appliance (customer quickstart)
 
 The rack unit ships **pre-provisioned**: Proxmox VE on the Mini PC, the
 BareNOC VM, and the software already installed. Setup is: **connect → power on
 → open the URL → configure.**
 
+<a id="c1-connect-power-on"></a>
 ### C1. Connect & power on
 
 1. Plug the appliance's **uplink** into your router or switch (the labelled
@@ -276,6 +288,7 @@ BareNOC VM, and the software already installed. Setup is: **connect → power on
 2. Power on. The Proxmox host boots the VM automatically (auto-start is
    configured; first boot takes a couple of minutes).
 
+<a id="c2-find-the-appliance-ip"></a>
 ### C2. Find the appliance IP
 
 - **The rack card (sealed card in the lid) lists the static IP** of the
@@ -286,6 +299,7 @@ BareNOC VM, and the software already installed. Setup is: **connect → power on
   - the **console**: on the Proxmox host, `qm terminal 100` shows the login
     banner with the IP.
 
+<a id="c3-complete-setup"></a>
 ### C3. Complete setup
 
 1. Open **`https://<appliance-ip>/`** (accept the self-signed cert).
@@ -293,6 +307,7 @@ BareNOC VM, and the software already installed. Setup is: **connect → power on
 3. Configure **Settings** in the same order as Part A4 — most importantly set
    your **real domain in Identity before enrolling passkeys**.
 
+<a id="c4-host-side-finishing-appliance-specific"></a>
 ### C4. Host-side finishing (appliance-specific)
 
 - **Encrypted USB backup stick (Layer 3):** plug the included stick into the
@@ -310,6 +325,7 @@ BareNOC VM, and the software already installed. Setup is: **connect → power on
   (default: weekly Wednesday 2 AM). First run:
   `bash /usr/local/bin/backup-to-usb.sh`.
 
+<a id="c-verification-checklist"></a>
 ### C — Verification checklist
 
 - [ ] `https://<appliance-ip>/api/v1/health` → `200`
@@ -325,8 +341,10 @@ BareNOC VM, and the software already installed. Setup is: **connect → power on
 
 ---
 
+<a id="common-config-updates-troubleshooting"></a>
 ## Common — config, updates, troubleshooting
 
+<a id="services-ports"></a>
 ### Services & ports
 
 | Service | Role | Port |
@@ -344,6 +362,7 @@ Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client
 `volumes/{db,logs,secrets,branding,pocket-id,backup_status}` + `jobs/` +
 `backups/`.
 
+<a id="config-reference"></a>
 ### Config reference (`.env` — `src/.env.example` is the template)
 
 - **Core:** `JWT_SECRET`, `ADMIN_USERNAME/PASSWORD`, `DATABASE_URL`, `TZ`,
@@ -359,6 +378,7 @@ Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client
 - **Backups:** managed in Settings → Backups (the Proxmox host reconciles its
   cron from the VM every 10 min — appliance only).
 
+<a id="identity-dns-all-tracks"></a>
 ### Identity & DNS (all tracks)
 
 **Passkeys need a real domain.** The console works by IP, but passkey login
@@ -394,10 +414,11 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
   on the LAN. A $10/yr domain or a free subdomain (e.g. `foo.duckdns.org`)
   is enough; no public DNS records are required.
 
+<a id="updating"></a>
 ## Updating
 
 - **App code (releases):** the dashboard **Updates** card checks the public
-  manifest (gated by your **activation key** — Settings → Licensing, or the
+  manifest (**free & open** — updates are not key-gated; see the
   installer's `--activation-key`) and offers **Update now / Schedule /
   Rollback**. The update snapshots the VM (when the host key is configured),
   downloads the release, verifies the checksum, rebuilds, health-checks, and
@@ -412,6 +433,7 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
   copy), `qm rollback` of the pre-update snapshot, or `restore_app.sh --apply`
   from a Layer-1 archive.
 
+<a id="first-test-smoke-checklist-all-tracks"></a>
 ### First-test / smoke checklist (all tracks)
 
 - [ ] `GET /api/v1/health` → 200
@@ -422,6 +444,7 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
 - [ ] Agent runner active; `md5sum /opt/barenoc/agent/runner.py` matches the
       repo if you changed the runner
 
+<a id="troubleshooting-operations"></a>
 ### Troubleshooting & operations
 
 - **A fresh install stalls mid-`deploy.sh`?** The installer is idempotent

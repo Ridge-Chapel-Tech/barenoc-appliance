@@ -17,7 +17,7 @@ import sys
 DB = "/opt/barenoc/volumes/db/barenoc.db"
 ACTION_CATALOG = [  # keep in sync with action_validator.AllowedAction
     "ping_test", "snmp_poll", "device_status", "apply_patch", "reboot_device",
-    "collect_logs", "network_discovery", "network_info",
+    "collect_logs", "network_discovery", "network_info", "system_time",
     "unifi_clients", "unifi_devices", "unifi_ports", "unifi_port_config",
     "unifi_client_port", "unifi_firewall_rules", "unifi_restart",
     "unifi_port_bounce", "unifi_port_rename", "unifi_ensure_wireless_uplinks",

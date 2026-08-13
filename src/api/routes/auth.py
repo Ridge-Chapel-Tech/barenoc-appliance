@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.responses import RedirectResponse
 import logging
+import re
 
 logger = logging.getLogger("auth")
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import get_db
 from models import User
-from schemas import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest
+from schemas import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest, RegisterRequest
 from auth import (
     verify_password,
     create_access_token,
@@ -74,6 +75,76 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
         "token_type": "bearer",
         "expires_in": 3600,
         "password_change_required": bool(user.must_change_password),
+    }
+
+
+@router.post("/register")
+def register(request: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+    """Tenant self-registration — "first login = admin, everyone after = tenant".
+
+    Gated by TENANT_REGISTRATION_ENABLED (default true for hospitality):
+    the admin can turn self-signup off and create users by hand instead.
+    New accounts are ALWAYS role=tenant; the admin promotes them later
+    (Settings → Users).
+    """
+    try:
+        from llm_providers import read_env_file
+        raw = (read_env_file().get("TENANT_REGISTRATION_ENABLED") or "").strip().lower()
+        enabled = raw not in ("0", "false", "no", "off") if raw else True
+    except Exception:
+        enabled = True
+    if not enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Self-registration is disabled — ask the administrator for an account",
+        )
+
+    username = request.username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username):
+        raise HTTPException(status_code=422,
+                            detail="Username: 3–64 chars, letters/digits/._- only")
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(status_code=409, detail="Username is already taken")
+    email = (request.email or "").strip().lower() or None
+    if email:
+        if db.query(User).filter(User.email == email).first():
+            raise HTTPException(status_code=409, detail="Email is already in use")
+
+    user = User(
+        username=username,
+        email=email,
+        display_name=None,
+        hashed_password=hash_password(request.password),
+        role="tenant",
+        is_active=True,
+        must_change_password=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Auto-login (same response shape as /login so the mobile page can switch
+    # straight into chat).
+    from datetime import datetime
+    user.last_login = datetime.utcnow()
+    db.commit()
+    access_token = create_access_token({"sub": user.username, "role": user.role,
+                                        "groups": [], "auth_method": "password"})
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=3600,
+        secure=False,
+        httponly=False,
+        samesite="lax",
+        path="/",
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": 3600,
+        "password_change_required": False,
+        "user": {"username": username, "role": "tenant"},
     }
 
 

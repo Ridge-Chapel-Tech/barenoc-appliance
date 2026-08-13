@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup — BareNOC</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { theme: { extend: { colors: { barenoc: {
+            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af' } } } } };
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <div class="flex items-center gap-3 mb-2">
+    <div class="w-10 h-10 rounded-xl bg-barenoc-700 text-white flex items-center justify-center font-bold">B</div>
+    <div>
+      <div class="text-lg font-bold leading-tight">Welcome to BareNOC</div>
+      <div class="text-xs text-gray-500">A few quick steps and your network can answer for itself.</div>
+    </div>
+  </div>
+  <div id="progress" class="text-xs text-gray-500 mb-4"></div>
+
+  <!-- steps are injected here -->
+  <div id="steps" class="space-y-3"></div>
+
+  <div id="done" class="hidden mt-6 bg-white rounded-2xl shadow p-6 text-center">
+    <div class="text-4xl mb-2">🎉</div>
+    <div class="font-semibold">You're all set!</div>
+    <p class="text-sm text-gray-500 mt-1">Your network is live. Share the chat link below so family &amp; tenants can reach the Queue Manager.</p>
+    <div id="done-url" class="mt-3 text-sm font-mono text-barenoc-700 break-all"></div>
+    <a href="/dashboard" class="inline-block mt-4 rounded-lg bg-barenoc-600 px-5 py-2.5 text-sm font-semibold text-white">Go to dashboard</a>
+  </div>
+
+  <button id="finish" onclick="finishSetup()" class="hidden w-full mt-4 rounded-xl bg-green-600 py-3 text-sm font-bold text-white hover:bg-green-700">
+    ✓ Finish setup — my network is ready
+  </button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+let STATUS = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: { 'Authorization': 'Bearer ' + localStorage.getItem('access_token'), 'Content-Type': 'application/json' } }, opts || {}));
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { throw new Error(b.detail || ('HTTP ' + r.status)); }
+  return b;
+}
+
+const TZ_OPTIONS = ['UTC','America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu','Europe/London','Europe/Berlin','Australia/Sydney','Asia/Tokyo'];
+
+const STEPS = [
+  { key: 'account',     title: 'Admin account',      sub: 'You created it at first login — you are the administrator.', icon: '👤' },
+  { key: 'llm',         title: 'AI technician (LLM)',sub: 'The brain that answers tickets. Add a provider API key.', icon: '🧠' },
+  { key: 'timezone',    title: 'Timezone',           sub: 'Used for reports, alerts and “what time is it”.', icon: '🕐' },
+  { key: 'site_name',   title: 'Site name',          sub: 'Shown on the chat page and in email.', icon: '🏠' },
+  { key: 'email',       title: 'Alert email',        sub: 'Where P1/P2 alerts and digests go.', icon: '📧' },
+  { key: 'autonomy',    title: 'Autonomy',           sub: 'How much the AI does on its own. Home default: fully autonomous.', icon: '🤖' },
+  { key: 'backups',     title: 'Backups',            sub: 'Nightly appliance backup (host runs it).', icon: '💾' },
+  { key: 'devices',     title: 'Adopt your first device', sub: 'Add a laptop/NAS/switch so BareNOC can act on it.', icon: '🖥️' },
+  { key: 'share',       title: 'Share the chat link', sub: 'Point family & tenants at the chat URL.', icon: '🔗' },
+];
+
+function stepCard(s, done, editing) {
+  return '<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4">'
+    + '<div class="flex items-start gap-3">'
+    + '<div class="text-2xl">' + s.icon + '</div>'
+    + '<div class="flex-1 min-w-0">'
+    + '<div class="flex items-center gap-2"><span class="font-semibold text-sm">' + s.title + '</span>'
+    + (done ? '<span class="text-green-600 text-sm">✓</span>' : '') + '</div>'
+    + '<div class="text-xs text-gray-500 mt-0.5">' + s.sub + '</div>'
+    + '<div id="editor-' + s.key + '" class="mt-3"></div>'
+    + '</div></div></div>';
+}
+
+async function loadStatus() {
+  try { STATUS = await api('/api/v1/setup/status'); } catch (e) { return; }
+  $('progress').textContent = 'Setup status — free & open (beta).';
+  const steps = STEPS;
+  $('steps').innerHTML = steps.map(s => stepCard(s, STATUS.steps[s.key], false)).join('');
+  $('finish').classList.toggle('hidden', STATUS.complete);
+  if (STATUS.complete) $('done').classList.remove('hidden');
+  if (STATUS.complete) $('done-url').textContent = STATUS.chat_url;
+  steps.forEach(s => renderStep(s));
+}
+
+function renderStep(s) {
+  const box = $('editor-' + s.key);
+  if (!box) return;
+  if (STATUS.steps[s.key] === true) {
+    box.innerHTML = '<button onclick="editStep(\'' + s.key + '\')" class="text-xs text-barenoc-600 underline">change</button>';
+    return;
+  }
+  if (s.key === 'devices') { devicesEditor(box); return; }
+  if (s.key === 'share') { shareEditor(box); return; }
+  box.innerHTML = '<button onclick="editStep(\'' + s.key + '\')" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Set up</button>';
+}
+
+function editStep(key) {
+  const box = $('editor-' + key);
+  const s = STEPS.find(x => x.key === key);
+  if (!s) return;
+  let html = '';
+  if (key === 'llm') html = llmForm();
+  else if (key === 'timezone') html = tzForm();
+  else if (key === 'site_name') html = '<label class="block text-xs font-medium text-gray-600">Site name</label><input id="f-site" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. The Smith House" value="' + esc(STATUS.site_name !== 'BareNOC' ? STATUS.site_name : '') + '"><button onclick="saveSite()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+  else if (key === 'email') html = '<label class="block text-xs font-medium text-gray-600">Alert email</label><input id="f-email" type="email" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="you@example.com"><button onclick="saveEmail()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+  else if (key === 'autonomy') html = '<select id="f-prof" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="autonomous" selected>Autonomous — the AI acts on its own (home default)</option><option value="balanced">Balanced — judge + high-confidence writes</option><option value="strict">Strict — approvals for writes &amp; P1/P2</option></select><p class="text-xs text-gray-400 mt-1">Restrictions (Settings → Restrictions) can hard-block specific actions/devices/phrases even in Autonomous mode.</p><button onclick="saveProfile()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+  else if (key === 'backups') html = '<label class="flex items-center gap-2 text-sm"><input id="f-bk" type="checkbox" checked> Enable nightly backup</label><p class="text-xs text-gray-400 mt-1">Requires the host-side backup cron (installed with the appliance). Runs at 2 AM daily.</p><button onclick="saveBackups()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+  else if (key === 'account') html = '<p class="text-xs text-green-700">✓ Admin account exists — you are logged in as admin.</p>';
+  box.innerHTML = html;
+}
+
+function llmForm() {
+  return '<div class="space-y-2 text-sm">'
+    + '<p class="text-xs text-gray-400">Paste a DeepSeek API key to start (any OpenAI-compatible provider works — add more later in Settings → API Keys).</p>'
+    + '<input id="f-llm-name" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="provider name (deepseekv4)" value="deepseekv4">'
+    + '<input id="f-llm-url" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="base URL" value="https://api.deepseek.com">'
+    + '<input id="f-llm-model" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="chat model" value="deepseek-v4-flash">'
+    + '<input id="f-llm-key" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="API key">'
+    + '<button onclick="saveLLM()" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>'
+    + ' <button onclick="skipLLM()" class="text-xs text-gray-500 underline">skip for now (tickets go to email)</button>'
+    + '</div>';
+}
+
+function tzForm() {
+  return '<select id="f-tz" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">'
+    + TZ_OPTIONS.map(z => '<option value="' + z + '"' + (STATUS.steps.timezone ? '' : '') + '>' + z + '</option>').join('')
+    + '</select><button onclick="saveTZ()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+}
+
+function devicesEditor(box) {
+  box.innerHTML = '<p class="text-xs text-gray-500">' + STATUS.devices_count + ' device(s) on the network' + (STATUS.devices_count ? ' — found via discovery' : ' — run discovery or add one manually') + '.</p>'
+    + '<a href="/devices" class="inline-block mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Open Devices</a>'
+    + '<p class="text-xs text-gray-400 mt-2">UniFi gateways auto-discover. For laptops/NAS use SSH credentials or the cert one-liner on the Devices page.</p>';
+  STATUS.steps.devices = true;
+}
+
+function shareEditor(box) {
+  box.innerHTML = '<p class="text-xs text-gray-500 break-all">Chat URL: <a class="text-barenoc-600 underline" href="' + esc(STATUS.chat_url) + '">' + esc(STATUS.chat_url) + '</a></p>'
+    + '<img class="mt-2 w-32 h-32 rounded-lg border border-gray-200" src="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=' + encodeURIComponent(STATUS.chat_url) + '" alt="QR">'
+    + '<p class="text-xs text-gray-400 mt-2">Guests create their own account on first open (tenant role — they see only their own conversations &amp; devices). For access from away, put the appliance on your Tailnet and share the invite.</p>';
+  STATUS.steps.share = true;
+}
+
+async function saveLLM() {
+  const name = $('f-llm-name').value.trim() || 'deepseekv4';
+  try {
+    await api('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify({
+      active_provider: name,
+      providers: [{ name, type: 'openai', base_url: $('f-llm-url').value.trim(),
+        chat_model: $('f-llm-model').value.trim(), reasoner_model: $('f-llm-model').value.trim(),
+        api_key: $('f-llm-key').value.trim(), thinking: 'auto', deployment: 'hosted' }]
+    })});
+    alert('✅ LLM provider saved.'); await loadStatus();
+  } catch (e) { alert('LLM: ' + e.message); }
+}
+function skipLLM() { alert('No problem — chat works as ticket intake; email alerts still fire. Add a key later in Settings → API Keys.'); }
+async function saveTZ() { try { await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ timezone: $('f-tz').value }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+async function saveSite() { try { await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ customer_name: $('f-site').value.trim() }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+async function saveEmail() { try { await api('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify({ alert_email: $('f-email').value.trim() }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+async function saveProfile() { try { await api('/api/v1/settings/policy', { method: 'PUT', body: JSON.stringify({ profile: $('f-prof').value }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+async function saveBackups() { try { await api('/api/v1/settings/backups', { method: 'PUT', body: JSON.stringify({ usb_backup_enabled: $('f-bk').checked, usb_backup_day: 'daily', usb_backup_hour: 2 }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+
+async function finishSetup() {
+  try { await api('/api/v1/setup/complete', { method: 'POST' }); await loadStatus(); }
+  catch (e) { alert(e.message); }
+}
+
+loadStatus();
+</script>
+</body>
+</html>

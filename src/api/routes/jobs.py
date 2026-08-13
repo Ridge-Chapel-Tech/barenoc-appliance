@@ -92,6 +92,17 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append("  • It appears in the UniFi controller now; adopt/assign devices to it as needed.")
         else:
             lines.append(f"Network creation did not complete: {out.get('error') or 'unknown error'}")
+    elif action == "system_time":
+        lines.append(f"Appliance clock says {out.get('local') or 'n/a'}.")
+        tz = out.get("tz_setting")
+        if tz and tz != "unset":
+            lines.append(f"  • timezone: set to {tz} (Settings → General)")
+        else:
+            lines.append("  • timezone: unset — the appliance runs UTC")
+        if out.get("utc"):
+            lines.append(f"  • UTC: {out['utc']}")
+        if out.get("uptime"):
+            lines.append(f"  • uptime: {out['uptime']}")
     elif action == "enroll_device":
         if out.get("enrolled"):
             lines.append(f"✅ Adopted {out.get('device','the device')} with a certificate.")

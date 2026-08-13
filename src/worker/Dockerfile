@@ -11,6 +11,7 @@ COPY llm_client.py .
 COPY judge.py .
 COPY executor.py .
 COPY policy.py .
+COPY restrictions.py .
 COPY test_judge.py .
 COPY test_integration.py .
 
