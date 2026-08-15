@@ -163,13 +163,19 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
 apt-get update -qq
 apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin \
-  nmap snmp snmp-mibs-downloader
+  nmap snmp snmp-mibs-downloader sqlite3
 usermod -aG docker barenoc
-# pi-agent needs the docker group to traverse /opt/barenoc (0750 barenoc:docker)
-usermod -aG docker pi-agent
 
 # pi-agent user + Pi Coding Agent runtime (node + the pi npm package)
 useradd -r -m -s /bin/bash pi-agent
+# pi-agent traverses /opt/barenoc via o+x on the path — deliberately NOT the
+# docker group (docker membership would let the AI agent stop the appliance's
+# own containers = self-harm). setup_agent_credentials.sh re-asserts this on
+# every deploy (removes the group if an old installer added it).
+for d in /opt/barenoc /opt/barenoc/volumes /opt/barenoc/volumes/logs \
+         /opt/barenoc/volumes/secrets /opt/barenoc/scripts; do
+  [ -d "$d" ] && chmod o+x "$d" 2>/dev/null || true
+done
 PI_NODE_DIR=/home/pi-agent/.local/share/pi-node
 mkdir -p "$PI_NODE_DIR"
 curl -fsSL https://nodejs.org/dist/v22.23.1/node-v22.23.1-linux-x64.tar.xz -o /tmp/node.tar.xz
@@ -292,15 +298,19 @@ qm start "$VM_ID"
 
 # ── 4. wait for SSH + provisioning marker ──────────────────────────────────
 echo "==> Waiting for $IP:22 (ssh)…"
+SSH_UP=0
 for _ in $(seq 1 60); do
-  if timeout 3 bash -c "cat < /dev/null > /dev/tcp/$IP/22" 2>/dev/null; then break; fi
+  if timeout 3 bash -c "cat < /dev/null > /dev/tcp/$IP/22" 2>/dev/null; then SSH_UP=1; break; fi
   sleep 5
 done
+[ "$SSH_UP" = "1" ] || { echo "ERROR: $IP:22 never came up (5 min) — check the VM console" >&2; exit 1; }
 echo "==> Waiting for /opt/barenoc/.provisioned (base OS + pi runtime)…"
+PROVISIONED=0
 for _ in $(seq 1 60); do
-  if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 "barenoc@$IP" "test -f /opt/barenoc/.provisioned" 2>/dev/null; then break; fi
+  if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 "barenoc@$IP" "test -f /opt/barenoc/.provisioned" 2>/dev/null; then PROVISIONED=1; break; fi
   sleep 5
 done
+[ "$PROVISIONED" = "1" ] || { echo "ERROR: provisioning did not finish (no /opt/barenoc/.provisioned after 5 min) — check /var/log/barenoc-provision.log on the VM" >&2; exit 1; }
 
 # ── 4.5 .env bootstrap ─────────────────────────────────────────────────────
 # First contact with the fresh VM: drop any stale host key (an earlier
@@ -320,6 +330,11 @@ fi
 # keys, UniFi, email) is set in the web UI → Settings after first login.
 JWT="$(openssl rand -hex 32)"
 ENCRYPTION_KEY="$(openssl rand -hex 32)"   # pocket-id requires >=16 bytes
+# The VM's default gateway = this host's gateway (same bridge). Computed
+# HOST-side so it can be interpolated into sed like the other values (a
+# remote \${GW} inside the sed replacement would be written literally).
+GW="$(ip route | awk '/default/{print $3; exit}')"
+GW="${GW:-$(echo "$IP" | awk -F. '{print $1"."$2"."$3".1"}')}"
 if [[ $SKIP_APP -eq 0 ]]; then
   echo "==> Bootstrapping /opt/barenoc/.env (template + seeded admin + identity)"
   scp -q "$REPO/src/.env.example" "barenoc@$IP:/tmp/barenoc-env.example"
@@ -329,7 +344,7 @@ if [[ $SKIP_APP -eq 0 ]]; then
      s|^# ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENCRYPTION_KEY}|;
      s|^# APPLIANCE_IP=.*|APPLIANCE_IP=${IP}|;
      s|^# APPLIANCE_HOST=.*|APPLIANCE_HOST=${APPLIANCE_HOST}|;
-' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
+     s|^# INTERNET_PROBE_GATEWAY=.*|INTERNET_PROBE_GATEWAY=${GW}|;' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
 fi
 
 # ── 5. application install (same path as updates) ──────────────────────────

@@ -13,17 +13,23 @@
 <body class="bg-gray-50 min-h-screen">
 <div class="max-w-2xl mx-auto px-4 py-6">
 
-  <div class="flex items-center gap-3 mb-2">
+  <div class="flex items-center gap-3 mb-3">
     <div class="w-10 h-10 rounded-xl bg-barenoc-700 text-white flex items-center justify-center font-bold">B</div>
     <div>
       <div class="text-lg font-bold leading-tight">Welcome to BareNOC</div>
       <div class="text-xs text-gray-500">A few quick steps and your network can answer for itself.</div>
     </div>
   </div>
+
+  <!-- step dots + counter -->
+  <div id="dots" class="flex items-center gap-1.5 mb-1"></div>
   <div id="progress" class="text-xs text-gray-500 mb-4"></div>
 
-  <!-- steps are injected here -->
-  <div id="steps" class="space-y-3"></div>
+  <!-- current step card -->
+  <div id="step" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5"></div>
+
+  <!-- navigation -->
+  <div id="nav" class="flex items-center justify-between mt-5"></div>
 
   <div id="done" class="hidden mt-6 bg-white rounded-2xl shadow p-6 text-center">
     <div class="text-4xl mb-2">🎉</div>
@@ -32,140 +38,520 @@
     <div id="done-url" class="mt-3 text-sm font-mono text-barenoc-700 break-all"></div>
     <a href="/dashboard" class="inline-block mt-4 rounded-lg bg-barenoc-600 px-5 py-2.5 text-sm font-semibold text-white">Go to dashboard</a>
   </div>
-
-  <button id="finish" onclick="finishSetup()" class="hidden w-full mt-4 rounded-xl bg-green-600 py-3 text-sm font-bold text-white hover:bg-green-700">
-    ✓ Finish setup — my network is ready
-  </button>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 let STATUS = null;
+let cur = 0; // current step index
+let noSession = false; // set when an API call 401s with no usable session
+
+// Send the Bearer token only when we actually have one; otherwise the browser's
+// session cookie (e.g. from a /login page sign-in) authenticates the request.
+// Sending "Bearer null" used to produce a confusing "Invalid or expired token".
+function authHeaders() {
+  const t = localStorage.getItem('access_token');
+  const h = { 'Content-Type': 'application/json' };
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+
+// Fetch with auth; on a 401 drop a stale wizard token and retry via the
+// session cookie (a /login sign-in outlives the wizard's own token).
+async function authedFetch(path, opts) {
+  let r = await fetch(path, Object.assign({ headers: authHeaders() }, opts || {}));
+  if (r.status === 401 && localStorage.getItem('access_token')) {
+    localStorage.removeItem('access_token');
+    r = await fetch(path, Object.assign({ headers: authHeaders() }, opts || {}));
+  }
+  return r;
+}
 
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ headers: { 'Authorization': 'Bearer ' + localStorage.getItem('access_token'), 'Content-Type': 'application/json' } }, opts || {}));
+  const r = await authedFetch(path, opts);
   const b = await r.json().catch(() => ({}));
-  if (!r.ok) { throw new Error(b.detail || ('HTTP ' + r.status)); }
+  if (!r.ok) {
+    if (r.status === 401) {
+      noSession = true;
+      render();
+      throw new Error('Session expired or missing — sign in first (see the link above), then try again.');
+    }
+    throw new Error(b.detail || ('HTTP ' + r.status));
+  }
   return b;
 }
 
 const TZ_OPTIONS = ['UTC','America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu','Europe/London','Europe/Berlin','Australia/Sydney','Asia/Tokyo'];
 
+// required = must be done to move forward (Next stays disabled until saved);
+// llm + devices are optional — "Skip for now" advances without marking done.
 const STEPS = [
-  { key: 'account',     title: 'Admin account',      sub: 'You created it at first login — you are the administrator.', icon: '👤' },
-  { key: 'llm',         title: 'AI technician (LLM)',sub: 'The brain that answers tickets. Add a provider API key.', icon: '🧠' },
-  { key: 'timezone',    title: 'Timezone',           sub: 'Used for reports, alerts and “what time is it”.', icon: '🕐' },
-  { key: 'site_name',   title: 'Site name',          sub: 'Shown on the chat page and in email.', icon: '🏠' },
-  { key: 'email',       title: 'Alert email',        sub: 'Where P1/P2 alerts and digests go.', icon: '📧' },
-  { key: 'autonomy',    title: 'Autonomy',           sub: 'How much the AI does on its own. Home default: fully autonomous.', icon: '🤖' },
-  { key: 'backups',     title: 'Backups',            sub: 'Nightly appliance backup (host runs it).', icon: '💾' },
-  { key: 'devices',     title: 'Adopt your first device', sub: 'Add a laptop/NAS/switch so BareNOC can act on it.', icon: '🖥️' },
-  { key: 'share',       title: 'Share the chat link', sub: 'Point family & tenants at the chat URL.', icon: '🔗' },
+  { key: 'account',   title: 'Your admin account', sub: 'Set your username + password — the first login on this appliance.', icon: '👤', required: true },
+  { key: 'llm',       title: 'AI technician (LLM)', sub: 'The brain that answers tickets. Add a provider API key, or skip and add one later in Settings → API Keys.', icon: '🧠', required: false },
+  { key: 'timezone',  title: 'Timezone', sub: 'Used for reports, alerts and “what time is it”.', icon: '🕐', required: true },
+  { key: 'site_name', title: 'Site name', sub: 'Shown on the chat page and in email.', icon: '🏠', required: true },
+  { key: 'email',     title: 'Alert email', sub: 'Where P1/P2 alerts and digests go.', icon: '📧', required: true },
+  { key: 'autonomy',  title: 'Autonomy', sub: 'How much the AI does on its own. Home default: fully autonomous.', icon: '🤖', required: true },
+  { key: 'backups',   title: 'Backups', sub: 'Your data is backed up automatically — nothing to do.', icon: '💾', required: false },
+  { key: 'devices',   title: 'Adopt your first device', sub: 'Add a laptop/NAS/switch so BareNOC can act on it.', icon: '🖥️', required: false },
+  { key: 'share',     title: 'Share the chat link', sub: 'Point family & tenants at the chat URL.', icon: '🔗', required: false },
 ];
 
-function stepCard(s, done, editing) {
-  return '<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4">'
-    + '<div class="flex items-start gap-3">'
-    + '<div class="text-2xl">' + s.icon + '</div>'
-    + '<div class="flex-1 min-w-0">'
-    + '<div class="flex items-center gap-2"><span class="font-semibold text-sm">' + s.title + '</span>'
-    + (done ? '<span class="text-green-600 text-sm">✓</span>' : '') + '</div>'
-    + '<div class="text-xs text-gray-500 mt-0.5">' + s.sub + '</div>'
-    + '<div id="editor-' + s.key + '" class="mt-3"></div>'
-    + '</div></div></div>';
-}
-
 async function loadStatus() {
-  try { STATUS = await api('/api/v1/setup/status'); } catch (e) { return; }
-  $('progress').textContent = 'Setup status — free & open (beta).';
-  const steps = STEPS;
-  $('steps').innerHTML = steps.map(s => stepCard(s, STATUS.steps[s.key], false)).join('');
-  $('finish').classList.toggle('hidden', STATUS.complete);
-  if (STATUS.complete) $('done').classList.remove('hidden');
-  if (STATUS.complete) $('done-url').textContent = STATUS.chat_url;
-  steps.forEach(s => renderStep(s));
-}
-
-function renderStep(s) {
-  const box = $('editor-' + s.key);
-  if (!box) return;
-  if (STATUS.steps[s.key] === true) {
-    box.innerHTML = '<button onclick="editStep(\'' + s.key + '\')" class="text-xs text-barenoc-600 underline">change</button>';
+  try { STATUS = await api('/api/v1/setup/status'); }
+  catch (e) { $('progress').textContent = 'Loading setup…'; return; }
+  if (STATUS.complete) {
+    $('done').classList.remove('hidden');
+    $('done-url').textContent = STATUS.chat_url;
+    $('dots').innerHTML = ''; $('progress').textContent = '';
+    $('step').innerHTML = ''; $('nav').innerHTML = '';
     return;
   }
-  if (s.key === 'devices') { devicesEditor(box); return; }
-  if (s.key === 'share') { shareEditor(box); return; }
-  box.innerHTML = '<button onclick="editStep(\'' + s.key + '\')" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Set up</button>';
+  // land on the first step that still needs doing
+  const firstUndone = STEPS.findIndex(s => STATUS.steps[s.key] !== true);
+  cur = firstUndone === -1 ? 0 : firstUndone;
+  render();
 }
 
-function editStep(key) {
-  const box = $('editor-' + key);
-  const s = STEPS.find(x => x.key === key);
-  if (!s) return;
-  let html = '';
-  if (key === 'llm') html = llmForm();
-  else if (key === 'timezone') html = tzForm();
-  else if (key === 'site_name') html = '<label class="block text-xs font-medium text-gray-600">Site name</label><input id="f-site" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. The Smith House" value="' + esc(STATUS.site_name !== 'BareNOC' ? STATUS.site_name : '') + '"><button onclick="saveSite()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
-  else if (key === 'email') html = '<label class="block text-xs font-medium text-gray-600">Alert email</label><input id="f-email" type="email" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="you@example.com"><button onclick="saveEmail()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
-  else if (key === 'autonomy') html = '<select id="f-prof" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="autonomous" selected>Autonomous — the AI acts on its own (home default)</option><option value="balanced">Balanced — judge + high-confidence writes</option><option value="strict">Strict — approvals for writes &amp; P1/P2</option></select><p class="text-xs text-gray-400 mt-1">Restrictions (Settings → Restrictions) can hard-block specific actions/devices/phrases even in Autonomous mode.</p><button onclick="saveProfile()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
-  else if (key === 'backups') html = '<label class="flex items-center gap-2 text-sm"><input id="f-bk" type="checkbox" checked> Enable nightly backup</label><p class="text-xs text-gray-400 mt-1">Requires the host-side backup cron (installed with the appliance). Runs at 2 AM daily.</p><button onclick="saveBackups()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
-  else if (key === 'account') html = '<p class="text-xs text-green-700">✓ Admin account exists — you are logged in as admin.</p>';
-  box.innerHTML = html;
+function render() {
+  const s = STEPS[cur];
+  const done = STATUS.steps[s.key] === true;
+  // banner: the wizard needs a session (account step mints one; a /login
+  // sign-in works too) — offer a one-tap link when it's missing/expired
+  if (noSession && s.key !== 'account') {
+    $('nav').innerHTML = '<div class="w-full rounded-lg bg-amber-50 border border-amber-300 px-4 py-3 text-sm text-amber-800">'
+      + 'Your session expired. <a href="/login" class="font-semibold underline">Sign in</a> once, then come back — your progress is saved.</div>';
+    return;
+  }
+  // progress dots: current = wide blue, done = green, todo = gray (done dots are clickable)
+  $('dots').innerHTML = STEPS.map((st, i) => {
+    const d = STATUS.steps[st.key] === true;
+    return '<button onclick="jumpTo(' + i + ')" title="' + esc(st.title) + '" class="h-2 rounded-full transition-all ' +
+      (i === cur ? 'w-6 bg-barenoc-600' : d ? 'w-2 bg-green-500' : 'w-2 bg-gray-300') + '"></button>';
+  }).join('');
+  $('progress').textContent = 'Step ' + (cur + 1) + ' of ' + STEPS.length + ' — ' + s.title + (done ? ' ✓' : '');
+  // step card
+  $('step').innerHTML = '<div class="flex items-start gap-3">'
+    + '<div class="text-3xl">' + s.icon + '</div>'
+    + '<div class="flex-1 min-w-0">'
+    + '<div class="font-semibold text-base">' + esc(s.title) + (done ? ' <span class="text-green-600 text-sm">✓</span>' : '') + '</div>'
+    + '<div class="text-xs text-gray-500 mt-0.5">' + s.sub + '</div>'
+    + '<div id="step-body" class="mt-4">' + editorFor(s) + '</div>'
+    + '</div></div>';
+  if (s.key === 'backups') loadBackupsStep();
+  // navigation
+  const nextDisabled = s.required && !done;
+  $('nav').innerHTML = (cur > 0
+      ? '<button onclick="backStep()" class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">← Back</button>'
+      : '<span></span>')
+    + '<div class="flex items-center gap-3">'
+    + ((s.key === 'llm' || s.key === 'devices') && !done
+        ? '<button onclick="skipStep()" class="text-xs text-gray-500 underline">Skip for now</button>' : '')
+    + (cur < STEPS.length - 1
+        ? '<button onclick="nextStep()" ' + (nextDisabled ? 'disabled' : '') + ' class="rounded-lg px-4 py-2 text-sm font-semibold text-white ' + (nextDisabled ? 'bg-gray-300 cursor-not-allowed' : 'bg-barenoc-600 hover:bg-barenoc-700') + '">Next →</button>'
+        : '<button onclick="finishSetup()" class="rounded-xl bg-green-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-green-700">✓ Finish setup</button>')
+    + '</div>';
+}
+
+// ----- editors (always visible for the current step) -----
+
+function editorFor(s) {
+  if (s.key === 'account') {
+    if (STATUS.steps.account === true)
+      return '<p class="text-sm text-gray-600">Admin account is set. Change your password any time in Settings → Users.</p>';
+    return accountForm();
+  }
+  if (s.key === 'llm') return llmForm();
+  if (s.key === 'timezone') return tzForm();
+  if (s.key === 'site_name') return siteForm();
+  if (s.key === 'email') return emailForm();
+  if (s.key === 'autonomy') return autonomyForm();
+  if (s.key === 'backups') return '<div class="text-sm text-gray-500">Loading backup status…</div>';
+  if (s.key === 'devices') return devicesEditor();
+  if (s.key === 'share') return shareEditor();
+  return '';
+}
+
+function accountForm() {
+  return '<div class="space-y-2 text-sm">'
+    + '<label class="block text-xs font-medium text-gray-600">Admin username</label>'
+    + '<input id="f-acc-user" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. bob" autocomplete="username">'
+    + '<label class="block text-xs font-medium text-gray-600">Password (8+ chars)</label>'
+    + '<input id="f-acc-pw" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="••••••••" autocomplete="new-password">'
+    + '<label class="block text-xs font-medium text-gray-600">Confirm password</label>'
+    + '<input id="f-acc-pw2" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="••••••••" autocomplete="new-password">'
+    + '<label class="block text-xs font-medium text-gray-600">Appliance login (SSH/console) <span class="font-normal text-gray-400">— leave blank to use the same password</span></label>'
+    + '<input id="f-acc-ospw" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="optional, 8+ chars" autocomplete="new-password">'
+    + '<p class="text-xs text-gray-400">Usernames are case-insensitive (stored lowercase). You are the administrator — change this password any time in Settings → Users.</p>'
+    + '<button onclick="saveAccount()" class="rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Create my admin account</button>'
+    + '</div>';
 }
 
 function llmForm() {
-  return '<div class="space-y-2 text-sm">'
-    + '<p class="text-xs text-gray-400">Paste a DeepSeek API key to start (any OpenAI-compatible provider works — add more later in Settings → API Keys).</p>'
-    + '<input id="f-llm-name" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="provider name (deepseekv4)" value="deepseekv4">'
-    + '<input id="f-llm-url" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="base URL" value="https://api.deepseek.com">'
-    + '<input id="f-llm-model" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="chat model" value="deepseek-v4-flash">'
-    + '<input id="f-llm-key" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="API key">'
-    + '<button onclick="saveLLM()" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>'
-    + ' <button onclick="skipLLM()" class="text-xs text-gray-500 underline">skip for now (tickets go to email)</button>'
+  return '<div class="space-y-3 text-sm">'
+    + '<p class="text-xs text-gray-400">The AI failover chain (up to 3 providers): BareNOC tries <b>Preferred</b> first, then <b>Secondary</b>, then <b>Tertiary</b> if one is down. Cloud providers need an API key; local Ollama needs none. Leave a slot blank to skip it — Test each before saving.</p>'
+    + providerSlot(1, 'Preferred', 'deepseekv4', 'https://api.deepseek.com', 'deepseek-v4-flash')
+    + providerSlot(2, 'Secondary', 'ollama', 'http://192.168.x.x:11434', 'qwen2.5:3b-instruct')
+    + providerSlot(3, 'Tertiary', '', '', '')
+    + '<button onclick="saveLLM()" class="rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save providers</button>'
     + '</div>';
+}
+
+function providerSlot(n, label, defName, defUrl, defModel) {
+  const defType = (defName === 'ollama') ? 'local' : 'cloud';
+  const keyVis = defType === 'local' ? 'hidden' : '';
+  return '<div class="rounded-lg border border-gray-200 p-3 space-y-2">'
+    + '<div class="flex items-center justify-between"><span class="text-xs font-semibold">' + label + '</span><span id="llm-test-' + n + '" class="text-xs"></span></div>'
+    + '<div class="flex gap-3 text-xs">'
+    + '<label class="flex items-center gap-1"><input type="radio" name="llm-type-' + n + '" value="cloud"' + (defType === 'cloud' ? ' checked' : '') + ' onchange="llmSlotMode(' + n + ')"> Cloud</label>'
+    + '<label class="flex items-center gap-1"><input type="radio" name="llm-type-' + n + '" value="local"' + (defType === 'local' ? ' checked' : '') + ' onchange="llmSlotMode(' + n + ')"> Local (Ollama)</label>'
+    + '</div>'
+    + '<input id="f-llm-name-' + n + '" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="provider name" value="' + defName + '">'
+    + '<input id="f-llm-url-' + n + '" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="base URL (https://… or http://host:11434)" value="' + defUrl + '">'
+    + '<input id="f-llm-model-' + n + '" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="chat / reasoner model" value="' + defModel + '">'
+    + '<div id="llm-key-' + n + '" class="' + keyVis + '"><input id="f-llm-key-' + n + '" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="API key (cloud only)"></div>'
+    + '<button onclick="testLLM(' + n + ')" class="rounded-lg bg-gray-200 px-3 py-1 text-xs font-semibold text-gray-700">Test</button>'
+    + '</div>';
+}
+
+function llmSlotMode(n) {
+  const mode = (document.querySelector("input[name='llm-type-" + n + "']:checked") || {}).value || 'cloud';
+  $('llm-key-' + n).classList.toggle('hidden', mode === 'local');
+}
+
+function llmSlotConfig(n) {
+  const mode = (document.querySelector("input[name='llm-type-" + n + "']:checked") || {}).value || 'cloud';
+  return {
+    name: ($('f-llm-name-' + n).value.trim() || 'provider' + n).toLowerCase(),
+    type: 'openai',
+    base_url: $('f-llm-url-' + n).value.trim(),
+    chat_model: $('f-llm-model-' + n).value.trim(),
+    reasoner_model: $('f-llm-model-' + n).value.trim(),
+    api_key: $('f-llm-key-' + n).value.trim(),
+    deployment: mode === 'local' ? 'on_prem' : 'hosted',
+  };
+}
+
+async function testLLM(n) {
+  const c = llmSlotConfig(n);
+  if (!c.base_url || !c.chat_model) { $('llm-test-' + n).textContent = 'fill URL + model first'; return; }
+  if (c.deployment === 'hosted' && !c.api_key) { $('llm-test-' + n).textContent = 'cloud needs an API key'; return; }
+  $('llm-test-' + n).textContent = 'testing…';
+  try {
+    const r = await authedFetch('/api/v1/settings/llm/test', { method: 'POST', body: JSON.stringify(c) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) { throw new Error(b.detail || ('HTTP ' + r.status)); }
+    $('llm-test-' + n).innerHTML = '<span class="text-green-600">✓ ' + (b.latency_ms || '?') + 'ms</span>';
+  } catch (e) {
+    const m = String(e.message);
+    const label = m.includes('401') ? 'API key rejected (401) — check the key' :
+                  m.includes('404') && m.includes('completions') ? '404 on chat/completions — check the base URL (/v1 suffix?)' : m;
+    $('llm-test-' + n).innerHTML = '<span class="text-red-600">✗ ' + esc(label) + '</span>';
+  }
 }
 
 function tzForm() {
   return '<select id="f-tz" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">'
-    + TZ_OPTIONS.map(z => '<option value="' + z + '"' + (STATUS.steps.timezone ? '' : '') + '>' + z + '</option>').join('')
-    + '</select><button onclick="saveTZ()" class="mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>';
+    + TZ_OPTIONS.map(z => '<option value="' + z + '">' + z + '</option>').join('')
+    + '</select><button onclick="saveTZ()" class="mt-3 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save</button>';
 }
 
-function devicesEditor(box) {
-  box.innerHTML = '<p class="text-xs text-gray-500">' + STATUS.devices_count + ' device(s) on the network' + (STATUS.devices_count ? ' — found via discovery' : ' — run discovery or add one manually') + '.</p>'
-    + '<a href="/devices" class="inline-block mt-2 rounded-lg bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Open Devices</a>'
+function siteForm() {
+  return '<label class="block text-xs font-medium text-gray-600">Site name</label>'
+    + '<input id="f-site" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. The Smith House" value="' + esc(STATUS.site_name !== 'BareNOC' ? STATUS.site_name : '') + '">'
+    + '<button onclick="saveSite()" class="mt-3 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save</button>';
+}
+
+function emailForm() {
+  return '<label class="block text-xs font-medium text-gray-600">Alert email</label>'
+    + '<input id="f-email" type="email" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="you@example.com">'
+    + '<button onclick="saveEmail()" class="mt-3 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save</button>';
+}
+
+function autonomyForm() {
+  return '<select id="f-prof" class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">'
+    + '<option value="autonomous" selected>Autonomous — the AI acts on its own (home default)</option>'
+    + '<option value="balanced">Balanced — judge + high-confidence writes</option>'
+    + '<option value="strict">Strict — approvals for writes &amp; P1/P2</option>'
+    + '</select><p class="text-xs text-gray-400 mt-1">Restrictions (Settings → Restrictions) can hard-block specific actions/devices/phrases even in Autonomous mode.</p>'
+    + '<button onclick="saveProfile()" class="mt-3 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save</button>';
+}
+
+function devicesEditor() {
+  return '<p class="text-xs text-gray-500">' + STATUS.devices_count + ' device(s) on the network' + (STATUS.devices_count ? ' — found via discovery' : ' — run discovery or add one manually') + '.</p>'
+    + '<a href="/devices" class="inline-block mt-2 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Open Devices</a>'
     + '<p class="text-xs text-gray-400 mt-2">UniFi gateways auto-discover. For laptops/NAS use SSH credentials or the cert one-liner on the Devices page.</p>';
-  STATUS.steps.devices = true;
 }
 
-function shareEditor(box) {
-  box.innerHTML = '<p class="text-xs text-gray-500 break-all">Chat URL: <a class="text-barenoc-600 underline" href="' + esc(STATUS.chat_url) + '">' + esc(STATUS.chat_url) + '</a></p>'
+function shareEditor() {
+  return '<p class="text-xs text-gray-500 break-all">Chat URL: <a class="text-barenoc-600 underline" href="' + esc(STATUS.chat_url) + '">' + esc(STATUS.chat_url) + '</a></p>'
     + '<img class="mt-2 w-32 h-32 rounded-lg border border-gray-200" src="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=' + encodeURIComponent(STATUS.chat_url) + '" alt="QR">'
     + '<p class="text-xs text-gray-400 mt-2">Guests create their own account on first open (tenant role — they see only their own conversations &amp; devices). For access from away, put the appliance on your Tailnet and share the invite.</p>';
-  STATUS.steps.share = true;
+}
+
+// ----- save handlers (all auto-advance on success) -----
+
+async function saveAccount() {
+  const user = $('f-acc-user').value.trim();
+  const pw = $('f-acc-pw').value, pw2 = $('f-acc-pw2').value;
+  const ospw = $('f-acc-ospw') ? $('f-acc-ospw').value : '';
+  if (!user) { alert('Pick a username.'); return; }
+  if (pw.length < 8) { alert('Password must be 8+ characters.'); return; }
+  if (pw !== pw2) { alert('Passwords do not match.'); return; }
+  if (ospw && ospw.length < 8) { alert('Appliance login password must be 8+ characters (or leave it blank to use the same as above).'); return; }
+  try {
+    const r = await fetch('/api/v1/setup/account', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: user, password: pw, os_password: ospw || pw }) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) { throw new Error(b.detail || ('HTTP ' + r.status)); }
+    localStorage.setItem('access_token', b.access_token);
+    alert('✅ Admin account created — you are signed in as ' + b.username + '.');
+    STATUS.steps.account = true;
+    advance();
+  } catch (e) { alert('Account: ' + e.message); }
 }
 
 async function saveLLM() {
-  const name = $('f-llm-name').value.trim() || 'deepseekv4';
+  const providers = [];
+  const order = [];
+  for (let n = 1; n <= 3; n++) {
+    const c = llmSlotConfig(n);
+    if (!c.base_url || !c.chat_model) continue;
+    if (c.deployment === 'hosted' && !c.api_key) { alert('Slot ' + n + ': cloud provider needs an API key (or switch it to Local).'); return; }
+    providers.push(c);
+    order.push(c.name);
+  }
+  if (!providers.length) { alert('Add at least one provider (URL + model), or Skip for now.'); return; }
   try {
     await api('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify({
-      active_provider: name,
-      providers: [{ name, type: 'openai', base_url: $('f-llm-url').value.trim(),
-        chat_model: $('f-llm-model').value.trim(), reasoner_model: $('f-llm-model').value.trim(),
-        api_key: $('f-llm-key').value.trim(), thinking: 'auto', deployment: 'hosted' }]
-    })});
-    alert('✅ LLM provider saved.'); await loadStatus();
+      active_provider: order[0], provider_order: order, providers })});
+    alert('✅ LLM failover chain saved.'); STATUS.steps.llm = true; advance();
   } catch (e) { alert('LLM: ' + e.message); }
 }
-function skipLLM() { alert('No problem — chat works as ticket intake; email alerts still fire. Add a key later in Settings → API Keys.'); }
-async function saveTZ() { try { await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ timezone: $('f-tz').value }) }); await loadStatus(); } catch (e) { alert(e.message); } }
-async function saveSite() { try { await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ customer_name: $('f-site').value.trim() }) }); await loadStatus(); } catch (e) { alert(e.message); } }
-async function saveEmail() { try { await api('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify({ alert_email: $('f-email').value.trim() }) }); await loadStatus(); } catch (e) { alert(e.message); } }
-async function saveProfile() { try { await api('/api/v1/settings/policy', { method: 'PUT', body: JSON.stringify({ profile: $('f-prof').value }) }); await loadStatus(); } catch (e) { alert(e.message); } }
-async function saveBackups() { try { await api('/api/v1/settings/backups', { method: 'PUT', body: JSON.stringify({ usb_backup_enabled: $('f-bk').checked, usb_backup_day: 'daily', usb_backup_hour: 2 }) }); await loadStatus(); } catch (e) { alert(e.message); } }
+
+async function saveTZ() {
+  try {
+    await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ timezone: $('f-tz').value }) });
+    STATUS.steps.timezone = true; advance();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveSite() {
+  try {
+    await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ customer_name: $('f-site').value.trim() }) });
+    STATUS.steps.site_name = true; advance();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveEmail() {
+  try {
+    await api('/api/v1/settings/email', { method: 'PUT', body: JSON.stringify({ alert_email: $('f-email').value.trim() }) });
+    STATUS.steps.email = true; advance();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveProfile() {
+  try {
+    await api('/api/v1/settings/policy', { method: 'PUT', body: JSON.stringify({ profile: $('f-prof').value }) });
+    STATUS.steps.autonomy = true; advance();
+  } catch (e) { alert(e.message); }
+}
+
+// ----- Backups step (local status + USB schedule/run + network copy) -----
+
+function bkDayOptions() {
+  const days = [['daily','Daily'],['0','Sunday'],['1','Monday'],['2','Tuesday'],['3','Wednesday'],['4','Thursday'],['5','Friday'],['6','Saturday']];
+  return days.map(d => '<option value="' + d[0] + '">' + d[1] + '</option>').join('');
+}
+function bkHourOptions() {
+  let s = '';
+  for (let i = 0; i < 24; i++) s += '<option value="' + i + '">' + String(i).padStart(2, '0') + ':00</option>';
+  return s;
+}
+
+async function loadBackupsStep() {
+  let bk = null, sys = null;
+  try { bk = await api('/api/v1/settings/backups'); } catch (e) { /* banner handles 401 */ }
+  try { sys = await api('/api/v1/system/status'); } catch (e) {}
+  const app = sys && sys.backups ? sys.backups.app : null;
+  const host = !!(bk && bk.appliance_host !== false);
+  const stick = !!(bk && bk.usb_present);
+  const lastUsb = bk && bk.usb_last_backup && bk.usb_last_backup !== 'none' ? esc(bk.usb_last_backup) : '—';
+  const lastVm = bk && bk.vm_snapshot_last && bk.vm_snapshot_last !== 'none' ? esc(bk.vm_snapshot_last) : '—';
+  const target = (bk && bk.backup_target_dir) ? esc(bk.backup_target_dir) : '/opt/barenoc/backups/network';
+  let html = '';
+  // 1. local
+  html += '<div class="rounded-lg border border-gray-200 p-3">'
+    + '<div class="text-xs font-semibold text-gray-700">On this appliance — always on</div>'
+    + '<div class="text-xs text-gray-600 mt-1">App-data archive every 6 h, kept 30 days · '
+    + (app ? (app.count || 0) + ' archive' + (app.count === 1 ? '' : 's') + ', ' + (app.size_mb || 0) + ' MB total'
+        + (app.age_h != null ? ' · last ' + app.age_h + ' h ago' : '') : 'checking…')
+    + '</div>'
+    + (host
+        ? '<div class="text-xs text-gray-600">Nightly VM snapshot — last: ' + lastVm + ' (kept 7)</div>'
+        : '<div class="text-xs text-gray-400 mt-1">Nightly snapshots + encrypted USB need the Proxmox appliance host — on a plain Docker install the app-data archive is your backup.</div>')
+    + '</div>';
+  // 2. USB
+  html += '<div class="rounded-lg border border-gray-200 p-3 mt-3">'
+    + '<div class="flex items-center justify-between"><span class="text-xs font-semibold text-gray-700">Encrypted USB backup <span class="font-normal text-gray-400">(optional, appliance host)</span></span><span id="bk-usb-msg" class="text-xs"></span></div>'
+    + '<div class="text-xs text-gray-600 mt-1">Stick: ' + (stick ? '✅ present' : '— not detected') + ' · encryption: '
+    + (bk && bk.usb_encrypted ? '🔐 LUKS2' : (stick ? '⚠ not encrypted!' : '—')) + ' · last: ' + lastUsb + '</div>'
+    + '<div class="flex flex-wrap items-center gap-2 mt-2 ' + (host ? '' : 'opacity-40 pointer-events-none') + '">'
+    + '<label class="flex items-center gap-1.5 text-xs"><input id="bk-enabled" type="checkbox" ' + (!bk || bk.usb_backup_enabled !== false ? 'checked' : '') + '> Weekly</label>'
+    + '<select id="bk-day" class="rounded-lg border border-gray-300 px-2 py-1 text-xs">' + bkDayOptions() + '</select>'
+    + '<select id="bk-hour" class="rounded-lg border border-gray-300 px-2 py-1 text-xs">' + bkHourOptions() + '</select>'
+    + '<button onclick="wizSaveUsb()" class="rounded-lg bg-barenoc-600 px-3 py-1 text-xs font-semibold text-white">Save</button>'
+    + '<button onclick="wizRunUsbNow()" class="rounded-lg border border-barenoc-600 px-3 py-1 text-xs font-semibold text-barenoc-700">Run now</button>'
+    + '</div>'
+    + '<div class="text-xs text-gray-400 mt-2">' + (host ? 'The host applies the schedule within ~10 min. No stick yet? Initialise it in Settings → Backups (LUKS2, host-side).' : 'Requires the Proxmox appliance host.') + '</div>'
+    + '</div>';
+  // 3. network
+  const netConnected = !!(bk && bk.net_mounted);
+  const netHost = bk && bk.net_host ? esc(bk.net_host) : '';
+  const netShare = bk && bk.net_share ? esc(bk.net_share) : '';
+  const netProto = bk && bk.net_proto ? esc(bk.net_proto) : 'cifs';
+  html += '<div class="rounded-lg border border-gray-200 p-3 mt-3">'
+    + '<div class="flex items-center justify-between"><span class="text-xs font-semibold text-gray-700">Network copy <span class="font-normal text-gray-400">(optional, off-appliance)</span></span></div>'
+    + '<div id="bk-net-status" class="text-xs mt-1 ' + (netConnected ? 'text-green-700' : 'text-gray-500') + '">'
+    + (netConnected ? '✅ Connected to ' + netHost + (netShare ? '/' + netShare : '') : 'Not connected — every 6 h the app-data archive is copied to your NAS (kept 30 days).')
+    + '</div>'
+    + '<div class="text-xs font-semibold text-gray-700 mt-3">NAS share <span class="font-normal text-gray-400">— BareNOC mounts it for you</span></div>'
+    + '<div class="grid grid-cols-2 gap-2 mt-1">'
+    + '<select id="bk-net-proto" class="rounded-lg border border-gray-300 px-2 py-1.5 text-xs"><option value="cifs"' + (netProto === 'cifs' ? ' selected' : '') + '>SMB (most NAS)</option><option value="nfs"' + (netProto === 'nfs' ? ' selected' : '') + '>NFS</option></select>'
+    + '<input id="bk-net-host" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="NAS address (e.g. 192.168.4.50)" value="' + netHost + '">'
+    + '</div>'
+    + '<div class="grid grid-cols-2 gap-2 mt-2">'
+    + '<input id="bk-net-share" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="Share name (e.g. barenoc)" value="' + netShare + '">'
+    + '<input id="bk-net-user" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="Username (blank = guest)" autocomplete="off">'
+    + '</div>'
+    + '<input id="bk-net-pass" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-xs mt-2" placeholder="Password" autocomplete="new-password">'
+    + '<div class="flex flex-col sm:flex-row gap-2 mt-2 items-start">'
+    + '<button onclick="wizNetConnect()" class="rounded-lg bg-barenoc-600 px-4 py-1.5 text-xs font-semibold text-white">Connect</button>'
+    + '<button onclick="wizNetDisconnect()" class="rounded-lg border border-barenoc-600 px-4 py-1.5 text-xs font-semibold text-barenoc-700">Disconnect</button>'
+    + '<span id="bk-net-msg" class="text-xs"></span>'
+    + '</div>'
+    + '<div class="text-xs text-gray-400 mt-2">No root needed — the appliance mounts the share and reconnects after a reboot. Already have a folder mounted (or want a local second disk)? Use it directly:</div>'
+    + '<div class="flex flex-col gap-2 mt-2">'
+    + '<input id="bk-target" class="w-full rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="/opt/barenoc/backups/network" value="' + target + '">'
+    + '<div class="flex flex-col sm:flex-row gap-2 items-start">'
+    + '<button onclick="wizSaveNet()" class="rounded-lg bg-gray-700 px-4 py-1.5 text-xs font-semibold text-white">Save folder</button>'
+    + '<button onclick="wizTestNet()" class="rounded-lg border border-gray-600 px-4 py-1.5 text-xs font-semibold text-gray-700">Test folder</button>'
+    + '<span id="bk-folder-msg" class="text-xs"></span>'
+    + '</div>'
+    + '</div>'
+    + '</div>';
+  $('step-body').innerHTML = html;
+  if (bk) {
+    const d = document.getElementById('bk-day'), h = document.getElementById('bk-hour');
+    if (d) d.value = bk.usb_backup_day || '3';
+    if (h) h.value = String(bk.usb_backup_hour != null ? bk.usb_backup_hour : 2);
+  }
+}
+
+async function wizSaveUsb() {
+  const msg = $('bk-usb-msg');
+  try {
+    await api('/api/v1/settings/backups', { method: 'PUT', body: JSON.stringify({
+      usb_backup_enabled: $('bk-enabled').checked,
+      usb_backup_day: $('bk-day').value,
+      usb_backup_hour: parseInt($('bk-hour').value, 10) }) });
+    msg.innerHTML = '<span class="text-green-600">✅ Saved (host applies within ~10 min)</span>';
+  } catch (e) { msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>'; }
+}
+
+async function wizRunUsbNow() {
+  const msg = $('bk-usb-msg');
+  try {
+    await api('/api/v1/settings/backups', { method: 'PUT', body: JSON.stringify({ run_usb_backup_now: true }) });
+    msg.innerHTML = '<span class="text-green-600">✅ Queued — host starts within ~10 min</span>';
+  } catch (e) { msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>'; }
+}
+
+async function wizSaveNet() {
+  const msg = $('bk-folder-msg');
+  try {
+    await api('/api/v1/settings/backups', { method: 'PUT', body: JSON.stringify({ backup_target_dir: $('bk-target').value.trim() }) });
+    msg.innerHTML = '<span class="text-green-600">✅ Saved — next archive (≤6 h) is copied there</span>';
+  } catch (e) { msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>'; }
+}
+
+async function wizTestNet() {
+  const msg = $('bk-folder-msg');
+  msg.innerHTML = '<span class="text-gray-500">testing…</span>';
+  try {
+    const r = await authedFetch('/api/v1/settings/backups/test-target', { method: 'POST', body: JSON.stringify({ dir: $('bk-target').value.trim() }) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || ('HTTP ' + r.status));
+    msg.innerHTML = b.status === 'ok'
+      ? '<span class="text-green-600">' + esc(b.detail) + '</span>'
+      : '<span class="text-red-600">✗ ' + esc(b.detail) + '</span>';
+  } catch (e) {
+    msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>';
+  }
+}
+
+async function wizNetConnect() {
+  const msg = $('bk-net-msg');
+  msg.innerHTML = '<span class="text-gray-500">connecting…</span>';
+  try {
+    const r = await authedFetch('/api/v1/settings/backups/net-mount', { method: 'POST', body: JSON.stringify({
+      proto: $('bk-net-proto').value,
+      host: $('bk-net-host').value.trim(),
+      share: $('bk-net-share').value.trim(),
+      user: $('bk-net-user').value.trim(),
+      pass: $('bk-net-pass').value }) });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || ('HTTP ' + r.status));
+    msg.innerHTML = '<span class="text-green-600">' + esc(b.detail) + '</span>';
+    loadBackupsStep();
+  } catch (e) { msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>'; }
+}
+
+async function wizNetDisconnect() {
+  const msg = $('bk-net-msg');
+  try {
+    const r = await authedFetch('/api/v1/settings/backups/net-unmount', { method: 'POST' });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || ('HTTP ' + r.status));
+    msg.innerHTML = '<span class="text-gray-600">' + esc(b.detail) + '</span>';
+    loadBackupsStep();
+  } catch (e) { msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>'; }
+}
+
+// ----- navigation -----
+
+function nextStep() {
+  const s = STEPS[cur];
+  if (s.required && STATUS.steps[s.key] !== true) {
+    alert('Complete this step first — it\'s needed for the appliance to work. (' + s.title + ')');
+    return;
+  }
+  advance();
+}
+
+function advance() {
+  if (cur < STEPS.length - 1) { cur++; render(); }
+  else { finishSetup(); }
+}
+
+function backStep() { if (cur > 0) { cur--; render(); } }
+function skipStep() { advance(); }
+
+// done dots are clickable (backward + between done steps); the current dot
+// always is; anything ahead that isn't done stays locked (enforced order).
+function jumpTo(i) {
+  const target = STEPS[i];
+  if (!target) return;
+  if (i === cur || STATUS.steps[target.key] === true) { cur = i; render(); }
+}
 
 async function finishSetup() {
+  // required steps block the finish; llm/devices/share/backups never do
+  const undone = STEPS.filter(s => s.required && STATUS.steps[s.key] !== true);
+  if (undone.length) {
+    const names = undone.map(s => s.title).join(', ');
+    if (!confirm('You haven\'t set up: ' + names + '.\n\nYou can finish anyway and configure these later in Settings → General/API Keys. Finish setup now?')) return;
+  }
   try { await api('/api/v1/setup/complete', { method: 'POST' }); await loadStatus(); }
   catch (e) { alert(e.message); }
 }

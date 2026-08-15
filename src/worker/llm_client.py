@@ -224,7 +224,10 @@ def call_llm(
     provider_name: Optional[str] = None,
     system_prompt: Optional[str] = None,
     model_tier: str = "chat",
-    max_tokens: int = 500,
+    # The catalog path only ever needs the short JSON envelope (action/target/
+    # params/reason/confidence) — cap it so slow on-LAN fallbacks (CPU Ollama)
+    # can complete within the call timeout. Judge/executor pass explicit values.
+    max_tokens: int = 150,
     temperature: float = 0.1,
     extra_context: Optional[str] = None,
 ) -> Optional[LLMResponse]:
@@ -257,8 +260,9 @@ def call_llm(
         print("[LLM] No provider configured")
         return None
 
-    # Dev mode: every configured provider has no API key -> mock
-    if all(not p.get("api_key") for p in chain):
+    # Dev mode: every configured provider has no API key and isn't a keyless
+    # on-prem endpoint -> mock
+    if all(not p.get("api_key") and p.get("deployment") != "on_prem" for p in chain):
         return _mock_llm_call(ticket_text, priority)
 
     prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
@@ -276,7 +280,8 @@ def call_llm(
     for provider in chain:
         name = provider["name"]
         adapter = ADAPTERS.get((provider.get("type") or "").lower())
-        if not adapter or not provider.get("api_key"):
+        if not adapter or (not provider.get("api_key")
+                           and provider.get("deployment") != "on_prem"):
             continue
         model = _tier_model(provider, model_tier, use_reasoner)
         if not model:

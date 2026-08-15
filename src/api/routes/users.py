@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -46,12 +47,14 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_role(
 def create_user(data: UserCreate, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
     if data.role not in ("admin", "operator", "readonly", "tenant"):
         raise HTTPException(status_code=400, detail="Invalid role. Use admin, operator, readonly, tenant, or agent")
-    existing = db.query(User).filter(User.username == data.username).first()
+    # case-insensitive: store usernames lowercase, uniqueness is case-insensitive
+    username = data.username.strip().lower()
+    existing = db.query(User).filter(func.lower(User.username) == username).first()
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
 
     new_user = User(
-        username=data.username,
+        username=username,
         email=data.email,
         hashed_password=hash_password(data.password),
         role=data.role,

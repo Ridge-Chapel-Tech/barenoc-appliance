@@ -432,6 +432,14 @@
       <h3 class="text-lg font-medium">Restrictions <span class="text-xs font-normal text-gray-400">— hard caps, even in Autonomous mode</span></h3>
       <p class="text-xs text-gray-500 mt-1">These are <b>hard denies</b> — independent of the Autonomy Policy. A blocked request
         is escalated to a human and <b>never executed or even sent to the AI</b>. Comma-separated lists.</p>
+      <div class="mt-3 rounded-lg bg-amber-50 border border-amber-300 p-3 text-xs text-amber-800">
+        <b>🔒 Self-protection (always on — cannot be disabled):</b> the appliance will
+        never harm itself or take itself offline, in <i>any</i> profile — no shutting
+        down/rebooting the appliance, no stopping/removing its containers, no deleting
+        its data/backups/credentials, no disk or firewall surgery, no changing its own
+        network settings, and it is never a management target itself. The AI agent runs
+        without docker/sudo so it physically cannot stop the stack.
+      </div>
       <div class="mt-4 space-y-4">
         <div>
           <label class="block text-sm font-medium text-gray-700">Blocked actions <span class="text-gray-400 font-normal">(never allowed)</span></label>

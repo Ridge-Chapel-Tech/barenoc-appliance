@@ -83,6 +83,19 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
         device.cert_cn = cn
         device.cert_enrolled_at = device.cert_enrolled_at or now
         device.claimed = True
+        # Cert adoption authorizes the appliance's CONTROL key on the device
+        # (the /onboard script adds its public half to authorized_keys + enables
+        # sshd) — pair it by storing the control key as this device's SSH
+        # credential, making it immediately SSH-controllable by the agent.
+        if not device.ssh_key_fingerprint:
+            try:
+                from control_key import ensure_control_key
+                from routes.devices import _store_ssh_key
+                device.ssh_user = device.ssh_user or "barenoc"
+                device.ssh_key_fingerprint = _store_ssh_key(
+                    device.name, ensure_control_key()["private_key"])
+            except Exception:
+                pass
     device.cert_last_seen = now
     device.last_seen = now
     device.status = "online"

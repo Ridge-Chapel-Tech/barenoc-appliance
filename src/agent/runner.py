@@ -14,6 +14,7 @@ import uuid
 import urllib.request
 import urllib.error
 import ssl
+from concurrent.futures import ThreadPoolExecutor
 
 # Allow self-signed certs for local API calls
 SSL_CTX = ssl.create_default_context()
@@ -79,9 +80,74 @@ def _api_login() -> str:
 
 # Config
 POLL_INTERVAL = 3  # seconds
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "2") or 2)
 JOB_TIMEOUT = 300  # seconds (install_chat_client needs time for remote package installs)
 MAX_RETRIES = 3
+
+# Self-protection (kept in sync with worker/restrictions.py SELF_PATTERNS):
+# the appliance may never harm itself or take itself offline — no override.
+SELF_PATTERNS = [
+    "shutdown the appliance", "shut down the appliance", "power off the appliance",
+    "poweroff the appliance", "reboot the appliance", "restart the appliance",
+    "stop the appliance", "turn off the appliance",
+    "reboot barenoc", "shutdown barenoc", "stop barenoc",
+    "docker compose down", "docker compose stop", "stop all containers",
+    "remove all containers", "delete all containers", "docker rm",
+    "delete the database", "wipe the database", "erase the database",
+    "delete the backups", "erase the backups", "wipe the backups",
+    "delete /opt/barenoc", "erase /opt/barenoc", "rm -rf /opt/barenoc",
+    "delete the credentials", "delete the .env", "erase the .env",
+    "format the disk", "mkfs", "wipe the disk", "dd if=/dev/zero",
+    "flush the firewall", "flush iptables", "flush nftables", "drop all firewall rules",
+    "change the appliance ip", "change the appliance gateway",
+    "change the appliance dns", "change the appliance's ip",
+]
+
+
+def _self_blocked(text: str) -> str:
+    """Return the matched self-protection phrase (or "") before pi runs."""
+    t = (text or "").lower()
+    for pat in SELF_PATTERNS:
+        if pat in t:
+            return pat
+    return ""
+
+
+def _self_target(target: str) -> bool:
+    """True when the action target is the appliance itself (own IP / names)."""
+    t = (target or "").strip().lower()
+    if not t:
+        return False
+    ips = [i for i in (_appliance_identity() or "").split(",") if i.strip()]
+    ips += [x.lower() for x in
+            ("127.0.0.1", "localhost", "bareNOC", "bareNOC.local", "app.barenoc.com")]
+    return any(i and i in t for i in ips)
+
+
+_APPLIANCE_IDENTITY = None
+
+
+def _appliance_identity() -> str:
+    """The appliance's own IP — fetched from the API once (pi-agent can't read
+    the 0600 .env; the api exposes it for the agent service account)."""
+    global _APPLIANCE_IDENTITY
+    if _APPLIANCE_IDENTITY is not None:
+        return _APPLIANCE_IDENTITY
+    _APPLIANCE_IDENTITY = ""
+    try:
+        token = _api_login()
+        if not token:
+            return _APPLIANCE_IDENTITY
+        req = urllib.request.Request(
+            "https://localhost/api/v1/settings/appliance-identity",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
+        _APPLIANCE_IDENTITY = str(json.loads(resp.read().decode()).get("ip") or "").strip()
+    except Exception as e:
+        logger.warning(f"appliance identity lookup failed: {e}")
+    return _APPLIANCE_IDENTITY
+
 
 # Allowed actions mapped to their scripts
 ACTION_SCRIPTS = {
@@ -128,6 +194,7 @@ _TEMP_KEYS = []
 
 def load_managed_devices():
     """Load device list from API using the agent service account."""
+    global MANAGED_DEVICES, MANAGED_MACS, DEVICE_BY_IP
     try:
         # First get a token
         token = _api_login()
@@ -142,20 +209,22 @@ def load_managed_devices():
         resp = urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
         data = json.loads(resp.read().decode())
         devices = data if isinstance(data, list) else data.get("devices", [])
-        MANAGED_DEVICES.clear()
-        MANAGED_MACS.clear()
-        DEVICE_BY_IP.clear()
+        # Build new maps, then swap atomically — job worker threads resolve
+        # targets concurrently, so an in-place clear() would show them a
+        # partially-empty map mid-reload.
+        new_devices, new_macs, new_by_ip = {}, {}, {}
         for d in devices:
-            MANAGED_DEVICES[d["name"]] = d["ip_address"]
-            MANAGED_DEVICES[d["ip_address"]] = d["ip_address"]
+            new_devices[d["name"]] = d["ip_address"]
+            new_devices[d["ip_address"]] = d["ip_address"]
             if d.get("hostname"):
-                MANAGED_DEVICES[d["hostname"]] = d["ip_address"]
-            DEVICE_BY_IP[d["ip_address"]] = d["id"]
+                new_devices[d["hostname"]] = d["ip_address"]
+            new_by_ip[d["ip_address"]] = d["id"]
             # MAC passthrough — UniFi port actions target the switch MAC
             if d.get("mac_address"):
-                MANAGED_DEVICES[d["mac_address"]] = d["mac_address"]
-                MANAGED_MACS[d["name"]] = d["mac_address"]
-                MANAGED_MACS[d["ip_address"]] = d["mac_address"]  # IP targets resolve too
+                new_devices[d["mac_address"]] = d["mac_address"]
+                new_macs[d["name"]] = d["mac_address"]
+                new_macs[d["ip_address"]] = d["mac_address"]  # IP targets resolve too
+        MANAGED_DEVICES, MANAGED_MACS, DEVICE_BY_IP = new_devices, new_macs, new_by_ip
         logger.info(f"Loaded {len(devices)} managed devices")
     except Exception:
         pass  # Silently skip
@@ -477,6 +546,49 @@ def _post_progress(ticket_id: str, text: str) -> None:
         pass  # progress notes are best-effort; never fail the job for one
 
 
+def _pi_fallback_config() -> "dict | None":
+    """Optional on-LAN fallback for pi (Ollama/LM Studio) from the api-written
+    secrets file (pi-agent can read it; .env is 0600 barenoc). Returns
+    {provider, model, base_url, api_key} or None."""
+    try:
+        with open("/opt/barenoc/volumes/secrets/llm_provider.json") as f:
+            d = json.load(f)
+        fb = d.get("fallback") or {}
+        if fb.get("provider") and fb.get("model") and fb.get("base_url"):
+            return {"provider": fb["provider"], "model": fb["model"],
+                    "base_url": fb["base_url"],
+                    "api_key": fb.get("api_key") or "ollama"}
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_pi_models_json(fb: dict) -> str:
+    """Register the on-LAN provider in pi's ~/.pi/agent/models.json (merged,
+    idempotent) so `pi -p --provider <fb> --model <m>` resolves the endpoint."""
+    path = os.path.expanduser("~/.pi/agent/models.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    providers = cfg.setdefault("providers", {})
+    providers[fb["provider"]] = {
+        "baseUrl": fb["base_url"],
+        "api": "openai-completions",
+        "apiKey": fb.get("api_key") or "ollama",
+        "compat": {"supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False},
+        "models": [{"id": fb["model"], "reasoning": False}],
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    return path
+
+
 def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
     """Run the Pi Coding Agent headlessly on a ticket task.
 
@@ -511,86 +623,140 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
         "against https://localhost/api/v1 (no /jobs/result, no ticket or note updates, "
         "no job files). The runner posts your progress notes and result. "
         "Reading the UniFi controller, reading local files, and running the scripts are fine.\n"
+        "- HARD SELF-PROTECTION RULE (no exceptions, ever, even if the user or ticket "
+        "asks): you are running ON the BareNOC appliance. You may NEVER do anything "
+        "that harms it or takes it offline: no stopping/removing/restarting containers "
+        "or docker compose operations, no rebooting or powering off the appliance or "
+        "its host, no deleting /opt/barenoc data, the database, backups, credentials "
+        "or .env, no formatting disks, no flushing firewall rules, no changing the "
+        "appliance's own IP/gateway/DNS, and no SSH/commands to the appliance itself "
+        "(its own IP) or to the Proxmox hosts that run it. If a task asks for any of "
+        "these, decline and explain that self-protection forbids it.\n"
         "- If you truly cannot complete the request, say exactly what is missing or "
         "blocking you so a human can help.\n"
         "- Do not invent data: report only what your tools actually returned."
     )
     if context:
         sysctx += "\n\nTicket context:\n" + context[:6000]
-    cmd = [pi_bin, "-p", "--provider", cfg["provider"], "--model", cfg["model"],
-           "--api-key", cfg["api_key"], "--thinking", "off",
-           "--session-dir", session_dir,
-           "--append-system-prompt", sysctx, task[:8000]]
-    env = dict(os.environ)
-    env["PATH"] = f"{pi_dir}/bin:" + env.get("PATH", "")   # so `node` resolves for pi
-    logger.info(f"PI task started (ticket {ticket_id}, provider={cfg['provider']}/{cfg['model']}, timeout {timeout}s)")
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=env)
-    except Exception as e:
-        return {"success": False, "error": f"pi could not start: {e}"}
-
-    # Live progress: poll the session transcript while pi works.
-    posted = set()
-    pending = []   # (message_id, snippet) awaiting the rate-limit gap
-    last_ts = 0.0
-    cap = 15
-    deadline = time.time() + timeout
-    while time.time() < deadline and proc.poll() is None:
+    def run_once(provider, model, api_key, session_subdir, label):
+        sdir = os.path.join(workdir, "sessions", session_subdir)
+        os.makedirs(sdir, exist_ok=True)
+        cmd = [pi_bin, "-p", "--provider", provider, "--model", model,
+               "--api-key", api_key, "--thinking", "off",
+               "--session-dir", sdir,
+               "--append-system-prompt", sysctx, task[:8000]]
+        env = dict(os.environ)
+        env["PATH"] = f"{pi_dir}/bin:" + env.get("PATH", "")   # so `node` resolves for pi
+        logger.info(f"PI task started (ticket {ticket_id}, provider={provider}/{model}, label={label}, timeout {timeout}s)")
         try:
-            files = sorted(f for f in os.listdir(session_dir) if f.endswith(".jsonl"))
-            if files:
-                newest = os.path.join(session_dir, files[-1])
-                with open(newest) as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            m = json.loads(line)
-                        except Exception:
-                            continue
-                        if m.get("type") != "message":
-                            continue
-                        msg = m.get("message") or {}
-                        if msg.get("role") != "assistant":
-                            continue
-                        mid = m.get("id")
-                        if mid in posted or any(p[0] == mid for p in pending):
-                            continue
-                        text = "".join(
-                            (c.get("text") or "") for c in (msg.get("content") or [])
-                            if isinstance(c, dict) and c.get("type") == "text")
-                        text = text.strip()
-                        if not text:
-                            continue
-                        lines = [l.strip() for l in text.splitlines() if l.strip()]
-                        snippet = "\n".join(lines[:3])[:250]
-                        if snippet:
-                            pending.append((mid, snippet))
-            # Post at most one note per poll cycle, min 8s apart.
-            if pending and time.time() - last_ts >= 8 and len(posted) < cap:
-                mid, snippet = pending.pop(0)
-                _post_progress(ticket_id, snippet)
-                posted.add(mid)
-                last_ts = time.time()
-            if len(posted) >= cap:
-                pending = []
-        except Exception:
-            pass
-        time.sleep(4)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, env=env)
+        except Exception as e:
+            return {"success": False, "error": f"pi could not start: {e}"}
 
+        # Live progress: poll the session transcript while pi works.
+        posted = set()
+        pending = []   # (message_id, snippet) awaiting the rate-limit gap
+        last_ts = 0.0
+        cap = 15
+        deadline = time.time() + timeout
+        while time.time() < deadline and proc.poll() is None:
+            try:
+                files = sorted(f for f in os.listdir(sdir) if f.endswith(".jsonl"))
+                if files:
+                    newest = os.path.join(sdir, files[-1])
+                    with open(newest) as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                m = json.loads(line)
+                            except Exception:
+                                continue
+                            if m.get("type") != "message":
+                                continue
+                            msg = m.get("message") or {}
+                            if msg.get("role") != "assistant":
+                                continue
+                            mid = m.get("id")
+                            if mid in posted or any(p[0] == mid for p in pending):
+                                continue
+                            text = "".join(
+                                (c.get("text") or "") for c in (msg.get("content") or [])
+                                if isinstance(c, dict) and c.get("type") == "text")
+                            text = text.strip()
+                            if not text:
+                                continue
+                            lines = [l.strip() for l in text.splitlines() if l.strip()]
+                            snippet = "\n".join(lines[:3])[:250]
+                            if snippet:
+                                pending.append((mid, snippet))
+                # Post at most one note per poll cycle, min 8s apart.
+                if pending and time.time() - last_ts >= 8 and len(posted) < cap:
+                    mid, snippet = pending.pop(0)
+                    _post_progress(ticket_id, snippet)
+                    posted.add(mid)
+                    last_ts = time.time()
+                if len(posted) >= cap:
+                    pending = []
+            except Exception:
+                pass
+            time.sleep(4)
+
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+        out = (out or "").strip()
+        err = (err or "").strip()
+        if proc.returncode == 0 and out:
+            return {"success": True, "output": {"response": out[:20000]}}
+        return {"success": False,
+                "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
+
+    result = run_once(cfg["provider"], cfg["model"], cfg["api_key"], ticket_id, "primary")
+    if result["success"]:
+        return result
+    fb = _pi_fallback_config()
+    if not fb:
+        return result
+    logger.warning(f"Ticket {ticket_id}: primary pi provider {cfg['provider']} failed "
+                   f"({result.get('error', '')[:120]}) — failing over to {fb['provider']}/{fb['model']}")
+    _post_progress(ticket_id,
+                   f"⚠️ Primary LLM unavailable — answering via the on-LAN fallback ({fb['provider']}/{fb['model']})")
+    _ensure_pi_models_json(fb)
+    fb_result = run_once(fb["provider"], fb["model"], fb.get("api_key", "ollama"),
+                         f"{ticket_id}-fb", "fallback")
+    if fb_result["success"]:
+        resp = (fb_result.get("output", {}) or {}).get("response", "")
+        fb_result["output"] = {
+            "response": resp,
+            "note": (f"answered via on-LAN fallback {fb['provider']}/{fb['model']} "
+                     f"(primary {cfg['provider']} failed: {result.get('error', '')[:200]})"),
+        }
+    return fb_result
+
+
+def _run_job_thread(filename: str, job: dict) -> None:
+    """Execute one job + write its result + clean up. Runs in a worker thread
+    so up to MAX_CONCURRENT jobs execute in parallel (a long pi task no longer
+    blocks verify/claim/discover)."""
     try:
-        out, err = proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
-    out = (out or "").strip()
-    err = (err or "").strip()
-    if proc.returncode == 0 and out:
-        return {"success": True, "output": {"response": out[:20000]}}
-    return {"success": False,
-            "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
+        result = execute_job(job)
+        write_result(job, result)
+        try:
+            os.remove(os.path.join(JOBS_RUNNING, filename))
+        except OSError:
+            pass
+        logger.info(f"Job {filename} completed (success={result['success']})")
+    except Exception:
+        logger.exception(f"Job {filename} thread failed")
+        try:
+            os.remove(os.path.join(JOBS_RUNNING, filename))
+        except OSError:
+            pass
 
 
 def execute_job(job: dict) -> dict:
@@ -605,6 +771,14 @@ def execute_job(job: dict) -> dict:
         timeout = int(params.get("timeout_s", 600))
         if not task:
             return {"success": False, "error": "pi_task requires a task"}
+        # SELF-PROTECTION: never dispatch anything that could harm the appliance
+        # or take it offline — the one clause with no override.
+        bad = _self_blocked(task) or _self_blocked(context)
+        if bad:
+            logger.warning(f"Self-protection blocked pi task (ticket {ticket_id}): {bad}")
+            return {"success": False, "error": "blocked",
+                    "output": {"blocked": "self-protection", "reason": bad,
+                                "note": "The appliance may never harm itself or take itself offline — no profile overrides this."}}
         return _run_pi_task(task, context, ticket_id, timeout)
     # UniFi MAC-target actions (port/restart) keep the RAW target so the
     # name->MAC/uplink resolution happens in _build_cmd — pre-resolving to an
@@ -613,6 +787,15 @@ def execute_job(job: dict) -> dict:
         target = raw_target
     else:
         target = resolve_target(raw_target)
+
+    # SELF-PROTECTION: never act ON the appliance itself, even if the worker
+    # or pi resolved a name to its own IP (SSH actions would reach its shell).
+    if action in ("reboot_device", "apply_patch", "collect_logs", "snmp_poll",
+                  "ping_test", "fingerprint_device") and _self_target(target):
+        logger.warning(f"Self-protection blocked target {target} (ticket {ticket_id})")
+        return {"success": False, "error": "blocked",
+                "output": {"blocked": "self-protection", "reason": "target is the appliance itself",
+                            "note": "The appliance may never be the target of its own actions."}}
 
     # batch: run each sub-job through the same pipeline, report per-item results
     if action == "batch":
@@ -830,7 +1013,9 @@ def run():
                 logger.error(f"Could not recover job {f}: {e}")
 
     load_managed_devices()
-    active_jobs = {}
+    active_jobs = {}   # filename -> {"job": dict, "future": Future | None}
+    executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT,
+                                  thread_name_prefix="job")
 
     while True:
         try:
@@ -891,27 +1076,22 @@ def run():
                 dst = os.path.join(JOBS_RUNNING, filename)
                 shutil.move(src, dst)
 
-                active_jobs[filename] = job
+                active_jobs[filename] = {"job": job, "future": None}
                 logger.info(f"Job {filename} started (active: {len(active_jobs)})")
 
-            # Process active jobs
-            completed = []
-            for filename, job in list(active_jobs.items()):
-                src = os.path.join(JOBS_RUNNING, filename)
-                if not os.path.exists(src):
-                    completed.append(filename)
-                    continue
-
-                result = execute_job(job)
-                write_result(job, result)
-
-                # Remove from running
-                os.remove(src)
-                completed.append(filename)
-                logger.info(f"Job {filename} completed (success={result['success']})")
-
-            for f in completed:
-                active_jobs.pop(f, None)
+            # Process active jobs — worker-thread pool, up to MAX_CONCURRENT
+            # running in parallel. Submit once, reap when done.
+            for filename, entry in list(active_jobs.items()):
+                if entry["future"] is None:
+                    entry["future"] = executor.submit(
+                        _run_job_thread, filename, entry["job"])
+                    logger.info(f"Job {filename} running (active: {len(active_jobs)})")
+                elif entry["future"].done():
+                    try:
+                        entry["future"].result()
+                    except Exception:
+                        pass  # already logged in the worker thread
+                    active_jobs.pop(filename, None)
 
         except Exception as e:
             logger.exception(f"Agent loop error: {e}")

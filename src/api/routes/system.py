@@ -7,7 +7,7 @@ import json
 import glob
 import subprocess
 from fastapi import APIRouter, Depends
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.orm import Session
 from datetime import datetime
 from database import get_db
@@ -127,8 +127,13 @@ def _uptime() -> str:
 @router.get("/status")
 def system_status(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Comprehensive BareNOC system status."""
-    # App stats — CONTROLLED devices only (onboarded = admin/SSH control)
-    controlled = Device.ssh_key_fingerprint.isnot(None)
+    # App stats — CONTROLLED devices only (onboarded = admin control: SSH
+    # admin access OR adopted UniFi-managed gear OR certificate adoption).
+    controlled = or_(
+        Device.ssh_key_fingerprint.isnot(None),
+        and_(Device.unifi_managed.is_(True), Device.claimed.is_(True)),
+        and_(Device.adoption_status == "linked", Device.claimed.is_(True)),
+    )
     total_devices = db.query(func.count(Device.id)).filter(controlled).scalar() or 0
     online_devices = db.query(func.count(Device.id)).filter(controlled, Device.status == "online").scalar() or 0
     total_tickets = db.query(func.count(Ticket.id)).scalar() or 0

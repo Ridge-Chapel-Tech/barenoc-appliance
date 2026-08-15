@@ -147,15 +147,22 @@ run `./deploy.sh barenoc@<ip>` yourself later.
 <a id="a4-first-login-configure"></a>
 ### A4. First login & configure
 
-1. Log in with `admin` + the seeded password (the UI forces a change).
-2. **No real domain?** Password-only login works as-is — you can skip
+1. **Open the web UI** in a browser on the same LAN: `https://<vm-ip>/`
+   — the root URL shows the login page (password login works by IP; the
+   appliance cert already covers the IP, so no domain needed). Log in with
+   `admin` + the seeded password (the UI forces a change on first login).
+2. **First-run wizard (fresh installs):** if the dashboard shows the setup
+   banner, open `https://<vm-ip>/setup` — it walks you through account →
+   LLM key → timezone → site name → alert email → autonomy profile →
+   backups → adopt first device → share the chat URL.
+3. **No real domain?** Password-only login works as-is — you can skip
    Identity/passkeys entirely (a home user doesn't need a domain). If you
    want passkeys, see Common → Identity & DNS (a cheap domain resolved
    *internally only* is enough).
-2. **Before enrolling passkeys:** set **Settings → Identity** — your real
+4. **Before enrolling passkeys:** set **Settings → Identity** — your real
    domain for `APP_URL`/`APPLIANCE_HOST` (passkeys require a registrable
    domain + a trusted cert; `.local`/raw IPs fail).
-3. Configure in **Settings** (all audit-logged):
+5. Configure in **Settings** (all audit-logged):
    - **UniFi** — controller URL/credentials, auto-sync interval, auto-adopt.
    - **LLM Providers** — the active provider(s) (DeepSeek/Gemini/Anthropic/Ollama).
    - **Email** — Gmail OAuth2 (client id/secret/refresh token) + recipients/schedule.

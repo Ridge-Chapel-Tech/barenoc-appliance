@@ -472,11 +472,13 @@ def export_report(db: Session = Depends(get_db),
 @router.get("/stats", response_model=DashboardStats)
 def get_stats(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     # Only CONTROLLED devices count as the fleet: SSH admin access OR adopted
-    # UniFi-managed gear (unifi_managed + claimed) — the same definition as the
-    # Onboarded view. Ping/SNMP-only devices are candidates, not fleet.
+    # UniFi-managed gear (unifi_managed + claimed) OR certificate adoption
+    # (adoption_status == 'linked') — the same definition as the Onboarded
+    # view and the Devices list. Ping/SNMP-only devices are candidates, not fleet.
     controlled = or_(
         Device.ssh_key_fingerprint.isnot(None),
         and_(Device.unifi_managed.is_(True), Device.claimed.is_(True)),
+        and_(Device.adoption_status == "linked", Device.claimed.is_(True)),
     )
     total_devices = db.query(func.count(Device.id)).filter(controlled).scalar() or 0
     online_devices = db.query(func.count(Device.id)).filter(controlled, Device.status == "online").scalar() or 0

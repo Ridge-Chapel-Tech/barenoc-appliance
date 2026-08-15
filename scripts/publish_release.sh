@@ -18,10 +18,13 @@ set -euo pipefail
 
 PUBLIC_REPO="${PUBLIC_REPO:-Ridge-Chapel-Tech/barenoc-appliance}"
 TAG=""
-for arg in "$@"; do
-  case "$arg" in
-    --tag) TAG="$2"; shift 2 ;;
-    *) TAG="${1:-}"; shift ;;
+# NOTE: iterate with a while+shift, NOT for-in-$@ — a for loop snapshots the
+# arg list at start, so shifting inside it mis-parses the NEXT arg (the old
+# version wiped the tag: `--tag vX` -> second iteration cleared TAG).
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tag) TAG="${2:-}"; shift 2 ;;
+    *) TAG="$1"; shift ;;
   esac
 done
 DRY="${DRY_RUN:-0}"

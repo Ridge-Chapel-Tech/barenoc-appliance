@@ -15,7 +15,7 @@ services:
       - /opt/barenoc/volumes/branding:/opt/barenoc/volumes/branding
       - /opt/barenoc/jobs:/opt/barenoc/jobs
       - /opt/barenoc/.env:/opt/barenoc/.env
-      - /opt/barenoc/backups:/opt/barenoc/backups:ro
+      - /opt/barenoc/backups:/opt/barenoc/backups
       - /opt/barenoc/volumes/backup_status:/opt/barenoc/volumes/backup_status
       - /opt/barenoc/volumes/update_status:/opt/barenoc/volumes/update_status
       - /opt/barenoc/volumes/remote_access:/opt/barenoc/volumes/remote_access:ro
@@ -26,6 +26,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=api
+      - PYTHONUNBUFFERED=1
     expose:
       - "8000"
     depends_on:
@@ -48,6 +49,7 @@ services:
       - /opt/barenoc/.env:/opt/barenoc/.env:ro
     environment:
       - SERVICE_NAME=worker
+      - PYTHONUNBUFFERED=1
     networks:
       - barenoc-net
 
@@ -66,6 +68,7 @@ services:
       - /opt/barenoc/agent/credentials:/opt/barenoc/agent/credentials:ro
     environment:
       - SERVICE_NAME=scheduler
+      - PYTHONUNBUFFERED=1
     networks:
       - barenoc-net
 
@@ -118,10 +121,14 @@ services:
       - DOCKER_STEPCA_INIT_PROVISIONER_NAME=admin
       - DOCKER_STEPCA_INIT_ADDRESS=:443
       - DOCKER_STEPCA_INIT_ACME=true
-      - DOCKER_STEPCA_INIT_PASSWORD_FILE=/run/secrets/ca_password
+      # Password file lives INSIDE the /home/step volume (the bootstrap wrote it
+      # as volumes/step-ca/password-in). Mounting a file-source bind to
+      # /run/secrets/ca_password breaks on older runc (PVE 8.4/Debian 12: "not
+      # a directory" — the image has no /run/secrets); the volume already
+      # exposes the file at this path.
+      - DOCKER_STEPCA_INIT_PASSWORD_FILE=/home/step/password-in
     volumes:
       - /opt/barenoc/volumes/step-ca:/home/step
-      - /opt/barenoc/volumes/step-ca/password-in:/run/secrets/ca_password:ro
     healthcheck:
       # busybox wget verifies TLS strictly → --no-check-certificate: the CA's
       # own self-signed cert is exactly what we're probing.

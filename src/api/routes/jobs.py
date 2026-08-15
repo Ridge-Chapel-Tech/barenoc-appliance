@@ -29,6 +29,21 @@ def _assistant_name() -> str:
     return name or "Lily"
 
 
+def _result_detail_text(result) -> str:
+    """Human-readable text for a successful job's output (raw_output → pi
+    reports / script stdout; JSON dicts get pretty-printed)."""
+    out = getattr(result, "output", None) or {}
+    if isinstance(out, dict):
+        raw = out.get("raw_output")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:800]
+        try:
+            return json.dumps(out, indent=2, default=str)[:800]
+        except Exception:
+            pass
+    return str(out)[:800]
+
+
 
 def _format_info_answer(action: str, out: dict) -> "str | None":
     lines = []
@@ -226,16 +241,17 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
             # assistant answered an info request — put the answer in the thread
             info_answer = formatted
             add_note(ticket, "agent_completed",
-                     f"{_assistant_name()}: here's what the controller reports:\n{info_answer}\n\n"
-                     f"Please reply to confirm this answers your question (or what's still needed).")
+                     f"Here's what I found:\n{info_answer}\n\n"
+                     f"Does this answer your question? Reply to confirm, or tell me what's still missing.")
             ticket.resolution = "Answered by " + _assistant_name() + " — awaiting customer confirmation"
         else:
-            add_note(ticket, "agent_completed", f"{result.action} on {result.target or '(no target)'} succeeded")
+            detail = _result_detail_text(result)
+            add_note(ticket, "agent_completed",
+                     f"{result.action} on {result.target or '(no target)'} succeeded."
+                     + (f"\n{detail}" if detail else ""))
             # assistant: request customer feedback to verify the outcome
             add_note(ticket, "ai_tech_feedback",
-                     f"{_assistant_name()}: task completed. Please reply here to confirm this "
-                     "resolves your issue (or what's still wrong) and the ticket will be "
-                     "closed on your confirmation.")
+                     f"Task completed — reply here to confirm it's fixed, or tell me what's still wrong.")
     else:
         ticket.status = "escalated"
         ticket.assigned_to = "human-tech"
@@ -243,8 +259,8 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
         add_note(ticket, "agent_failed", f"{result.action} on {result.target or '(no target)'} failed: {error_msg}")
         # assistant: request escalation path — inform the customer, route to human tech
         add_note(ticket, "ai_tech_feedback",
-                 f"{_assistant_name()}: the action failed and has been routed to a human "
-                 f"technician for manual intervention. Error: {error_msg[:300]}")
+                 f"The action failed and has been routed to a human technician for manual "
+                 f"intervention. Error: {error_msg[:300]}")
 
     # resolution: for info answers use the readable text, else the raw output
     if not info_answer:

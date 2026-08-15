@@ -55,17 +55,37 @@ ssh "$VM" 'if [ ! -f /opt/barenoc/volumes/step-ca/secrets/barenoc-devices.pem ];
     && echo "barenoc-devices provisioner created"
 fi'
 
-# nginx needs the CA root (device mTLS) + the intermediate pair (stepca vhost);
-# the intermediate key is EC-encrypted with the CA password — decrypt it.
-ssh "$VM" 'ADMINPW=$(cat /opt/barenoc/volumes/step-ca/password-in)
+# nginx needs the CA root (device mTLS) + a proper SERVER cert for the stepca
+# vhost. The step-ca intermediate CA cert has NO SANs (step ca init) — serving
+# it directly makes TLS hostname verification fail for enrolling devices. Issue
+# a leaf server cert (SANs: stepca.barenoc.local + appliance names) signed by
+# the intermediate, and serve the chain (leaf + intermediate).
+ssh "$VM" 'set -e
+  ADMINPW=$(cat /opt/barenoc/volumes/step-ca/password-in)
   sudo mkdir -p /opt/barenoc/volumes/nginx/certs
   sudo cp /opt/barenoc/volumes/step-ca/certs/root_ca.crt /opt/barenoc/volumes/nginx/certs/ca-root.crt
-  sudo cp /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt /opt/barenoc/volumes/nginx/certs/stepca-intermediate.crt
-  sudo openssl ec -in /opt/barenoc/volumes/step-ca/secrets/intermediate_ca_key \
-    -passin pass:"$ADMINPW" -out /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key 2>/dev/null
-  sudo chmod 0644 /opt/barenoc/volumes/nginx/certs/ca-root.crt /opt/barenoc/volumes/nginx/certs/stepca-intermediate.crt
-  sudo chmod 0640 /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key
-  echo "step-ca certs -> nginx"'
+  CERT=/opt/barenoc/volumes/nginx/certs/stepca-intermediate.crt
+  if [ ! -s "$CERT" ] || ! openssl x509 -in "$CERT" -noout -ext subjectAltName 2>/dev/null | grep -q stepca.barenoc.local; then
+    IP="$(grep -E "^APPLIANCE_IP=" /opt/barenoc/.env | head -1 | cut -d= -f2-)"; IP="${IP:-127.0.0.1}"
+    T=$(mktemp -d)
+    sudo openssl ec -in /opt/barenoc/volumes/step-ca/secrets/intermediate_ca_key \
+      -passin pass:"$ADMINPW" -out "$T/int.key" 2>/dev/null
+    sudo openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+      -keyout "$T/server.key" -out "$T/server.csr" -subj "/CN=stepca.barenoc.local" 2>/dev/null
+    printf "subjectAltName=DNS:stepca.barenoc.local,DNS:app.barenoc.com,DNS:bareNOC.local,IP:%s\n" "$IP" > "$T/sans.cnf"
+    sudo openssl x509 -req -in "$T/server.csr" \
+      -CA /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt \
+      -CAkey "$T/int.key" -CAcreateserial -days 3650 -sha256 \
+      -extfile "$T/sans.cnf" -out "$T/server.crt" 2>/dev/null
+    cat "$T/server.crt" /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt | sudo tee "$CERT" >/dev/null
+    sudo cp "$T/server.key" /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key
+    sudo chmod 0644 "$CERT" /opt/barenoc/volumes/nginx/certs/ca-root.crt
+    sudo chmod 0640 /opt/barenoc/volumes/nginx/certs/stepca-intermediate.key
+    sudo rm -rf "$T"
+    echo "step-ca leaf server cert issued (SANs: stepca.barenoc.local + appliance)"
+  else
+    echo "stepca cert present with SANs — keeping"
+  fi'
 
 # Security: .env holds all API keys/secrets — never world-readable
 ssh "$VM" "chmod 600 /opt/barenoc/.env"
@@ -116,9 +136,9 @@ if ! diff -q "$SRC/agent/runner.py" <(ssh "$VM" "cat /opt/barenoc/agent/runner.p
   echo "==> Agent runner.py changed; copying via temp (needs pi-agent access)"
   # runner identity convergence: docker-group traversal of /opt/barenoc + the
   # pi-agent-owned job queue and log (fresh installs get this via the provision;
-  # existing installs converge here).
-  ssh "$VM" "sudo usermod -aG docker pi-agent 2>/dev/null; \
-    sudo chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent 2>/dev/null; \
+  # existing installs converge here). pi-agent's docker group was REMOVED (see
+  # setup_agent_credentials.sh — docker membership = self-harm vector).
+  ssh "$VM" "sudo chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent 2>/dev/null; \
     sudo chown -R pi-agent:pi-agent /opt/barenoc/agent 2>/dev/null || true"
   scp -q "$SRC/agent/runner.py" "$VM:/tmp/runner.py"
   if ! ssh "$VM" "sudo -u pi-agent cp /tmp/runner.py /opt/barenoc/agent/runner.py && sudo systemctl restart pi-agent-runner" 2>/dev/null; then
@@ -135,12 +155,18 @@ echo "==> Rebuilding stack (docker compose up --build -d)"
 ssh "$VM" "cd /opt/barenoc && docker compose up --build -d"
 
 echo "==> Waiting for API to come up..."
+API_UP=0
 for i in $(seq 1 30); do
   if ssh "$VM" "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health" | grep -q 200; then
+    API_UP=1
     break
   fi
   sleep 2
 done
+if [ "$API_UP" != "1" ]; then
+  echo "!! WARNING: API not healthy after 60s — continuing, but the agent-credentials" >&2
+  echo "   step below will abort loudly if it can't reach the api (fresh-install bug class)." >&2
+fi
 
 # nginx config is a bind-mounted file — restart nginx to pick up changes (e.g. Pocket ID route)
 ssh "$VM" "docker exec barenoc-nginx nginx -t 2>/dev/null && docker restart barenoc-nginx >/dev/null 2>&1 && echo 'nginx reloaded' || echo 'nginx config check skipped'"

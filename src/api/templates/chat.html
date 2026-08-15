@@ -237,22 +237,35 @@ async function loadThread() {
     const st = $('th-status');
     st.textContent = sc[0]; st.className = 'text-xs font-semibold px-2 py-0.5 rounded-full ' + sc[1];
     const box = $('thread-body');
+    // Scroll handling: the poll rebuilds the thread every 4 s — only stick to
+    // the bottom when the user is already there; otherwise preserve their
+    // reading position so scrolling up to read history isn't yanked back down.
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const fromBottom = box.scrollHeight - box.scrollTop;
     box.innerHTML = '';
     box.appendChild(bubble('user', t.title, fmtTime(t.created_at),
       (t.description && t.description !== t.title) ? t.description : null));
     let notes = [];
     try { notes = JSON.parse(t.work_notes || '[]'); } catch (e) {}
+    // Customer-facing thread: user messages + Lily's replies (agent_completed,
+    // ai_tech_feedback, agent_progress) as bubbles; internal pipeline chatter
+    // (processing / agent_response / auto_execute / agent_retry) is hidden.
     notes.forEach(n => {
       if (!n || typeof n !== 'object') return;
       const ev = n.event || '';
       if (ev === 'user_message') box.appendChild(bubble('user', n.detail, fmtTime(n.timestamp), null));
-      else if (ev === 'agent_response' || ev === 'completed' || ev === 'agent_progress' || ev === 'agent_retry')
+      else if (ev === 'agent_completed' || ev === 'ai_tech_feedback' || ev === 'agent_progress')
         box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
-      else box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
+      else if (ev === 'escalated' || ev === 'failed' || ev === 'completed' || ev === 'autoclosed')
+        box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
+      // other events are internal pipeline steps — skip for a clean customer view
     });
-    if (t.resolution && !['open','in_progress'].includes(t.status))
+    // Final resolution chip — only once the ticket is actually resolved/closed;
+    // while it's open the in-thread notes already carry Lily's answer.
+    if (t.resolution && ['completed','closed'].includes(t.status))
       box.appendChild(bubble('agent', '✓ ' + t.resolution, fmtTime(t.resolved_at), null));
-    box.scrollTop = box.scrollHeight;
+    if (stick) box.scrollTop = box.scrollHeight;
+    else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
     const acts = $('th-actions'); acts.innerHTML = '';
     if (t.status === 'failed' || t.status === 'escalated')
       acts.innerHTML = '<button onclick="retryTicket()" class="flex-1 rounded-lg bg-amber-500 py-2 text-sm font-semibold text-white">Retry</button>';
@@ -280,7 +293,11 @@ function symbol(ev) {
 }
 function el(tag, cls, ...children) {
   const d = document.createElement(tag); d.className = cls;
-  children.forEach(c => { if (c) d.insertAdjacentHTML('beforeend', c); });
+  children.forEach(c => {
+    if (!c) return;
+    if (c instanceof Node) d.appendChild(c);
+    else d.insertAdjacentHTML('beforeend', c);
+  });
   return d;
 }
 

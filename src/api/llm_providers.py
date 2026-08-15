@@ -332,7 +332,7 @@ def probe_provider(provider: dict, timeout: int = 20) -> dict:
     adapter = ADAPTERS.get((provider.get("type") or "").lower())
     if not adapter:
         return {"ok": False, "error": f"Unknown adapter type: {provider.get('type')}"}
-    if not provider.get("api_key"):
+    if not provider.get("api_key") and provider.get("deployment") != "on_prem":
         return {"ok": False, "error": "No API key configured"}
     model = provider.get("chat_model") or provider.get("reasoner_model") or ""
     if not model:
@@ -341,6 +341,9 @@ def probe_provider(provider: dict, timeout: int = 20) -> dict:
         {"role": "system", "content": "You are a connectivity probe. Reply with exactly: ok"},
         {"role": "user", "content": "ping"},
     ]
+    # on-prem boxes (Ollama/LM Studio) cold-start slowly — give them room.
+    if (provider.get("deployment") or "").lower() == "on_prem":
+        timeout = max(timeout, 120)
     start = time.time()
     try:
         text, pt, rt = adapter(provider, model, messages, temperature=0.0, max_tokens=10, timeout=timeout)

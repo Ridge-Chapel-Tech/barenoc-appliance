@@ -118,6 +118,21 @@ def write_job_file(ticket, llm_response, requires_approval: bool = False) -> str
     return filepath
 
 
+_NO_INTENT_MARKERS = ("no actionable", "only a greeting", "greeting",
+                     "clarification needed", "no specific", "not a request")
+
+
+def _customer_reply(reason: str) -> str:
+    """Customer-facing reply for a no-action ticket: a friendly greeting for
+    greetings / vague intents (a dry 'legality/target scope' line reads as no
+    reply to a home user), otherwise the plain clarification reason."""
+    friendly = ("Hi! 👋 I'm Lily, your BareNOC network assistant. I can check on your "
+                "devices, run network tasks and more — what would you like me to do?")
+    if reason and any(m in str(reason).lower() for m in _NO_INTENT_MARKERS):
+        return friendly
+    return f"Waiting on customer: {reason}"
+
+
 def process_ticket(db, ticket):
     """Process a single ticket through the LLM pipeline."""
     from llm_client import call_llm
@@ -175,6 +190,26 @@ def process_ticket(db, ticket):
             ticket_id)
         return
 
+    # A bare greeting isn't a network task — answer conversationally without
+    # spending an LLM call or a judge round. BUT only for a FRESH greeting:
+    # once the customer has followed up in-thread (user_message notes exist),
+    # the follow-up is the real request and the stale title must not re-trigger
+    # a greeting (that's how "hi" swallowed "please run all updates" earlier).
+    _GREETING_RE = re.compile(
+        r"^(hi|hello|hey|yo|hiya|howdy|hola|sup|good\s+(morning|afternoon|evening))"
+        r"([,.!?\s]*|\s+[a-z][a-z0-9]*[,.!?]?)?$", re.I)
+    _has_followup = any(n.get("event") == "user_message" for n in _notes_list(ticket))
+    if not _has_followup and _GREETING_RE.match(ticket_text.strip()):
+        reply = _customer_reply("only a greeting")
+        add_note(ticket, "ai_tech_feedback", reply)
+        ticket.status = "customer_action"
+        ticket.resolution = reply
+        ticket.assigned_to = "customer"
+        db.commit()
+        _notify_customer_action(db, ticket)
+        log_event(db, "customer_action", "greeting", {"ticket_id": ticket_id}, ticket_id)
+        return
+
     # Autonomous + Lily mode: route open-ended tickets straight to the
     # local agent, Lily (full tool access, no gates — experimental).
     from policy import get_policy as _get_policy
@@ -230,7 +265,7 @@ def process_ticket(db, ticket):
                 add_note(ticket, "customer_input",
                          f"Judge: needs clarification — {verdict.reason}")
                 ticket.status = "customer_action"
-                ticket.resolution = f"Waiting on customer: {verdict.reason}"
+                ticket.resolution = _customer_reply(verdict.reason)
                 ticket.assigned_to = "customer"
                 db.commit()
                 _notify_customer_action(db, ticket)
@@ -387,7 +422,7 @@ def process_ticket(db, ticket):
                      f"{_assistant_name()}: I can't complete this on my own — {llm_response.reason}"
                      + _review_context(db, llm_response.action))
             ticket.status = "customer_action"
-            ticket.resolution = f"Waiting on customer: {llm_response.reason}"
+            ticket.resolution = _customer_reply(llm_response.reason)
             ticket.assigned_to = "customer"
             db.commit()
             _notify_customer_action(db, ticket)
@@ -412,7 +447,7 @@ def process_ticket(db, ticket):
         add_note(ticket, "customer_input",
                  f"{_assistant_name()}: needs more from you — {llm_response.reason}")
         ticket.status = "customer_action"
-        ticket.resolution = f"Waiting on customer: {llm_response.reason}"
+        ticket.resolution = _customer_reply(llm_response.reason)
         ticket.assigned_to = "customer"
         db.commit()
         _notify_customer_action(db, ticket)
@@ -509,7 +544,7 @@ def process_ticket(db, ticket):
                      f"details and I'll retry."
                      + _review_context(db, llm_response.action))
             ticket.status = "customer_action"
-            ticket.resolution = f"Waiting on customer: {reason}"
+            ticket.resolution = _customer_reply(reason)
             ticket.assigned_to = "customer"
             db.commit()
             _notify_customer_action(db, ticket)

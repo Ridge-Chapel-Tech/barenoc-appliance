@@ -33,6 +33,55 @@
     {% endfor %}
 </div>
 
+<div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-100 p-6">
+    <h2 class="text-lg font-bold text-gray-800">🖥️ Onboard this device</h2>
+    <p class="text-sm text-gray-500 mt-1">
+        Add this computer to BareNOC in one go — the script sets up secure admin control
+        (a dedicated <code>barenoc</code> account + a certificate identity from the appliance's own
+        CA), then <b>talks back to this appliance to test the handshake</b> and confirms the device
+        is adopted. No SSH keys to paste.
+    </p>
+    <div class="mt-3 flex flex-col sm:flex-row sm:items-end gap-3">
+        <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700">This computer runs</label>
+            <select id="ob-os" onchange="obPick()" class="mt-1 w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+                <option value="linux">Linux</option>
+                <option value="mac">macOS</option>
+                <option value="windows">Windows</option>
+            </select>
+        </div>
+        <a id="ob-dl" href="/onboard/script?os=linux" download="bareNOC-onboard.sh"
+           class="bg-barenoc-600 hover:bg-barenoc-700 text-white font-semibold rounded-md px-5 py-2.5 text-sm text-center">
+            ⬇️ Download onboarding script
+        </a>
+    </div>
+    <p id="ob-howto" class="mt-2 text-xs text-gray-600"></p>
+    <p class="mt-3 text-xs text-gray-400">
+        Run it, accept the admin prompt, and it reports back whether the handshake succeeded
+        (e.g. <em>"✅ Handshake verified — BareNOC adopted this device as 'device-laptop'"</em>).
+        Also on the dedicated page <a href="/onboard" class="text-barenoc-600 underline">/onboard</a> (with a QR code).
+    </p>
+</div>
+
+<script>
+function obPick() {
+  var os = document.getElementById('ob-os').value;
+  var dl = document.getElementById('ob-dl');
+  var h = document.getElementById('ob-howto');
+  if (os === 'windows') {
+    dl.href = '/onboard/script?os=windows'; dl.download = 'bareNOC-onboard.bat';
+    h.textContent = 'Download, double-click, accept the UAC prompt. (Windows currently sets up admin SSH control; certificate adoption + the full handshake test is the tracked Windows milestone.)';
+  } else if (os === 'mac') {
+    dl.href = '/onboard/script?os=mac'; dl.download = 'bareNOC-onboard-mac.sh';
+    h.textContent = 'Download, then run:  bash bareNOC-onboard-mac.sh  (enter your password when prompted).';
+  } else {
+    dl.href = '/onboard/script?os=linux'; dl.download = 'bareNOC-onboard.sh';
+    h.textContent = 'Download, then run:  sudo bash bareNOC-onboard.sh';
+  }
+}
+obPick();
+</script>
+
 <div class="mt-6 bg-white rounded-lg shadow-sm border border-gray-100 p-6 text-sm text-gray-600">
     <h3 class="font-bold text-gray-800 mb-2">Notes</h3>
     <ul class="list-disc ml-5 space-y-1">

@@ -653,6 +653,18 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db), ctx: d
     from auth import require_any_role
     require_any_role("admin", "agent")(ctx["user"])
     device = _get_checked(db, device_id, ctx)
+    # SELF-PROTECTION: never hand the agent credentials for the appliance
+    # itself — the AI must not be able to SSH into its own host (scoped sudo
+    # includes shutdown/reboot). Matched against APPLIANCE_IP + the .local aliases.
+    import routes.settings as _s
+    env = _s._read_env_file()
+    self_ips = [x.strip() for x in str(env.get("APPLIANCE_IP", "")).split(",") if x.strip()]
+    hay = " ".join([str(device.name or ""), str(device.ip_address or ""),
+                     str(device.hostname or "")]).lower()
+    if any(s in hay for s in self_ips) or any(
+            s in hay for s in ("127.0.0.1", "localhost", "bareNOC.local", "app.barenoc.com", "bareNOC")):
+        raise HTTPException(status_code=403,
+                            detail="The appliance itself is never a management target (self-protection).")
     result = {}
     if device.snmp_community:
         result["snmp_community"] = decrypt(device.snmp_community)

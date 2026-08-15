@@ -13,6 +13,10 @@ RETENTION_DAYS=30
 
 log() { echo "[$(date -Is)] $*" >> "$LOG"; }
 
+# The WAL-safe DB snapshot needs the sqlite3 CLI; without it every run dies
+# at step 1 (fresh ISO installs missed this package once). Fail clearly.
+command -v sqlite3 >/dev/null 2>&1 || { log "ERROR: sqlite3 not installed (sudo apt-get install -y sqlite3)"; exit 1; }
+
 mkdir -p "$BACKUP_DIR"
 TS=$(date +%Y%m%d-%H%M%S)
 TMP=$(mktemp -d)
@@ -23,13 +27,29 @@ log "Starting app backup"
 # 1. Consistent SQLite snapshot (WAL-safe; never a plain cp)
 sqlite3 "$DB" ".backup '$TMP/barenoc.db'"
 
-# 2. Secrets + config
+# 2. Secrets + config. Direct copies cover the common case; files that the
+#    backup user cannot read (a root-owned 0600 fernet.key / nginx key — the
+#    deploy's db-chown is best-effort and can be missed on fresh installs) are
+#    read through the api container (root), which barenoc reaches via docker.
+cp_any() { # cp_any <src> <dest-dir> [name]
+  local src="$1" dst="$2" name="${3:-$(basename "$1")}"
+  if [ -f "$src" ] && cp "$src" "$dst/" 2>/dev/null; then
+    return 0
+  fi
+  if [ -f "$src" ] && docker ps -q -f name=^barenoc-api$ | grep -q . \
+     && docker exec barenoc-api cat "$src" > "$dst/$name" 2>/dev/null; then
+    log "container-read: $name"
+    return 0
+  fi
+  [ -f "$src" ] || log "WARN: $name not found"
+  return 0
+}
 mkdir -p "$TMP/config" "$TMP/secrets" "$TMP/certs"
-cp "$APP_DIR/.env"                "$TMP/config/" 2>/dev/null || log "WARN: .env not found"
-cp "$APP_DIR/docker-compose.yml"  "$TMP/config/" 2>/dev/null || log "WARN: docker-compose.yml not found"
-[ -f "$FERN_KEY" ] && cp "$FERN_KEY" "$TMP/secrets/" || log "WARN: fernet.key not found"
-cp "$APP_DIR/volumes/nginx/certs/barenoc.crt" "$TMP/certs/" 2>/dev/null || log "WARN: cert not found"
-cp "$APP_DIR/volumes/nginx/certs/barenoc.key" "$TMP/certs/" 2>/dev/null || log "WARN: key not found"
+cp_any "$APP_DIR/.env"               "$TMP/config"
+cp_any "$APP_DIR/docker-compose.yml" "$TMP/config"
+cp_any "$FERN_KEY"                   "$TMP/secrets"
+cp_any "$APP_DIR/volumes/nginx/certs/barenoc.crt" "$TMP/certs"
+cp_any "$APP_DIR/volumes/nginx/certs/barenoc.key" "$TMP/certs"
 
 # 2b. Pocket ID (OIDC/passkeys) data — users, passkey credentials, client registrations
 mkdir -p "$TMP/pocket-id"
@@ -58,6 +78,21 @@ sqlite3 "$TMP/barenoc.db" "PRAGMA integrity_check;" | grep -q "^ok$" \
 
 # 5. Retention
 find "$BACKUP_DIR" -name "app-backup-*.tar.gz" -mtime +"$RETENTION_DAYS" -delete
+
+# 6. Network copy (optional): if a target folder is configured (a mounted
+#    SMB/NFS share, set in the wizard/Settings → Backups), copy the archive
+#    there too + prune old copies (same 30-day retention). The target lives
+#    in the backup-schedule conf the Settings UI writes.
+CONF="/opt/barenoc/volumes/backup_status/backup_schedule.conf"
+TARGET=$(grep -E '^BACKUP_TARGET_DIR=' "$CONF" 2>/dev/null | head -1 | cut -d= -f2-)
+if [ -n "$TARGET" ] && [ -d "$TARGET" ]; then
+  if cp "$ARCHIVE" "$TARGET/" 2>>"$LOG"; then
+    log "Remote copy: $TARGET/$(basename "$ARCHIVE")"
+    find "$TARGET" -name "app-backup-*.tar.gz" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
+  else
+    log "WARN: remote copy to $TARGET failed"
+  fi
+fi
 
 log "Backup complete: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
 echo "$ARCHIVE"

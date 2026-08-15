@@ -5,6 +5,7 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database import get_db
 from models import User
 
@@ -25,9 +26,10 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, expires_minutes: int = None) -> str:
     to_encode = data.copy()
-    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    minutes = expires_minutes if expires_minutes is not None else ACCESS_TOKEN_EXPIRE_MINUTES
+    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=minutes)
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -105,7 +107,9 @@ def _resolve_token_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
         )
-    user = db.query(User).filter(User.username == username).first()
+    # case-insensitive usernames (tokens carry the stored username; the DB
+    # match is case-insensitive too, e.g. after an admin renamed a user)
+    user = db.query(User).filter(func.lower(User.username) == username.lower()).first()
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -15,6 +15,60 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.15] — 2026-08-15
+
+### Added
+- **Paged first-run wizard (`/setup`)** — one step per page with enforced
+  order (account first), Skip where applicable, self-healing sessions
+  (cookie fallback + auto-heal + sign-in banner) and a 6-hour wizard token.
+- **NAS backup mounts** — BareNOC mounts your SMB/NFS share itself (no root,
+  no SSH): Connect/Disconnect in the wizard + Settings, credential file
+  0600, reconnect on reboot, guest support. `/opt/barenoc/backups` bind is
+  rw so the target test is honest.
+- **Self-protection invariant** — the appliance may never harm itself or take
+  itself offline, in any profile: worker patterns/devices, runner
+  pre-dispatch + target deny, API creds self-block, Lily's hard rule, and
+  pi-agent no longer in the docker group.
+- **GUI onboarding** — Windows: self-elevating .bat driving a native WinForms
+  progress dialog (no console). macOS/Linux: native result dialogs.
+- **Self-verifying onboarding handshake** — the installer fetches trust + DNS
+  from the appliance itself (`/onboard/info`, `/onboard/root-ca.crt`), writes
+  /etc/hosts, enrolls the cert, and reports back to prove adoption
+  ("✅ Handshake verified — BareNOC adopted this device as …").
+- **Downloads-page onboarding** — pick your OS and download the script right
+  from the Downloads page.
+- **Rate limiting** (login/chat/api, env-configurable, in-memory fixed-window
+  middleware) and a parallel agent runner (`MAX_CONCURRENT`).
+- **Greeting handling** — chat replies conversationally to a bare hello;
+  follow-ups dispatch to Lily; no-intent replies are friendly, not legalistic.
+
+### Changed
+- Fleet counts (dashboard/system) include certificate-adopted devices.
+- `/login` no longer loops back to the wizard once the admin account is
+  claimed; wizard-first routing requires an unclaimed account.
+- Demo fleet/tickets seeded only with `SEED_DEMO=true` (appliance installs
+  start clean).
+- Onboarding scripts enable sshd + open the firewall (firewalld/ufw) and
+  replace stale /etc/hosts entries.
+
+### Fixed
+- **stepca TLS** — the nginx stepca vhost served the SAN-less intermediate CA
+  cert, breaking every device enrollment; deploy.sh now issues a leaf server
+  cert with SANs (deployed to both installs).
+- Agent-credentials provisioning waits for the api + verifies the login (no
+  more silent 401-flood class).
+- Fresh-install gaps: `pi-work` created/owned for pi-agent, `llm_provider.json`
+  root:pi-agent 0640 (pi: "No API key found for deepseek"), sqlite3 in the
+  provision (local backups were silently broken), cert-adopted devices now
+  register the control key so the agent can SSH them.
+- Chat: greeting replies render as bubbles; follow-up requests are no longer
+  swallowed by a stale-title greeting.
+
+### Security
+- pi-agent removed from the docker group (self-protection); device-credential
+  fetch refuses the appliance itself; appliance-identity endpoint for the
+  agent.
+
 ## [2026.08.13] — 2026-08-13
 
 ### Added

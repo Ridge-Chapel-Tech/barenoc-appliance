@@ -39,7 +39,9 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 @router.post("/login")
 def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == request.username).first()
+    # case-insensitive usernames: "Admin" and "admin" are the same account
+    user = db.query(User).filter(
+        func.lower(User.username) == request.username.strip().lower()).first()
     if not user or not verify_password(request.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -99,11 +101,12 @@ def register(request: RegisterRequest, response: Response, db: Session = Depends
             detail="Self-registration is disabled — ask the administrator for an account",
         )
 
-    username = request.username.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username):
+    # case-insensitive: store usernames lowercase, match case-insensitively
+    username = request.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{3,64}", username):
         raise HTTPException(status_code=422,
                             detail="Username: 3–64 chars, letters/digits/._- only")
-    if db.query(User).filter(User.username == username).first():
+    if db.query(User).filter(func.lower(User.username) == username).first():
         raise HTTPException(status_code=409, detail="Username is already taken")
     email = (request.email or "").strip().lower() or None
     if email:

@@ -173,6 +173,12 @@ class InternetMonitor:
         cfg = _probe_config()
         if not cfg["enabled"]:
             return
+        # Unconfigured probe (empty or the RFC-5737 doc-IP default): don't
+        # open false P1s — an unset gateway used to probe 192.0.2.1 forever
+        # (permanent "link down" + open ticket, e.g. TKT-20260808-1165).
+        gw = (cfg.get("gateway") or "").strip().lower()
+        if not gw or gw.startswith(("192.0.2.", "203.0.113.", "198.51.100.")):
+            return
         now = time.time()
         if now - self._last_check < cfg["interval"]:
             return

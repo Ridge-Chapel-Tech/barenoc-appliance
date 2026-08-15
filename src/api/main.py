@@ -17,6 +17,7 @@ from auth import hash_password, decode_token, require_page_session, require_role
 from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, onboard, updates, setup
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
+from ratelimit import RateLimitMiddleware
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "info").upper(),
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -129,8 +130,13 @@ def seed_demo_data():
                 tags=["engineering"],
             ),
         ]
-        db.add_all(devices)
-        db.flush()  # Get IDs
+        # Demo fleet + tickets ONLY when explicitly requested (SEED_DEMO=true —
+        # the SaaS/demo deployment). A real appliance must start clean: the
+        # wizard's adoption flow is the front door, not a fake 10.0.10.x fleet.
+        demo = os.getenv("SEED_DEMO", "").strip().lower() in ("1", "true", "yes")
+        if demo:
+            db.add_all(devices)
+            db.flush()  # Get IDs
 
         # Demo tickets
         tickets = [
@@ -179,20 +185,19 @@ def seed_demo_data():
                 resolved_at=datetime(2025, 7, 30, 8, 0, 0),
             ),
         ]
-        db.add_all(tickets)
-
-        # Seed audit log entry
-        audit = AuditLog(
-            event_id=generate_event_id(),
-            event_type="system_start",
-            actor="system",
-            data={"action": "seed_demo_data", "users": 2, "devices": 6, "tickets": 4},
-            sha256_hash=compute_hash({"action": "seed_demo_data"}),
-        )
-        db.add(audit)
-
+        if demo:
+            db.add_all(tickets)
+            # Seed audit log entry
+            audit = AuditLog(
+                event_id=generate_event_id(),
+                event_type="system_start",
+                actor="system",
+                data={"action": "seed_demo_data", "users": 2, "devices": 6, "tickets": 4},
+                sha256_hash=compute_hash({"action": "seed_demo_data"}),
+            )
+            db.add(audit)
         db.commit()
-        logger.info(f"Seeded {len(devices)} devices, {len(tickets)} tickets, 2 users")
+        logger.info("Seeded 2 users" + (f", {len(devices)} demo devices, {len(tickets)} demo tickets" if demo else " (no demo data)"))
 
     except Exception as e:
         db.rollback()
@@ -211,6 +216,8 @@ async def lifespan(app: FastAPI):
     start_alert_engine()  # background: device-down alerts + daily digest
     from routes.settings import _write_provider_secret
     _write_provider_secret()  # sync the pi-agent provider key at startup
+    from routes.settings import _remount_net_backup
+    _remount_net_backup()  # reconnect the NAS backup share (best-effort)
     yield
     logger.info("Shutting down BareNOC API...")
 
@@ -224,6 +231,11 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+# Rate limiting (M2-T9) — in-memory fixed-window per client IP, rules in
+# .env (RATE_LIMIT_LOGIN / _CHAT / _API). Env re-read every 15s, so .env
+# edits hot-reload. 429 + Retry-After on exceed.
+app.add_middleware(RateLimitMiddleware)
 
 # Static files
 api_dir = os.path.dirname(os.path.abspath(__file__))
@@ -279,10 +291,33 @@ def _session_valid(request: Request, db: Session) -> bool:
     return bool(user and user.is_active)
 
 
+def _first_run_setup() -> bool:
+    """True until the /setup wizard completes (fresh install)."""
+    try:
+        from routes.settings import _read_env_file
+        return str(_read_env_file().get("SETUP_COMPLETE", "")).strip().lower() \
+            not in ("1", "true", "yes")
+    except Exception:
+        return False
+
+
+def _account_claimed(db: Session) -> bool:
+    """True once the wizard's set-your-own-admin step has been completed
+    (an admin exists and is no longer forced to change their password).
+    Until then / and /login route to the wizard (it IS the front door);
+    after that the login page must be reachable — a mid-wizard session
+    expiry would otherwise trap the user in a /setup <-> /login loop."""
+    admin = db.query(User).filter(User.role == "admin").order_by(User.id.asc()).first()
+    return bool(admin and not admin.must_change_password)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     if _session_valid(request, db):
         return RedirectResponse(url="/dashboard")
+    if _first_run_setup() and not _account_claimed(db):
+        # first boot before the admin is claimed: the wizard IS the front door
+        return RedirectResponse(url="/setup")
     return templates.TemplateResponse("login.html", {
         "request": request,
         "oidc_enabled": oidc_config().get("enabled"),
@@ -294,6 +329,8 @@ def index(request: Request, db: Session = Depends(get_db)):
 def login_page(request: Request, db: Session = Depends(get_db)):
     if _session_valid(request, db):
         return RedirectResponse(url="/dashboard")
+    if _first_run_setup() and not _account_claimed(db):
+        return RedirectResponse(url="/setup")
     return templates.TemplateResponse("login.html", {
         "request": request,
         "oidc_enabled": oidc_config().get("enabled"),
@@ -339,9 +376,11 @@ def dashboard_page(request: Request, _: User = Depends(require_page_session)):
 
 
 @app.get("/setup", response_class=HTMLResponse)
-def setup_page(request: Request, _: User = Depends(require_page_session)):
-    """First-run wizard: account → LLM → TZ → site → email → autonomy →
-    backups → adopt first device → share the chat URL."""
+def setup_page(request: Request):
+    """First-run wizard: set-your-own admin account → LLM → TZ → site → email
+    → autonomy → backups → adopt first device → share the chat URL. Public
+    while the setup is incomplete (no admin session exists yet); after
+    SETUP_COMPLETE it just renders (the APIs are admin-gated)."""
     return templates.TemplateResponse("setup.html", {"request": request})
 
 

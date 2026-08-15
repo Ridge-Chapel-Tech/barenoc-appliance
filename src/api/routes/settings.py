@@ -3,13 +3,17 @@
 import os
 import json
 import time
+import shlex
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from models import User
-from auth import get_current_user, require_role
+from auth import get_current_user, require_role, require_any_role
 from llm_providers import load_providers, probe_provider
 from audit import log_event
 from database import get_db
+
+logger = logging.getLogger("barenoc.settings")
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -160,6 +164,124 @@ _POLICY_PROFILE_DEFAULTS = {
 BACKUP_CONF = "/opt/barenoc/volumes/backup_status/backup_schedule.conf"
 BACKUP_STATUS_JSON = "/opt/barenoc/volumes/backup_status/status.json"
 
+# Network-storage (NAS) backup target — BareNOC mounts the share itself so the
+# user never needs root. The api container has docker.sock (root in its own
+# container); host mounts are made through a short-lived PRIVILEGED container
+# that enters the host mount namespace (nsenter -t 1 -m).
+NET_MOUNT_POINT = "/opt/barenoc/backups/network"
+NET_CREDS_FILE = "/opt/barenoc/volumes/backup_status/net-credentials"
+
+
+def _host_run(script: str, timeout: int = 120) -> tuple:
+    """Run a shell script in the HOST's mount namespace via a throwaway
+    privileged container (docker.sock). Returns (exit_code, output).
+    The caller builds the script with shlex.quote() around any variable parts."""
+    import httpx
+    import time as _t
+    body = {
+        "Image": "barenoc-api",
+        "Cmd": ["sh", "-c", script],
+        "HostConfig": {"Privileged": True, "PidMode": "host",
+                       "Binds": ["/:/host", "/lib/modules:/lib/modules:ro"]},
+    }
+    name = "barenoc-net-helper"
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(uds="/var/run/docker.sock"),
+                          timeout=timeout + 10) as c:
+            try:
+                old = c.get(f"http://docker/containers/{name}/json")
+                if old.status_code == 200:
+                    c.delete(f"http://docker/containers/{name}")
+            except httpx.HTTPError:
+                pass
+            r = c.post(f"http://docker/containers/create?name={name}", json=body)
+            if r.status_code != 201:
+                return (1, f"docker create failed: {r.status_code} {r.text[:200]}")
+            cid = r.json()["Id"]
+            c.post(f"http://docker/containers/{cid}/start").raise_for_status()
+            st = {}
+            for _ in range(timeout):
+                try:
+                    st = c.get(f"http://docker/containers/{cid}/json").json()
+                except httpx.HTTPError:
+                    break  # removed — treat as finished
+                if not st.get("State", {}).get("Running"):
+                    break
+                _t.sleep(1)
+            try:
+                logs = c.get(f"http://docker/containers/{cid}/logs?stdout=1&stderr=1").text
+            except httpx.HTTPError:
+                logs = ""
+            try:
+                c.delete(f"http://docker/containers/{cid}")
+            except httpx.HTTPError:
+                pass
+            return (st.get("State", {}).get("ExitCode", -1), logs.strip())
+    except httpx.HTTPError as e:
+        return (1, f"docker socket: {e}")
+
+
+def _net_mounted() -> bool:
+    """True when the network backup share is mounted (checked host-side — the
+    api container's own mount namespace doesn't propagate host mounts)."""
+    try:
+        code, out = _host_run(
+            f"nsenter -t 1 -m -- awk '$2==\"{NET_MOUNT_POINT}\" {{print \"mounted\"}}' /proc/mounts")
+        return code == 0 and "mounted" in out
+    except Exception:
+        return False
+
+
+def _net_mount(proto: str, host: str, share: str) -> tuple:
+    """Mount the NAS share at NET_MOUNT_POINT in the host namespace.
+    Returns (exit_code, output). The credentials file must already exist."""
+    mkdir = f"mkdir -p {shlex.quote('/host' + NET_MOUNT_POINT)}"
+    if proto == "nfs":
+        src = shlex.quote(f"{host}:/{share.strip('/')}")
+        opts = "vers=4,nofail,noatime"
+    else:  # cifs
+        src = shlex.quote(f"//{host}/{share.strip('/')}")
+        creds = shlex.quote(NET_CREDS_FILE)
+        opts = f"credentials={creds},uid=1000,gid=988,nofail,iocharset=utf8"
+    script = (f"{mkdir} && nsenter -t 1 -m -- mount -t {proto} {src} "
+              f"{shlex.quote(NET_MOUNT_POINT)} -o {opts}")
+    return _host_run(script)
+
+
+def _net_unmount() -> tuple:
+    return _host_run(f"nsenter -t 1 -m -- umount {shlex.quote(NET_MOUNT_POINT)}")
+
+
+def _remount_net_backup():
+    """Best-effort reconnect of the configured NAS share at api startup
+    (mounts don't survive a reboot; the api brings them back)."""
+    try:
+        cfg = _read_backup_conf()
+        proto = (cfg.get("NET_PROTO") or "").strip().lower()
+        host = (cfg.get("NET_HOST") or "").strip()
+        share = (cfg.get("NET_SHARE") or "").strip()
+        if not (proto and host and share) or _net_mounted():
+            return
+        code, out = _net_mount(proto, host, share)
+        if code == 0:
+            logger.info("NAS backup share reconnected (%s %s/%s)", proto, host, share)
+        else:
+            logger.warning("NAS backup share reconnect failed: %s", out.strip()[-200:])
+    except Exception as e:  # never block startup on a mount issue
+        logger.warning("NAS backup reconnect skipped: %s", e)
+
+
+def _net_write_creds(user: str, password: str):
+    """SMB credentials for the kernel mount — 0600, never in the 0644 conf."""
+    os.makedirs(os.path.dirname(NET_CREDS_FILE), exist_ok=True)
+    fd = os.open(NET_CREDS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        if user:
+            f.write(f"username={user}\n")
+        if password:
+            f.write(f"password={password}\n")
+    os.chmod(NET_CREDS_FILE, 0o600)
+
 
 def _read_backup_conf() -> dict:
     """Read the backup-schedule conf the host cron poller consumes."""
@@ -183,7 +305,7 @@ def _write_backup_conf(cfg: dict):
         "# host's sync-backup-schedule cron reconciles its own cron from this file)",
     ]
     for k in ("USB_BACKUP_ENABLED", "USB_BACKUP_DAY", "USB_BACKUP_HOUR",
-              "RUN_USB_BACKUP_NOW"):
+              "RUN_USB_BACKUP_NOW", "BACKUP_TARGET_DIR"):
         lines.append(f"{k}={cfg.get(k, '')}")
     with open(BACKUP_CONF, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -235,6 +357,11 @@ def _backups_section() -> dict:
         "usb_last_backup": status.get("usb_last_backup") or "none",
         "vm_snapshot_last": status.get("vm_snapshot_last") or "none",
         "status_updated": status.get("updated") or "",
+        "backup_target_dir": cfg.get("BACKUP_TARGET_DIR") or "",
+        "net_proto": (cfg.get("NET_PROTO") or "").strip().lower(),
+        "net_host": cfg.get("NET_HOST") or "",
+        "net_share": cfg.get("NET_SHARE") or "",
+        "net_mounted": _net_mounted(),
     }
 
 
@@ -326,12 +453,37 @@ def _write_provider_secret():
                     else ("anthropic" if ptype == "anthropic"
                           else ("google" if ptype == "gemini" else "openai")))
         payload = json.dumps({"provider": provider, "model": model, "api_key": key})
+        # Optional on-LAN fallback (Ollama/LM Studio): the pi runner retries
+        # with this when the primary cloud provider fails. Same file — it's
+        # pi-agent-readable (0640 root:pi-agent).
+        fenv = _read_env_file()
+        fb_base = (fenv.get("LLM_PROVIDER_OLLAMA_BASE_URL", "") or "").strip()
+        fb_model = (fenv.get("LLM_PROVIDER_OLLAMA_CHAT_MODEL", "")
+                    or fenv.get("LLM_PROVIDER_OLLAMA_REASONER_MODEL", "") or "").strip()
+        if fb_base and fb_model:
+            cfg = json.loads(payload)
+            cfg["fallback"] = {
+                "provider": "ollama",
+                "base_url": fb_base.rstrip("/") + "/v1",
+                "model": fb_model,
+                "api_key": "ollama",
+            }
+            payload = json.dumps(cfg)
         with open(PROVIDER_SECRET_FILE, "w") as f:
             f.write(payload)
         os.chmod(PROVIDER_SECRET_FILE, 0o640)
+        # pi-agent must be able to read it (runner passes the key to pi). The
+        # container's /etc/group has no pi-agent entry, so fall back to the
+        # secrets dir's group (host-side setgid keeps it pi-agent-owned).
         try:
             import grp
-            os.chgrp(PROVIDER_SECRET_FILE, grp.getgrnam("pi-agent").gr_gid)
+            gid = grp.getgrnam("pi-agent").gr_gid
+        except Exception:
+            gid = None
+        try:
+            if gid is None:
+                gid = os.stat(os.path.dirname(PROVIDER_SECRET_FILE)).st_gid
+            os.chgrp(PROVIDER_SECRET_FILE, gid)
         except Exception:
             pass
     except Exception:
@@ -372,6 +524,15 @@ def remote_access(user: User = Depends(require_role("admin"))):
             "auth_url": host_raw.get("AuthURL", ""),
         }
     return {"vm": vm, "host": host}
+
+
+@router.get("/appliance-identity")
+def appliance_identity(user: User = Depends(require_any_role("admin", "agent"))):
+    """The appliance's own identity — the agent service reads this for
+    self-protection (pi-agent can't read the 0600 .env, so the API is the
+    source of truth for "what is me" when the runner denies targets)."""
+    env = _read_env_file()
+    return {"ip": env.get("APPLIANCE_IP") or ""}
 
 
 @router.get("/{section}")
@@ -813,6 +974,31 @@ def _update_backups(config: dict, db: Session, user: User) -> dict:
     elif changed:
         # a plain schedule edit cancels a pending run-now
         cfg["RUN_USB_BACKUP_NOW"] = "false"
+    if "backup_target_dir" in config:
+        t = str(config["backup_target_dir"]).strip()
+        if t and not t.startswith("/"):
+            raise HTTPException(status_code=400,
+                                detail="backup_target_dir must be an absolute path (or empty to disable)")
+        cfg["BACKUP_TARGET_DIR"] = t
+        changed.append("backup_target_dir")
+        values["backup_target_dir"] = t
+    # NAS config (protocol/host/share; the password lives in the 0600 creds
+    # file, never in the 0644 conf). net_pass is consumed here and dropped.
+    if "net_proto" in config or "net_host" in config or "net_share" in config:
+        proto = str(config.get("net_proto", cfg.get("NET_PROTO", ""))).strip().lower()
+        host = str(config.get("net_host", cfg.get("NET_HOST", ""))).strip()
+        share = str(config.get("net_share", cfg.get("NET_SHARE", ""))).strip()
+        if proto and proto not in ("cifs", "nfs"):
+            raise HTTPException(status_code=400, detail="net_proto must be cifs (SMB) or nfs")
+        cfg["NET_PROTO"] = proto
+        cfg["NET_HOST"] = host
+        cfg["NET_SHARE"] = share
+        changed.append("net_proto")
+        values["net_proto"] = proto
+    if "net_user" in config or "net_pass" in config:
+        _net_write_creds(str(config.get("net_user", "")), str(config.get("net_pass", "")))
+        changed.append("net_user")
+        values["net_user"] = str(config.get("net_user", ""))
     if not changed:
         return {"status": "ok", "updated": 0}
     _write_backup_conf(cfg)
@@ -820,6 +1006,88 @@ def _update_backups(config: dict, db: Session, user: User) -> dict:
         "section": "backups", "fields": sorted(set(changed)), "values": values,
     })
     return {"status": "ok", "updated": len(set(changed))}
+
+
+@router.post("/backups/net-mount")
+def backup_net_mount(config: dict, user: User = Depends(require_role("admin"))):
+    """Save NAS config + mount the share (no root needed by the user)."""
+    proto = str(config.get("proto", "")).strip().lower()
+    host = str(config.get("host", "")).strip()
+    share = str(config.get("share", "")).strip()
+    net_user = str(config.get("user", "")).strip()
+    net_pass = str(config.get("pass", ""))
+    if proto not in ("cifs", "nfs"):
+        raise HTTPException(status_code=400, detail="Pick SMB (most home NAS) or NFS")
+    if not host or not share:
+        raise HTTPException(status_code=400, detail="Enter the NAS host and share name")
+    if proto == "cifs" and not net_user:
+        # guest access is a legitimate home-NAS option
+        pass
+    # persist (creds 0600, conf keeps proto/host/share + target dir)
+    _net_write_creds(net_user, net_pass)
+    cfg = _read_backup_conf()
+    cfg.update({"NET_PROTO": proto, "NET_HOST": host, "NET_SHARE": share,
+                "BACKUP_TARGET_DIR": NET_MOUNT_POINT})
+    _write_backup_conf(cfg)
+    log_event(db, "settings_change", user.username, {
+        "section": "backups-net", "fields": ["net_proto", "net_host", "net_share"],
+        "values": {"net_proto": proto, "net_host": host, "net_share": share},
+    })
+    # mount (unmount anything stale at the point first)
+    if _net_mounted():
+        _net_unmount()
+    code, out = _net_mount(proto, host, share)
+    if code != 0:
+        detail = (out or "mount failed").strip()[-250:]
+        raise HTTPException(status_code=502, detail=f"Couldn't mount the share: {detail}")
+    return {"status": "ok", "mounted": True,
+            "detail": f"✅ Connected to {host} ({proto}). Every 6 h the app-data archive is copied there (kept 30 days)."}
+
+
+@router.post("/backups/net-unmount")
+def backup_net_unmount(user: User = Depends(require_role("admin"))):
+    """Disconnect the NAS share (config is kept for reconnect)."""
+    if not _net_mounted():
+        return {"status": "ok", "mounted": False, "detail": "Already disconnected."}
+    code, out = _net_unmount()
+    if code != 0:
+        raise HTTPException(status_code=502, detail=f"Couldn't unmount: {(out or '').strip()[-200:]}")
+    return {"status": "ok", "mounted": False,
+            "detail": "Disconnected. The share reconnects when you click Connect, or after a reboot (appliance start)."}
+
+
+@router.post("/backups/test-target")
+def test_backup_target(target: dict, user: User = Depends(require_role("admin"))):
+    """Check a network backup folder (mounted share) before trusting it.
+
+    The api container sees /opt/barenoc/backups (bind-mounted), so shares
+    mounted under it are visible + testable directly. Checks: exists /
+    writable / on a separate filesystem (a real mount)."""
+    path = str(target.get("dir", "")).strip().rstrip("/") or "/"
+    if not path.startswith("/"):
+        raise HTTPException(status_code=400,
+                            detail="Path must be absolute (e.g. /opt/barenoc/backups/network)")
+    if not os.path.isdir(path):
+        return {"status": "error",
+                "detail": "Folder not visible from the app — mount your share first (try "
+                           "/opt/barenoc/backups/network), then re-test. Mount one-liners: "
+                           "Backups wiki."}
+    writable = os.access(path, os.W_OK)
+    mounted = False
+    try:
+        dev = os.stat(path).st_dev
+        pdev = os.stat(os.path.dirname(path)).st_dev
+        mounted = dev != pdev
+    except Exception:
+        pass
+    if not writable:
+        return {"status": "error",
+                "detail": "Folder exists but is not writable — check the share permissions "
+                           "(the backup runs as the appliance user)."}
+    note = " on a separate filesystem (a real mount)" if mounted \
+        else " on the same disk — mount a share for true off-appliance copies"
+    return {"status": "ok", "mounted": mounted, "writable": True,
+            "detail": f"✅ Writable and{note}."}
 
 
 def _llm_section(env: dict) -> dict:
@@ -939,23 +1207,42 @@ def _update_llm(config: dict, db: Session, user: User) -> dict:
 
 @router.post("/llm/test")
 def test_llm(config: dict, user: User = Depends(require_role("admin"))):
-    """Probe an LLM provider (admin only)."""
+    """Probe an LLM provider (admin only). Accepts either a provider NAME
+    (reads the saved config; optional api_key override) or a full inline
+    provider dict (pre-save test from the wizard / Settings form)."""
     name = str(config.get("provider", "")).strip().lower()
-    if not name:
-        raise HTTPException(status_code=400, detail="provider is required")
-    providers = load_providers(_read_env_file())
-    provider = providers.get(name)
-    if not provider:
-        raise HTTPException(status_code=404, detail=f"Provider '{name}' not configured")
-    # Optional one-time key override (first-time setup before saving)
-    override = str(config.get("api_key", ""))
-    if override and "••" not in override:
-        provider = dict(provider)
-        provider["api_key"] = override
+    if config.get("base_url"):  # inline provider config (pre-save test)
+        provider = {
+            "type": str(config.get("type", "openai")).lower(),
+            "base_url": str(config.get("base_url", "")).strip(),
+            "chat_model": str(config.get("chat_model", "")).strip(),
+            "reasoner_model": str(config.get("reasoner_model", "")).strip(),
+            "api_key": str(config.get("api_key", "")),
+            "deployment": str(config.get("deployment", "hosted")).lower(),
+        }
+    else:
+        if not name:
+            raise HTTPException(status_code=400, detail="provider is required")
+        providers = load_providers(_read_env_file())
+        provider = providers.get(name)
+        if not provider:
+            raise HTTPException(status_code=404, detail=f"Provider '{name}' not configured")
+        # Optional one-time key override (first-time setup before saving)
+        override = str(config.get("api_key", ""))
+        if override and "••" not in override:
+            provider = dict(provider)
+            provider["api_key"] = override
     result = probe_provider(provider)
     if not result.get("ok"):
-        raise HTTPException(status_code=502, detail=result.get("error", "Probe failed"))
-    return {"status": "ok", "provider": name, **result}
+        err = str(result.get("error", "Probe failed"))
+        if "401" in err:
+            err = "Provider rejected the API key (401) — check the key"
+        elif "404" in err and "chat/completions" in err:
+            err = "Provider returned 404 for chat/completions — check the base URL (OpenAI-compatible APIs want the /v1 suffix)"
+        elif "403" in err:
+            err = "Provider denied access (403) — check the key scopes/permissions"
+        raise HTTPException(status_code=502, detail=err)
+    return {"status": "ok", "provider": name or str(config.get("name", "")), **result}
 
 
 @router.post("/test/email")

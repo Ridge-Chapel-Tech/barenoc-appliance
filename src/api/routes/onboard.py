@@ -11,6 +11,8 @@ installs a heartbeat — the device self-registers via its first mTLS report
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+import base64
+
 from control_key import ensure_control_key
 from step_ca import device_cn, root_fingerprint
 
@@ -35,6 +37,34 @@ def _app(request: Request) -> str:
     return f"{scheme}://{host}"
 
 
+@router.get("/onboard/info")
+def onboard_info():
+    """Self-service onboarding info — public (the /onboard portal is public).
+    The device installer fetches the appliance's own IP + DNS mapping + CA
+    fingerprint here, so onboarding needs NO split-horizon DNS or external
+    trust: everything comes from the appliance it already reached."""
+    import os as _os
+    ip = (_os.getenv("APPLIANCE_IP") or "").strip()
+    return {
+        "appliance_ip": ip,
+        "hosts": [f"{ip} stepca.barenoc.local app.barenoc.com bareNOC.local"],
+        "ca_fingerprint": root_fingerprint(),
+    }
+
+
+@router.get("/onboard/root-ca.crt")
+def onboard_root_ca():
+    """The appliance CA root cert (public artifact) — the installer saves it
+    so step can validate the CA without fetching it over DNS."""
+    from fastapi.responses import PlainTextResponse
+    try:
+        with open("/opt/barenoc/volumes/step-ca/certs/root_ca.crt") as f:
+            pem = f.read()
+    except Exception:
+        pem = ""
+    return PlainTextResponse(pem, media_type="application/x-pem-file")
+
+
 def _linux_script(app_url: str) -> str:
     key = ensure_control_key()["public_key"]
     fp = root_fingerprint()
@@ -44,6 +74,37 @@ set -e
 APP="{app_url}"
 HOST=$(hostname | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-._' | cut -c1-60)
 CN="device-${{HOST:-node}}"
+
+# Fetch trust + the appliance's DNS mapping from the appliance itself — this
+# script must not depend on split-horizon DNS (stepca.barenoc.local only
+# resolves via the appliance's CoreDNS) or on external trust. Everything
+# comes from the URL it already reached.
+mkdir -p /etc/barenoc-ca
+APP_IP=$(curl -sk "$APP/onboard/info" | grep -o '"appliance_ip": *"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -sk "$APP/onboard/root-ca.crt" -o /etc/barenoc-ca/root_ca.crt
+if [ -n "$APP_IP" ] && echo "$APP_IP" | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'; then
+  # REPLACE any existing entry — a laptop previously onboarded to another
+  # appliance (or a changed DHCP address) can carry a stale IP here, which
+  # silently breaks enrollment.
+  sed -i '/stepca\\.barenoc\\.local/d' /etc/hosts
+  echo "$APP_IP stepca.barenoc.local app.barenoc.com bareNOC.local" >> /etc/hosts
+fi
+
+echo "==> Enabling SSH so BareNOC can reach this device"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable --now sshd 2>/dev/null || systemctl enable --now ssh 2>/dev/null || true
+elif [ -x /etc/init.d/ssh ]; then
+  /etc/init.d/ssh start 2>/dev/null || true
+fi
+# open the firewall if one is active (Fedora/RHEL firewalld, Ubuntu ufw) —
+# sshd running behind a closed port is still unreachable.
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  ufw allow ssh >/dev/null 2>&1 || true
+fi
 
 echo "==> Creating the barenoc control user"
 id -u barenoc >/dev/null 2>&1 || useradd -m -s /bin/bash barenoc
@@ -57,14 +118,31 @@ echo "==> Installing step-cli from the appliance"
 mkdir -p /usr/local/bin
 curl -sk -o /tmp/step "$APP/step-cli" && install -m 0755 /tmp/step /usr/local/bin/step
 
+# Everything below logs to /var/log/barenoc-onboard.log too (diagnostics).
+exec > >(tee /var/log/barenoc-onboard.log) 2>&1
+
+echo "==> Checking appliance DNS + CA reachability"
+if getent hosts stepca.barenoc.local >/dev/null 2>&1; then
+  echo "  stepca.barenoc.local resolves -> $(getent hosts stepca.barenoc.local | head -1)"
+else
+  echo "  !!! stepca.barenoc.local does NOT resolve (the /etc/hosts entry may not have been written)"
+fi
+curl -sk -o /dev/null -w '  CA health (https://stepca.barenoc.local:8443): HTTP %{{http_code}}\\n' \
+  https://stepca.barenoc.local:8443/health || echo "  !!! CA not reachable — check routing/DNS"
+
 echo "==> Trusting the BareNOC CA + enrolling this device"
 export STEPPATH=/root/.step
 rm -f /etc/barenoc-device.crt /etc/barenoc-device.key
-step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} </dev/null >/dev/null 2>&1 || true
-step ca certificate "$CN" /etc/barenoc-device.crt /etc/barenoc-device.key --token "$(curl -sk "$APP/onboard/token?cn=$CN" | tr -d '"')" 2>/dev/null \\
-  || {{ echo "enroll failed (token endpoint needs the device id — see the wiki)"; }}
-
-echo "==> Installing the heartbeat (renew + mTLS report every 10 min)"
+if step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} </dev/null >/dev/null 2>&1; then
+  echo "  CA bootstrap OK (root pinned by fingerprint)"
+else
+  echo "  !!! CA bootstrap failed — see above"
+fi
+if step ca certificate "$CN" /etc/barenoc-device.crt /etc/barenoc-device.key --token "$(curl -sk "$APP/onboard/token?cn=$CN" | tr -d '"')" --root /etc/barenoc-ca/root_ca.crt 2>/dev/null; then
+  echo "  certificate enrolled -> /etc/barenoc-device.crt"
+else
+  echo "  !!! certificate enrollment FAILED"
+fi
 cat > /usr/local/bin/barenoc-device-heartbeat.sh <<'HEART'
 #!/bin/bash
 /usr/local/bin/step ca renew /etc/barenoc-device.crt /etc/barenoc-device.key 2>/dev/null || true
@@ -72,6 +150,31 @@ curl -sk --cert /etc/barenoc-device.crt --key /etc/barenoc-device.key -X POST "{
 HEART
 chmod +x /usr/local/bin/barenoc-device-heartbeat.sh
 ( crontab -l 2>/dev/null | grep -v barenoc-device-heartbeat; echo "*/10 * * * * /usr/local/bin/barenoc-device-heartbeat.sh" ) | crontab -
+
+echo "==> Verifying the handshake — talking back to BareNOC over mTLS"
+sleep 2
+printf '{{"hostname": "%s"}}' "$(hostname)" > /tmp/barenoc-report.json
+REPORT=$(curl -sk --cert /etc/barenoc-device.crt --key /etc/barenoc-device.key -X POST "$APP/api/v1/device/report" -H "Content-Type: application/json" --data @/tmp/barenoc-report.json 2>/dev/null)
+rm -f /tmp/barenoc-report.json
+if echo "$REPORT" | grep -q '"ok": *true'; then
+  DEV=$(echo "$REPORT" | grep -o '"device": *"[^"]*"' | head -1 | cut -d'"' -f4)
+  ADOPT=$(echo "$REPORT" | grep -o '"adopted": *"[^"]*"' | head -1 | cut -d'"' -f4)
+  echo "✅ Handshake verified — BareNOC adopted this device as '$DEV' (adoption: $ADOPT, online)."
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --info --title="BareNOC" --text="✅ This device is now onboarded to BareNOC as $DEV" 2>/dev/null || true
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "BareNOC" --msgbox "✅ This device is now onboarded to BareNOC as $DEV" >/dev/null 2>&1 || true
+  fi
+else
+  echo "❌ Handshake test failed. Check that this device can reach $APP and that"
+  echo "   stepca.barenoc.local resolves (same LAN = automatic via the appliance DNS)."
+  echo "   Raw reply: $REPORT"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="BareNOC" --text="❌ The BareNOC handshake failed — see the terminal output." 2>/dev/null || true
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "BareNOC" --error "❌ The BareNOC handshake failed — see the terminal output." >/dev/null 2>&1 || true
+  fi
+fi
 
 echo "==> Done. This device is now adopted by BareNOC (it appears online within a minute)."
 """
@@ -90,6 +193,22 @@ HOST=$(scutil --get LocalHostName 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr 
 CN="device-${{HOST:-mac}}"
 U=$(id -un)
 
+# Fetch trust + the appliance's DNS mapping from the appliance itself (see
+# the Linux script — no split-horizon DNS or external trust needed).
+mkdir -p /etc/barenoc-ca
+APP_IP=$(curl -sk "$APP/onboard/info" | grep -o '"appliance_ip": *"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -sk "$APP/onboard/root-ca.crt" -o /etc/barenoc-ca/root_ca.crt
+if [ -n "$APP_IP" ] && echo "$APP_IP" | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'; then
+  # REPLACE any existing entry — a laptop previously onboarded to another
+  # appliance (or a changed DHCP address) can carry a stale IP here, which
+  # silently breaks enrollment.
+  sed -i '/stepca\\.barenoc\\.local/d' /etc/hosts
+  echo "$APP_IP stepca.barenoc.local app.barenoc.com bareNOC.local" >> /etc/hosts
+fi
+
+echo "==> Enabling Remote Login (SSH) so BareNOC can reach this Mac"
+systemsetup -setremotelogin on >/dev/null 2>&1 || true
+
 echo "==> Authorizing the BareNOC control key for $U"
 mkdir -p "$HOME/.ssh"
 echo '{key}' >> "$HOME/.ssh/authorized_keys"
@@ -105,15 +224,36 @@ curl -sk -o /tmp/step "$STEPURL" && install -m 0755 /tmp/step /usr/local/bin/ste
 export STEPPATH=/root/.step
 rm -f /etc/barenoc-device.crt /etc/barenoc-device.key
 step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} </dev/null >/dev/null 2>&1 || true
-step ca certificate "$CN" /etc/barenoc-device.crt /etc/barenoc-device.key --token "$(curl -sk "$APP/onboard/token?cn=$CN" | tr -d '"')" 2>/dev/null || true
+step ca certificate "$CN" /etc/barenoc-device.crt /etc/barenoc-device.key --token "$(curl -sk "$APP/onboard/token?cn=$CN" | tr -d '"')" --root /etc/barenoc-ca/root_ca.crt 2>/dev/null || true
 
 cat > /usr/local/bin/barenoc-device-heartbeat.sh <<'HEART'
 #!/bin/bash
 /usr/local/bin/step ca renew /etc/barenoc-device.crt /etc/barenoc-device.key 2>/dev/null || true
-curl -sk --cert /etc/barenoc-device.crt --key /etc/barenoc-device.key -X POST "{app_url}/api/v1/device/report" --data '{{"hostname": "$(hostname)"}}' >/dev/null 2>&1 || true
+curl -sk --cert /etc/barenoc-device.crt --key /etc/barenoc-device.key -X POST "{app_url}/api/v1/device/report" >/dev/null 2>&1 || true
 HEART
 chmod +x /usr/local/bin/barenoc-device-heartbeat.sh
 ( crontab -l 2>/dev/null | grep -v barenoc-device-heartbeat; echo "*/10 * * * * /usr/local/bin/barenoc-device-heartbeat.sh" ) | crontab -
+
+echo "==> Verifying the handshake — talking back to BareNOC over mTLS"
+sleep 2
+printf '{{"hostname": "%s"}}' "$(hostname)" > /tmp/barenoc-report.json
+REPORT=$(curl -sk --cert /etc/barenoc-device.crt --key /etc/barenoc-device.key -X POST "$APP/api/v1/device/report" -H "Content-Type: application/json" --data @/tmp/barenoc-report.json 2>/dev/null)
+rm -f /tmp/barenoc-report.json
+if echo "$REPORT" | grep -q '"ok": *true'; then
+  DEV=$(echo "$REPORT" | grep -o '"device": *"[^"]*"' | head -1 | cut -d'"' -f4)
+  ADOPT=$(echo "$REPORT" | grep -o '"adopted": *"[^"]*"' | head -1 | cut -d'"' -f4)
+  echo "✅ Handshake verified — BareNOC adopted this device as '$DEV' (adoption: $ADOPT, online)."
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display dialog \"✅ This Mac is now onboarded to BareNOC as '$DEV'\" with title \"BareNOC\" buttons {{\"OK\"}} with icon note" >/dev/null 2>&1 || true
+  fi
+else
+  echo "❌ Handshake test failed. Check that this device can reach $APP and that"
+  echo "   stepca.barenoc.local resolves (same LAN = automatic via the appliance DNS)."
+  echo "   Raw reply: $REPORT"
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display dialog \"❌ The BareNOC handshake failed — see the terminal output for details.\" with title \"BareNOC\" buttons {{\"OK\"}} with icon stop" >/dev/null 2>&1 || true
+  fi
+fi
 
 echo "==> Done. This device is now adopted by BareNOC."
 """
@@ -121,25 +261,90 @@ echo "==> Done. This device is now adopted by BareNOC."
 
 def _win_script(app_url: str) -> str:
     key = ensure_control_key()["public_key"]
-    return f"""# BareNOC device onboarding (Windows) — run in an ADMIN PowerShell.
+    return f"""# BareNOC device onboarding (Windows) — GUI dialog, run as admin.
 $ErrorActionPreference = 'Stop'
 $APP = "{app_url}"
 $CN = "device-" + ($env:COMPUTERNAME -replace '[^a-zA-Z0-9._-]', '').ToLower()
 
-Write-Host "==> Creating the barenoc control user"
-if (-not (Get-LocalUser -Name barenoc -ErrorAction SilentlyContinue)) {{
-  New-LocalUser -Name barenoc -NoPassword -AccountNeverExpires | Out-Null
+# --- small native progress dialog (WinForms; no console window) ---
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$f = New-Object System.Windows.Forms.Form
+$f.Text = 'BareNOC — connecting this device'
+$f.ClientSize = New-Object System.Drawing.Size(480, 120)
+$f.FormBorderStyle = 'FixedSingle'
+$f.StartPosition = 'CenterScreen'
+$f.TopMost = $true
+$lbl = New-Object System.Windows.Forms.Label
+$lbl.Location = New-Object System.Drawing.Point(18, 16)
+$lbl.Size = New-Object System.Drawing.Size(444, 84)
+$lbl.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$f.Controls.Add($lbl)
+function Set-Status([string]$t, [string]$color = 'Black') {{
+  $script:lbl.Text = $t
+  $script:lbl.ForeColor = [System.Drawing.Color]::FromName($color)
+  [System.Windows.Forms.Application]::DoEvents()
 }}
-$sshDir = "C:\\ProgramData\\ssh"
-New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-Add-Content -Path "$sshDir\\administrators_authorized_keys" -Value "{key}" -Force
-Add-LocalGroupMember -Group Administrators -Member barenoc -ErrorAction SilentlyContinue
+$f.Show()
+Set-Status 'Creating the barenoc control account...'
 
-Write-Host "==> SSH control is configured (the appliance connects as barenoc)."
-Write-Host "    Certificate adoption + management actions for Windows ship with the Windows handlers."
-Write-Host "==> Done. This device will be adopted by BareNOC once Windows cert enrollment lands;"
-Write-Host "    for now the tech can adopt it from the Devices page."
+try {{
+  if (-not (Get-LocalUser -Name barenoc -ErrorAction SilentlyContinue)) {{
+    New-LocalUser -Name barenoc -NoPassword -AccountNeverExpires | Out-Null
+  }}
+  $sshDir = 'C:/ProgramData/ssh'
+  New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+  Add-Content -Path "$sshDir/administrators_authorized_keys" -Value "{key}" -Force
+  Add-LocalGroupMember -Group Administrators -Member barenoc -ErrorAction SilentlyContinue
+  Set-Status 'Admin control is set up — verifying the authorized key...'
+  $raw = Get-Content "$sshDir/administrators_authorized_keys" -Raw
+  if (-not ($raw -and $raw.Contains('ssh-ed25519'))) {{ throw 'the authorized key file was not written correctly' }}
+  Set-Status "Done — BareNOC can control this PC as '$CN'." 'Green'
+  Start-Sleep -Seconds 2
+  $f.Close()
+  [System.Windows.Forms.MessageBox]::Show("This PC is now onboarded to BareNOC as`n$CN`n`nSSH admin control is configured. Certificate adoption is the tracked Windows milestone.", 'BareNOC — done', 'OK', 'Information')
+}} catch {{
+  Set-Status ('Failed: ' + $_.Exception.Message) 'Red'
+  $f.Close()
+  [System.Windows.Forms.MessageBox]::Show("Onboarding failed:`n" + $_.Exception.Message, 'BareNOC', 'OK', 'Error')
+  exit 1
+}}
 """
+
+
+def _win_bat(app_url: str) -> str:
+    """Double-click .bat wrapper: self-elevates via a UAC prompt, then runs the
+    onboarding PowerShell base64-encoded with all windows hidden — the customer
+    sees a native progress dialog, then a result box. No console at all."""
+    ps = _win_script(app_url)
+    encoded = base64.b64encode(ps.encode("utf-16-le")).decode()
+    return (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        ":: BareNOC device onboarding — double-click, accept the UAC prompt.\r\n"
+        "net session >nul 2>&1\r\n"
+        "if %errorlevel% neq 0 (\r\n"
+        "  powershell -NoProfile -WindowStyle Hidden -Command \"Start-Process -FilePath '%~f0' -Verb RunAs -WindowStyle Hidden\"\r\n"
+        "  exit /b\r\n"
+        ")\r\n"
+        "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand " + encoded + "\r\n"
+    )
+
+
+@router.get("/onboard/script")
+def onboard_script(request: Request, os: str = "linux"):
+    app = _app(request)
+    if os == "windows":
+        # double-click .bat (self-elevating); the ps1 is embedded base64
+        body, media, filename = _win_bat(app), "application/x-msdos-program", "bareNOC-onboard.bat"
+    elif os == "mac":
+        body, media, filename = _mac_script(app), "text/x-shellscript", "bareNOC-onboard-mac.sh"
+    else:
+        body, media, filename = _linux_script(app), "text/x-shellscript", "bareNOC-onboard.sh"
+    from fastapi.responses import Response
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"',
+               "Cache-Control": "no-store"}  # never serve a stale (inline-viewed) copy
+    return Response(body, media_type=media, headers=headers)
 
 
 @router.get("/onboard", response_class=HTMLResponse)
@@ -190,27 +395,19 @@ def onboard_page(request: Request):
 function pick() {{
   var os = document.getElementById('os').value;
   var url = window.location.origin + '/onboard/script?os=' + os;
-  document.getElementById('dl').href = url;
+  var dl = document.getElementById('dl');
+  dl.href = url;
+  dl.download = os === 'windows' ? 'bareNOC-onboard.bat' : (os === 'mac' ? 'bareNOC-onboard-mac.sh' : 'bareNOC-onboard.sh');
   var h = document.getElementById('howto');
-  if (os === 'windows') h.textContent = 'Save as onboard.ps1, open an ADMIN PowerShell, then run:  powershell -ExecutionPolicy Bypass -File onboard.ps1';
-  else if (os === 'mac') h.textContent = 'Save as onboard.sh, then run:  bash onboard.sh  (enter your password when prompted)';
-  else h.textContent = 'Save as onboard.sh, then run:  sudo bash onboard.sh';
+  if (os === 'windows') h.textContent = 'Download the file, then double-click it and accept the User Account Control (UAC) prompt.';
+  else if (os === 'mac') h.textContent = 'Download the file, then run:  bash bareNOC-onboard-mac.sh  (enter your password when prompted)';
+  else h.textContent = 'Download the file, then run:  sudo bash bareNOC-onboard.sh';
 }}
 pick();
 </script></body></html>""")
 
 
-@router.get("/onboard/script")
-def onboard_script(request: Request, os: str = "linux"):
-    app = _app(request)
-    if os == "windows":
-        body, media = _win_script(app), "text/plain"
-    elif os == "mac":
-        body, media = _mac_script(app), "text/x-shellscript"
-    else:
-        body, media = _linux_script(app), "text/x-shellscript"
-    from fastapi.responses import Response
-    return Response(body, media_type=media)
+
 
 
 @router.get("/onboard/token")

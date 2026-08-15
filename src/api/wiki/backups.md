@@ -32,6 +32,31 @@ host pushing snapshots to the USB stick (Settings → Backups will show a
 - Keep the Layer-1 archive off the same disk: point it at a mounted network
   share or include `/opt/barenoc/backups/` in your host backup.
 
+## Network copy (wizard / Settings → Backups)
+
+The **Backups step of the first-run wizard** (and Settings → Backups) can keep
+an off-appliance copy of every Layer-1 archive: mount an SMB/NFS share on the
+appliance, set the folder in the wizard (recommended:
+`/opt/barenoc/backups/network` — the app can test it directly there), and the
+6-hour cron copies each new archive to it (30-day retention).
+
+Mount one-liners on the appliance (needs sudo once; survives reboots via
+`/etc/fstab`):
+
+```bash
+# NFS
+sudo mkdir -p /opt/barenoc/backups/network
+sudo mount -t nfs nas.local:/exports/barenoc /opt/barenoc/backups/network
+
+# SMB/CIFS (adjust uid/gid to your appliance user, usually 1000)
+sudo apt-get install -y cifs-utils
+sudo mount -t cifs //nas.local/barenoc /opt/barenoc/backups/network \
+  -o username=backup,uid=1000,gid=1000,file_mode=0600,dir_mode=0700
+```
+
+Test in the wizard after mounting — it reports whether the folder is visible,
+writable, and on a separate filesystem (a real mount).
+
 ## First-time stick setup (LUKS encryption)
 
 The USB stick must be **encrypted once** before the schedule can use it. This is

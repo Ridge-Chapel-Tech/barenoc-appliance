@@ -8,6 +8,7 @@
       <button id="scan-btn" onclick="discoverNetwork()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Scan Network</button>
       <button onclick="syncNow()" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700" title="Pull the latest devices + clients from the UniFi controller">🔄 Sync Now</button>
       <button onclick="showAddDeviceModal()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">+ Add Device</button>
+      <a href="/onboard" target="_blank" class="rounded-md border border-barenoc-600 px-4 py-2 text-sm font-semibold text-barenoc-700 hover:bg-barenoc-50">🔐 Onboard a device</a>
       <span id="sync-msg" class="text-sm text-gray-500"></span>
     </div>
   </div>
@@ -46,7 +47,7 @@
   <!-- Monitoring Only (no admin control) -->
   <div id="monitoring-section" class="mt-8 hidden">
     <h2 class="text-lg font-medium text-gray-900">Monitoring Only <span class="text-gray-400 font-normal">(no admin control)</span></h2>
-    <p class="text-sm text-gray-500">Claimed, but BareNOC can't control these — no SSH admin credentials and not UniFi-managed (they're ping/SNMP monitored only). Add SSH, or let them come in through the UniFi controller, to move them into Onboarded.</p>
+    <p class="text-sm text-gray-500">Claimed, but BareNOC can't control these — no SSH admin credentials and not UniFi-managed (they're ping/SNMP monitored only). Add SSH, run the <a href="/onboard" target="_blank" class="text-barenoc-600 underline">self-service onboarding</a> on the device, or let them come in through the UniFi controller, to move them into Onboarded.</p>
     <div id="monitoring-list" class="mt-3 space-y-2"></div>
   </div>
 
@@ -105,7 +106,8 @@
         <div class="mt-3 space-y-3">
           <div><label class="block text-sm font-medium text-gray-700">SNMP Community</label><input id="claim-snmp" type="password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="public"></div>
           <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="claim-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" value="barenoc" placeholder="barenoc"></div>
-          <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="claim-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea><p class="text-xs text-gray-500 mt-1">Device becomes <strong>SSH-controlled</strong> when a key is set — the agent can then patch/reboot/collect logs on it.</p></div>
+          <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="claim-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea><p class="text-xs text-gray-500 mt-1">Device becomes <strong>SSH-controlled</strong> when a key is set — the agent can then patch/reboot/collect logs on it.</p>
+          <p class="text-xs text-gray-500">💡 <b>No key handy?</b> Run the <a href="/onboard" target="_blank" class="text-barenoc-600 underline">self-service onboarding</a> <b>on the device</b> (open <code>/onboard</code> on it) — it creates the control account, authorizes the appliance key and enrolls the certificate automatically.</p></div>
         </div>
       </details>
     </div>
@@ -132,7 +134,7 @@
             <option value="ap">Access Point</option><option value="server">Server</option><option value="workstation">Workstation</option>
           </select>
         </div>
-        <div><label class="block text-sm font-medium text-gray-700">Device Group</label><select id="new-device-group" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></select><p class="text-xs text-gray-500 mt-1">Controls who can manage this device (mirrors Pocket ID groups).</p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Device Group</label><select id="new-device-group" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></select><p class="text-xs text-gray-500 mt-1">Leave on <b>Home</b> — it means everyone with access can manage this device. Other groups only matter if you've set up separate family/tenant permissions (Settings → Identity).</p></div>
         <div><label class="block text-sm font-medium text-gray-700">Vendor</label><input id="new-device-vendor" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2"></div>
       </div>
       <details class="text-sm">
@@ -142,6 +144,7 @@
           <div><label class="block text-sm font-medium text-gray-700">SSH User</label><input id="new-device-ssh-user" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" value="barenoc" placeholder="barenoc"></div>
           <div><label class="block text-sm font-medium text-gray-700">SSH Private Key</label><textarea id="new-device-ssh-key" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border px-3 py-2" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
           <p class="text-xs text-gray-500">A device is <strong>onboarded</strong> when BareNOC has admin control — via SSH credentials <em>or</em> through the UniFi controller for adopted UniFi gear (gateways, switches, APs auto-adopt once the controller connection works). Without either, the device is <em>monitoring only</em> (ping/SNMP), not part of the managed fleet.</p>
+          <p class="text-xs text-gray-500">💡 <b>No key handy?</b> Run the <a href="/onboard" target="_blank" class="text-barenoc-600 underline">self-service onboarding</a> <b>on the device itself</b> (open <code>/onboard</code> on it) — the one-click script creates the control account, authorizes the appliance key, grants scoped sudo and enrolls the certificate. No SSH key to copy.</p>
         </div>
       </details>
     </div>
@@ -164,6 +167,15 @@
         <b>public key must be on the device's <code>~/.ssh/authorized_keys</code></b>. Click
         <b>🔑 Generate appliance key</b> — it fills the private key in automatically; you only add the
         public key to the device and set the SSH user (prefilled for Linux).
+      </div>
+      <div class="rounded-md bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800">
+        💡 <b>Even easier:</b> open the page below <b>on the device</b> and run the one-click script — it
+        creates the <code>barenoc</code> control account, adds this key automatically, grants scoped sudo
+        and enrolls the device certificate. Works from any browser; the page even has a QR code:
+        <div class="mt-1.5 flex items-center gap-2">
+          <a id="creds-onboard-url" href="/onboard" target="_blank" class="bg-white border border-green-300 rounded px-2 py-1 flex-1 font-mono text-[11px] break-all text-green-800 underline"></a>
+          <button onclick="copyText('creds-onboard-url')" class="text-green-700 text-[11px] underline whitespace-nowrap">copy</button>
+        </div>
       </div>
       <div>
         <button onclick="loadControlKey()" class="rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">🔑 Generate / use appliance key</button>
@@ -268,13 +280,13 @@ async function loadDeviceGroups() {
     sel.innerHTML = '';
     groups.forEach(function(g) {
       var o = document.createElement('option');
-      o.value = g; o.textContent = g;
+      o.value = g; o.textContent = groupLabel(g);
       sel.appendChild(o);
     });
     var flt = document.getElementById('filter-group');
     groups.forEach(function(g) {
       var o = document.createElement('option');
-      o.value = g; o.textContent = g;
+      o.value = g; o.textContent = groupLabel(g);
       flt.appendChild(o);
     });
   } catch (e) { /* ignore */ }
@@ -282,6 +294,15 @@ async function loadDeviceGroups() {
 
 function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// Group names -> plain labels for a home user. 'default' is the Home group
+// (everyone with access can manage); custom groups are for family/tenant
+// permission splits (Settings → Identity).
+function groupLabel(g) {
+  if (g === 'default') return 'Home (everyone) — recommended';
+  if (g === 'device-core') return 'device-core (advanced — core gear only)';
+  if (g === 'device-edge') return 'device-edge (advanced — edge gear only)';
+  return g;
+}
 
 // Timestamps are stored as naive UTC — render them in the viewer's local time.
 function fmtTz(ts) {
@@ -461,6 +482,14 @@ async function fetchDevices(offset) {
     var grid = document.getElementById('devices-grid');
     grid.innerHTML = '';
     document.getElementById('device-count').textContent = currentTotal + ' total';
+    if (!devices.length) {
+      // Don't dead-end at "0 total": point at Monitoring Only / Unclaimed.
+      grid.innerHTML = '<div class="col-span-full bg-white shadow rounded-lg p-5 text-sm text-gray-500">'
+        + 'No <b>managed</b> devices yet — managed means BareNOC has SSH, UniFi or certificate control over the device.<br>'
+        + 'Below: <b>Monitoring Only</b> devices are visible but not yet controllable (add SSH or let them adopt via UniFi). '
+        + 'Devices your gateway has discovered are under <b>Unclaimed Devices</b>. '
+        + 'Add a device manually with the <b>+ Add</b> button.</div>';
+    }
     devices.forEach(function(d) {
       var cls = statusClasses(d.status);
       var pd = d.last_poll_data || {};
@@ -598,6 +627,9 @@ function hideClaimModal() { document.getElementById('claim-modal').classList.add
 // Manage credentials for a claimed device (add SSH/SNMP control)
 var credsDeviceId = null;
 function openCreds(id, name, ip, os) {
+  var url = window.location.origin + '/onboard';
+  var el = document.getElementById('creds-onboard-url');
+  if (el) { el.textContent = url; el.href = url; }
   credsDeviceId = id;
   document.getElementById('creds-device').textContent = name;
   document.getElementById('creds-ip').textContent = ip;
@@ -804,6 +836,18 @@ async function addDevice() {
     document.getElementById('new-device-ssh-key').value = '';
     hideAddDeviceModal();
     fetchDevices(0);
+    await loadMonitoring();
+    // Guide the user: a device with SSH set goes straight into the managed
+    // fleet; one without lands in Monitoring Only (visible, not yet controllable).
+    if (!sshKey) {
+      var sec = document.getElementById('monitoring-section');
+      if (sec) {
+        sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        alert('✅ ' + name + ' added — it\'s under “Monitoring Only” below until BareNOC can control it. Add SSH credentials (Edit → Credentials) or let it adopt via UniFi to make it a managed device.');
+      }
+    } else {
+      alert('✅ ' + name + ' added with SSH — it\'s now a managed device in the list above.');
+    }
   } catch (err) { alert('Failed: ' + err.message); }
 }
 
