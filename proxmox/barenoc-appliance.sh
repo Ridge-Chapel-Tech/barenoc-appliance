@@ -32,11 +32,11 @@ IP=""
 GATEWAY=""
 DNS="1.1.1.1"
 PROFILE="m"
-STORAGE="local-lvm"
+STORAGE=""             # auto-detected below (local-lvm → local-zfs → first images storage)
 BRIDGE="vmbr0"
 HOSTNAME="barenoc"
 APPLIANCE_HOST="app.barenoc.com"   # public name clients use (Corefile + nginx server_name; set APP_URL to your real domain before enrolling passkeys)
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
+SSH_KEY="${SSH_KEY:-}"   # auto-detected below (id_ed25519 → id_rsa → any ~/.ssh/*.pub)
 ADMIN_PASSWORD=""
 SKIP_APP=0
 BRANCH="$(git -C "$(dirname "$0")/.." rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
@@ -58,11 +58,13 @@ Usage: bash proxmox/barenoc-appliance.sh [options]
 
 Required:
   --ip <addr>            Static IP for the appliance VM (e.g. 192.0.2.210)
-  --ssh-key <path>       .pub key to authorize for the `barenoc` user
-                         (default: ~/.ssh/id_ed25519.pub — must exist on host)
 
 Optional:
   --vm <id>              VMID (default 1000)
+  --storage <id>         Proxmox storage for the VM disk
+                         (default: auto-detect local-lvm → local-zfs →
+                         first storage with `images` content; ZFS installs
+                         usually land on local-zfs)
   --profile <s|m|l|xl>   Sizing (default m). Matrix:
                            s  ≤10 endpoints   (1 vCPU / 2 GB / 30 GB)
                            m  ≤50 endpoints   (2 vCPU / 4 GB / 40 GB)
@@ -71,8 +73,11 @@ Optional:
   --gateway <addr>       Gateway (default: first usable IP of the /24)
   --dns <addr>           DNS (default 1.1.1.1)
   --hostname <name>      VM hostname (default barenoc)
-  --storage <id>         Proxmox storage for the disk (default local-lvm)
   --bridge <iface>       Network bridge (default vmbr0)
+  --ssh-key <path>       .pub key to authorize for the `barenoc` user
+                         (default: auto-detect id_ed25519.pub → id_rsa.pub
+                         → any ~/.ssh/*.pub; generate with
+                         `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519` if none)
   --admin-password <pw>  Seed admin password for the web UI (min 8 chars;
                          default: auto-generated, printed at the end)
   --skip-app             Provision the OS only; run ./deploy.sh yourself later
@@ -118,8 +123,29 @@ USERDATA="$SNIPPET_DIR/barenoc-${VM_ID}-user.yml"
 META="$SNIPPET_DIR/barenoc-${VM_ID}-meta.yml"
 CICUSTOM="user=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-user.yml,meta=${SNIPPET_STORAGE}:snippets/barenoc-${VM_ID}-meta.yml"
 
+# ── auto-detect what default installs don't give us ─────────────────────────
+# Storage: standard installs use local-lvm; ZFS installs use local-zfs; other
+# setups name it anything. Prefer the two known names, else the first storage
+# that can hold VM images. --storage still overrides.
+if [[ -z "$STORAGE" ]]; then
+  for cand in local-lvm local-zfs; do
+    if pvesm status -content images 2>/dev/null | awk '{print $1}' | grep -qx "$cand"; then
+      STORAGE="$cand"; break
+    fi
+  done
+  [[ -n "$STORAGE" ]] || STORAGE="$(pvesm status -content images 2>/dev/null | awk 'NR==2{print $1}')"
+fi
+# SSH key: prefer ed25519 (modern default), fall back to rsa, then any .pub
+# on the host. --ssh-key still overrides.
+if [[ -z "$SSH_KEY" ]]; then
+  for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    [[ -f "$k" ]] && { SSH_KEY="$k"; break; }
+  done
+  [[ -n "$SSH_KEY" ]] || SSH_KEY="$(ls "$HOME"/.ssh/*.pub 2>/dev/null | head -1 || true)"
+fi
+
 [[ "$IP" ]] || { echo "ERROR: --ip is required" >&2; usage; exit 1; }
-[[ -f "$SSH_KEY" ]] || { echo "ERROR: SSH key not found: $SSH_KEY" >&2; exit 1; }
+[[ -f "$SSH_KEY" ]] || { echo "ERROR: SSH key not found: $SSH_KEY" >&2; echo "       Generate one: ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519" >&2; exit 1; }
 [[ " s m l xl " == *" $PROFILE "* ]] || { echo "ERROR: --profile must be s|m|l|xl" >&2; exit 1; }
 [[ "$ADMIN_PASSWORD" && ${#ADMIN_PASSWORD} -lt 8 ]] && { echo "ERROR: --admin-password must be ≥8 chars" >&2; exit 1; }
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 12 | tr '+/' '_-')}"
@@ -131,7 +157,9 @@ qm list >/dev/null 2>&1 || { echo "ERROR: cannot talk to qm — is the Proxmox A
 qm list | awk '{print $1}' | grep -qx "$VM_ID" && { echo "ERROR: VMID $VM_ID already exists" >&2; exit 1; }
 ip link show "$BRIDGE" >/dev/null 2>&1 || { echo "ERROR: bridge $BRIDGE not found" >&2; exit 1; }
 pvesm status -content images | awk '{print $1}' | grep -qx "$STORAGE" \
-  || { echo "ERROR: storage $STORAGE not found (pvesm status -content images)" >&2; exit 1; }
+  || { echo "ERROR: storage $STORAGE not found." >&2
+       echo "       Available: $(pvesm status -content images 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')" >&2
+       echo "       Pick one with --storage <id>" >&2; exit 1; }
 GATEWAY="${GATEWAY:-$(echo "$IP" | awk -F. '{print $1"."$2"."$3".1"}')}"
 
 echo "==> BareNOC appliance install"

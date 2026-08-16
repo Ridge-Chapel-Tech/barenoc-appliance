@@ -87,6 +87,26 @@ def _env_int(value: str, default: int) -> int:
 
 
 @router.post("/config")
+def _write_env(env_path: str, updates: dict) -> None:
+    """Apply key=value updates to a .env file, creating missing keys."""
+    with open(env_path, "r") as f:
+        lines = f.readlines()
+    for env_key, value in updates.items():
+        new_lines = []
+        found = False
+        for line in lines:
+            if line.startswith(f"{env_key}="):
+                new_lines.append(f"{env_key}={value}\n")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"{env_key}={value}\n")
+        lines = new_lines
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+
+
 def set_config(config: dict, db: Session = Depends(get_db),
                user: User = Depends(require_role("admin"))):
     """Update UniFi config in .env (audit-logged)."""
@@ -128,23 +148,19 @@ def set_config(config: dict, db: Session = Depends(get_db),
             "true" if str(config["auto_adopt"]).strip().lower() in ("1", "true", "yes", "on") else "false"
         )
 
+    # Explicit unbind: the "empty field = keep stored" convention above makes
+    # it impossible to REMOVE a saved secret through the normal path (the UI
+    # has no other way to go back to password auth once an API key is set, and
+    # vice versa). The UI sends an explicit clear flag — we write an empty
+    # value, which every consumer already treats as "not configured" (see
+    # _auth_ready / UniFiClient(api_key=...) -> None).
+    for flag, env_key in (("clear_api_key", "UNIFI_API_KEY"),
+                          ("clear_password", "UNIFI_PASSWORD")):
+        if config.get(flag):
+            updates[env_key] = ""
+
     try:
-        with open(env_path, "r") as f:
-            lines = f.readlines()
-        for env_key, value in updates.items():
-            new_lines = []
-            found = False
-            for line in lines:
-                if line.startswith(f"{env_key}="):
-                    new_lines.append(f"{env_key}={value}\n")
-                    found = True
-                else:
-                    new_lines.append(line)
-            if not found:
-                new_lines.append(f"{env_key}={value}\n")
-            lines = new_lines
-        with open(env_path, "w") as f:
-            f.writelines(lines)
+        _write_env(env_path, updates)
         # Audit: field names + safe values (never the password / API key)
         safe = {k: v for k, v in updates.items()
                 if k not in ("UNIFI_PASSWORD", "UNIFI_API_KEY")}

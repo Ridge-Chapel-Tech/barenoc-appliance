@@ -235,8 +235,8 @@
       <div class="mt-4 space-y-4">
         <div><label class="block text-sm font-medium text-gray-700">Controller URL</label><input id="unifi-url" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="https://192.0.2.1:443"></div>
         <div><label class="block text-sm font-medium text-gray-700">Username</label><input id="unifi-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
-        <div><label class="block text-sm font-medium text-gray-700">Password <span class="text-xs text-gray-400">(or use an API key below)</span></label><input id="unifi-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
-        <div><label class="block text-sm font-medium text-gray-700">API Key <span class="text-xs text-gray-400">(recommended — UniFi Network → Settings → Integrations)</span></label><input id="unifi-key" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="unifi-status"></p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Password <span class="text-xs text-gray-400">(or use an API key below)</span></label><input id="unifi-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><button id="unifi-remove-pass" onclick="removeUnifiAuth('password')" class="hidden mt-1 text-xs text-red-600 hover:underline">Remove stored password</button></div>
+        <div><label class="block text-sm font-medium text-gray-700">API Key <span class="text-xs text-gray-400">(recommended — UniFi Network → Settings → Integrations)</span></label><input id="unifi-key" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="unifi-status"></p><button id="unifi-remove-key" onclick="removeUnifiAuth('api_key')" class="hidden mt-1 text-xs text-red-600 hover:underline">Remove stored API key</button></div>
         <div class="border-t border-gray-200 pt-4">
           <label class="flex cursor-pointer items-center justify-between gap-3">
             <span class="text-sm font-medium text-gray-700">Auto-sync from UniFi</span>
@@ -1162,35 +1162,65 @@ async function loadUnifi() {
     document.getElementById('unifi-auto-adopt').checked = d.auto_adopt !== false;
     var st = d.auth === 'api_key' ? '🔑 API key configured' : (d.password_configured ? '🔑 Password configured' : 'No auth configured');
     document.getElementById('unifi-status').textContent = st;
+    // "Remove stored …" buttons: only shown when that secret is actually set
+    document.getElementById('unifi-remove-key').classList.toggle('hidden', !d.api_key_configured);
+    document.getElementById('unifi-remove-pass').classList.toggle('hidden', !d.password_configured);
   } catch (e) { console.error(e); }
 }
-async function saveUnifi() {
+async function saveUnifi(opts) {
+  opts = opts || {};
   try {
     var payload = {
       url: document.getElementById('unifi-url').value,
-      username: document.getElementById('unifi-user').value
+      username: document.getElementById('unifi-user').value,
+      autosync_enabled: document.getElementById('unifi-autosync').checked,
+      autosync_interval: parseInt(document.getElementById('unifi-autosync-interval').value, 10),
+      auto_adopt: document.getElementById('unifi-auto-adopt').checked
     };
     var pw = document.getElementById('unifi-pass').value;
     if (pw) payload.password = pw;   // empty field = keep stored password
     var key = document.getElementById('unifi-key').value;
     if (key) payload.api_key = key;  // empty field = keep stored API key
-    payload.autosync_enabled = document.getElementById('unifi-autosync').checked;
-    payload.autosync_interval = parseInt(document.getElementById('unifi-autosync-interval').value, 10);
-    payload.auto_adopt = document.getElementById('unifi-auto-adopt').checked;
+    if (opts.clear_api_key) payload.clear_api_key = true;     // explicit unbind
+    if (opts.clear_password) payload.clear_password = true;
     var r = await fetch('/api/v1/unifi/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
       body: JSON.stringify(payload)
     });
     var d = await r.json();
-    if (d.status === 'ok') { alert('UniFi config saved'); loadUnifi(); }
-    else alert('Failed to save');
-  } catch (e) { alert('Failed: ' + e.message); }
+    if (d.status === 'ok') {
+      if (!opts.silent) alert(opts.clear_api_key || opts.clear_password ? 'UniFi credentials updated' : 'UniFi config saved');
+      await loadUnifi();
+      return true;
+    }
+    if (!opts.silent) alert('Failed to save');
+    return false;
+  } catch (e) { if (!opts.silent) alert('Failed: ' + e.message); return false; }
+}
+async function removeUnifiAuth(kind) {
+  var what = kind === 'api_key' ? 'API key' : 'password';
+  if (!confirm('Remove the stored ' + what + '? Auth falls back to the other method (or none).')) return;
+  var ok = await saveUnifi(kind === 'api_key' ? { clear_api_key: true } : { clear_password: true });
+  if (ok) {
+    var msg = document.getElementById('unifi-msg');
+    msg.textContent = '✅ Stored ' + what + ' removed';
+    msg.className = 'text-sm text-green-600';
+  }
 }
 async function testUnifi() {
   var msg = document.getElementById('unifi-msg');
   msg.textContent = 'Testing connection...';
   msg.className = 'text-sm text-gray-500';
+  // The test endpoint reads the SAVED config — save the form first so a
+  // freshly typed URL/key/password is what actually gets tested (the old
+  // flow silently tested the previous config until the user saved).
+  var saved = await saveUnifi({ silent: true });
+  if (!saved) {
+    msg.textContent = '❌ Could not save the config before testing';
+    msg.className = 'text-sm text-red-600';
+    return;
+  }
   try {
     var r = await fetch('/api/v1/unifi/test', {
       method: 'POST',

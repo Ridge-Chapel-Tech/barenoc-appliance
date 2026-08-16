@@ -15,6 +15,41 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16] — 2026-08-16
+
+### Fixed
+- **Installer: storage auto-detect** — `local-lvm` is no longer hard-coded.
+  The installer now prefers `local-lvm` → `local-zfs` → the first storage
+  that holds VM images, so ZFS-based Proxmox installs (and any other naming)
+  work without editing the script (`--storage` still overrides; failures now
+  list the available storages).
+- **Installer: SSH key auto-detect** — `--ssh-key` is no longer required: the
+  installer picks `~/.ssh/id_ed25519.pub` → `~/.ssh/id_rsa.pub` → any
+  `~/.ssh/*.pub`, and tells you the `ssh-keygen` command if none exist.
+- **UniFi sync no longer crashes with a cryptic "JSON.parse" error** — nginx
+  `proxy_read_timeout` for `/api/` raised from the 60 s default to 300 s
+  (heavy syncs can exceed the old limit and returned an HTML 504 page), and
+  the Devices page now reads the response as text and surfaces the real HTTP
+  status + body when it isn't JSON.
+
+### Added
+- **UniFi: remove a stored API key or password** — Settings → UniFi now has
+  "Remove stored …" actions (previously an API key once set could only be
+  removed by hand-editing `.env`; it also silently shadowed password auth).
+- **Progress feedback on device scanning** — both "Scan Network" (ping) and
+  "Sync Now" (UniFi) show a spinner + elapsed seconds, disable the button
+  while running, and end in a clear ✓/✗ state.
+
+### Changed
+- **Test Connection now saves the form first** — the test endpoint reads the
+  *saved* config, so a freshly typed URL/key was silently ignored before.
+
+### Docs
+- **Install guide: no GitHub CLI needed** — removed the `gh auth login` step
+  (the release repo is public; a plain `git clone` works). Fixed the SSH-key
+  prerequisite (any key type, auto-detected) and documented `--storage`
+  auto-detection.
+
 ## [2026.08.15] — 2026-08-15
 
 ### Added

@@ -117,6 +117,41 @@ class AutoAdoptTest(unittest.TestCase):
         env = {}
         self.assertTrue(unifi_sync._env_bool(env.get("UNIFI_AUTO_ADOPT") or "true"))
 
+    def test_clear_api_key_removes_stored_secret(self):
+        """An explicit clear writes an EMPTY value — every consumer then treats
+        the secret as unset (auth falls back to password / none)."""
+        with tempfile.TemporaryDirectory() as td:
+            env = os.path.join(td, ".env")
+            with open(env, "w") as f:
+                f.write("UNIFI_URL=https://192.0.2.1:443\n"
+                        "UNIFI_API_KEY=sekret\n"
+                        "UNIFI_PASSWORD=passw0rd\n")
+            unifi_sync._write_env(env, {"UNIFI_API_KEY": "", "UNIFI_PASSWORD": ""})
+            with open(env) as f:
+                content = f.read()
+        self.assertNotIn("sekret", content, "stored API key must be removed")
+        self.assertNotIn("passw0rd", content, "stored password must be removed")
+        self.assertIn("UNIFI_API_KEY=\n", content)
+        self.assertIn("UNIFI_PASSWORD=\n", content)
+
+    def test_set_config_clear_api_key_flag(self):
+        """POST with clear_api_key maps to an empty UNIFI_API_KEY (audit-safe)."""
+        calls = {}
+
+        def fake_write(path, updates):
+            calls["updates"] = dict(updates)
+
+        with patch.object(unifi_sync, "_write_env", side_effect=fake_write), \
+             patch.object(unifi_sync, "log_event"), \
+             patch.object(unifi_sync, "_read_unifi_env", return_value={}):
+            db = SimpleNamespace()
+            user = SimpleNamespace(username="admin")
+            unifi_sync.set_config({"url": "https://x:443", "username": "admin",
+                                   "clear_api_key": True}, db, user)
+        self.assertEqual(calls["updates"].get("UNIFI_API_KEY"), "")
+        self.assertEqual(calls["updates"].get("UNIFI_URL"), "https://x:443")
+        self.assertNotIn("UNIFI_API_KEY", calls["updates"].get("UNIFI_PASSWORD", ""))
+
     def test_topology_only_adopted(self):
         init_db()
         db = SessionLocal()

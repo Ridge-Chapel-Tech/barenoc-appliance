@@ -6,7 +6,7 @@
     <h1 class="text-2xl font-semibold text-gray-900">Devices</h1>
     <div class="flex gap-2 items-center">
       <button id="scan-btn" onclick="discoverNetwork()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Scan Network</button>
-      <button onclick="syncNow()" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700" title="Pull the latest devices + clients from the UniFi controller">🔄 Sync Now</button>
+      <button id="sync-btn" onclick="syncNow()" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700" title="Pull the latest devices + clients from the UniFi controller">🔄 Sync Now</button>
       <button onclick="showAddDeviceModal()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">+ Add Device</button>
       <a href="/onboard" target="_blank" class="rounded-md border border-barenoc-600 px-4 py-2 text-sm font-semibold text-barenoc-700 hover:bg-barenoc-50">🔐 Onboard a device</a>
       <span id="sync-msg" class="text-sm text-gray-500"></span>
@@ -599,14 +599,34 @@ async function deleteDevice(id, name) {
 }
 
 async function discoverNetwork() {
-  document.getElementById('loading-devices').textContent = 'Scanning network...';
+  var btn = document.getElementById('scan-btn');
+  var status = document.getElementById('loading-devices');
+  var t0 = Date.now();
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-50'); }
+  status.style.display = 'block';
+  status.className = 'mt-4 text-center text-gray-500';
+  status.innerHTML = spinHTML('Scanning network', 0);
+  var iv = setInterval(function () {
+    status.innerHTML = spinHTML('Scanning network', Math.round((Date.now() - t0) / 1000));
+  }, 1000);
   try {
     var resp = await fetch('/api/v1/devices/discover', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
-    var data = await resp.json();
-    document.getElementById('loading-devices').textContent = 'Loading devices...';
-    alert('Scan started. Unclaimed devices will appear here in a minute.');
-    setTimeout(function() { loadUnclaimed(); }, 15000);
-  } catch (err) { alert('Discovery failed: ' + err.message); }
+    if (!resp.ok) {
+      var txt = await resp.text().catch(function () { return ''; });
+      status.className = 'mt-4 text-center text-red-600';
+      status.textContent = '❌ Scan failed (HTTP ' + resp.status + '): ' + (txt || 'empty response').replace(/\s+/g, ' ').slice(0, 160);
+      return;
+    }
+    status.className = 'mt-4 text-center text-green-600';
+    status.textContent = '✅ Scan started — unclaimed devices will appear here shortly.';
+    setTimeout(function () { loadUnclaimed(); }, 15000);
+  } catch (err) {
+    status.className = 'mt-4 text-center text-red-600';
+    status.textContent = '❌ Discovery failed: ' + err.message;
+  } finally {
+    clearInterval(iv);
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
+  }
 }
 
 // Claim flow
@@ -857,27 +877,50 @@ document.addEventListener('DOMContentLoaded', function() {
   loadTopology().then(function(n) { if (n > 0) setDevicesView('topology'); });
 });
 
+// Live progress helper — spinner + elapsed seconds, shared by scan & sync.
+function spinHTML(label, secs) {
+  return '<svg class="animate-spin -ml-1 mr-2 h-4 w-4 inline-block text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>'
+    + label + '… ' + secs + 's';
+}
+
 async function syncNow() {
+  var btn = document.getElementById('sync-btn');
   var msg = document.getElementById('sync-msg');
-  msg.textContent = 'Syncing with UniFi controller…';
+  var t0 = Date.now();
+  if (btn) { btn.disabled = true; btn.classList.add('opacity-50'); }
   msg.className = 'text-sm text-gray-500';
+  msg.innerHTML = spinHTML('Syncing with UniFi controller', 0);
+  var iv = setInterval(function () {
+    msg.innerHTML = spinHTML('Syncing with UniFi controller', Math.round((Date.now() - t0) / 1000));
+  }, 1000);
   try {
     var r = await fetch('/api/v1/unifi/sync', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + getToken() }
     });
-    var d = await r.json();
-    if (r.ok) {
+    // Read as TEXT first: a proxy/nginx failure returns an HTML error page,
+    // and r.json() on that throws the cryptic "JSON.parse: unexpected
+    // character at line 1 column 1". Surface the status + body instead.
+    var text = await r.text();
+    var d = null;
+    try { d = JSON.parse(text); } catch (e) { d = null; }
+    if (r.ok && d) {
       msg.textContent = '✅ Synced — ' + (d.adopted || 0) + ' adopted, ' + (d.added || 0) + ' added, ' + (d.updated || 0) + ' updated, ' + (d.clients_added || 0) + ' clients added.';
       msg.className = 'text-sm text-green-600';
       fetchDevices(0); loadUnclaimed(); loadTopology();
+    } else if (d && d.detail) {
+      msg.textContent = '❌ ' + d.detail;
+      msg.className = 'text-sm text-red-600';
     } else {
-      msg.textContent = '❌ ' + (d.detail || 'Sync failed');
+      msg.textContent = '❌ Sync failed (HTTP ' + r.status + '): ' + (text || 'empty response').replace(/\s+/g, ' ').slice(0, 160);
       msg.className = 'text-sm text-red-600';
     }
   } catch (e) {
     msg.textContent = '❌ ' + e.message;
     msg.className = 'text-sm text-red-600';
+  } finally {
+    clearInterval(iv);
+    if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
   }
 }
 

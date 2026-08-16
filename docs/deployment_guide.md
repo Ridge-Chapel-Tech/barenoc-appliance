@@ -85,8 +85,10 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 - **`git` on the host** (minimal installs lack it): `apt-get update && apt-get install -y git`
 - **Host internet access** — the installer downloads the Ubuntu 24.04 cloud
   image (~600 MB, cached once) and the VM installs Docker + tooling.
-- **An SSH keypair on the host**: `ls ~/.ssh/id_ed25519.pub` (create with
-  `ssh-keygen -t ed25519` if missing). The host uses it to reach the VM.
+- **An SSH keypair on the host** (any type — ed25519 or RSA). The installer
+  auto-detects `~/.ssh/id_ed25519.pub`, then `~/.ssh/id_rsa.pub`, then any
+  `~/.ssh/*.pub`; create one with `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519`
+  if you have none. The host uses it to reach the VM.
 - **A free static IP** for the appliance (e.g. `192.0.2.207`) + its gateway
   (default: first usable IP of the /24) and DNS (default `1.1.1.1`).
 - A free VMID (the installer defaults to **1000**).
@@ -94,25 +96,18 @@ web UI at `https://<proxmox>:8006` is only needed to watch the VM / console).
 <a id="a2-get-the-release-onto-the-host"></a>
 ### A2. Get the release onto the host
 
-The release repo is **private and invite-only** — you'll have received a
-**collaborator invitation** on your GitHub account (check your email / GitHub
-notifications; you need a free GitHub account). On the Proxmox host,
-authenticate **as yourself** once and clone:
+The release repo is **public** — no account, no GitHub CLI, no token needed. On the Proxmox host, clone directly:
 
 ```bash
 ssh root@<proxmox-ip>                    # from your workstation
 
-# one-time auth on the host — the GitHub CLI (device flow) is easiest:
-apt-get install -y gh && gh auth login   # scopes: repo
-
 git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc
 ```
 
-> No GitHub CLI on the host? Use a **personal access token** (GitHub →
-> Settings → Developer settings → PAT, read access to that repo) in the URL:
-> `git clone https://<you>:<PAT>@github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/barenoc`
->
-> (git itself may need installing first: `apt-get update && apt-get install -y git`)
+> `git` itself may need installing first on a minimal Proxmox host:
+> `apt-get update && apt-get install -y git`. No other GitHub tooling is
+> required (the GitHub CLI `gh` is only needed for release tooling on a dev
+> machine, never on the appliance host).
 
 <a id="a3-run-the-one-shot-installer"></a>
 ### A3. Run the one-shot installer
@@ -121,10 +116,14 @@ git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/baren
 cd /root/barenoc
 bash proxmox/barenoc-appliance.sh \
   --ip 192.0.2.207 \                  # required: static IP for the appliance
-  --ssh-key ~/.ssh/id_ed25519.pub \
   --profile m \                       # s | m | l | xl (default m)
   --admin-password 'Change-Me-Now'    # optional; auto-generated otherwise
 ```
+
+Your SSH key is **auto-detected** (ed25519 → rsa → any `~/.ssh/*.pub`) and so
+is the VM **storage** (local-lvm → local-zfs → first storage that holds VM
+images — ZFS installs land on `local-zfs` automatically). Use `--ssh-key <path>`
+or `--storage <id>` only to override detection.
 
 What it does (≈10–15 min):
 
