@@ -114,7 +114,7 @@ git clone https://github.com/Ridge-Chapel-Tech/barenoc-appliance.git /root/baren
 
 ```bash
 cd /root/barenoc
-bash proxmox/barenoc-appliance.sh \
+./proxmox/barenoc-appliance.sh \
   --ip 192.0.2.207 \                  # required: static IP for the appliance
   --profile m \                       # s | m | l | xl (default m)
   --admin-password 'Change-Me-Now'    # optional; auto-generated otherwise

@@ -5,7 +5,7 @@
 # Run ON the Proxmox host, from a checkout of this repo (copy the repo to the
 # host or run via `ssh root@<proxmox> 'bash -s' < proxmox/barenoc-appliance.sh …`).
 #
-#   bash proxmox/barenoc-appliance.sh --ip 192.0.2.210 --profile s
+#   ./proxmox/barenoc-appliance.sh --ip 192.0.2.210 --profile s
 #
 # What it does:
 #   1. Preflight (qm, bridge, storage, cloud image — downloads Ubuntu 24.04
@@ -54,7 +54,7 @@ declare -A PROFILE_ENDPOINTS=(
 
 usage() {
   cat <<'EOF'
-Usage: bash proxmox/barenoc-appliance.sh [options]
+Usage: ./proxmox/barenoc-appliance.sh [options]
 
 Required:
   --ip <addr>            Static IP for the appliance VM (e.g. 192.0.2.210)
