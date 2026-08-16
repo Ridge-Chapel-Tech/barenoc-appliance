@@ -259,6 +259,8 @@ async function loadThread() {
         box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
       else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'autoclosed')
         box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
+      else if (ev === 'pause_until' || ev === 'pause_cleared')
+        box.appendChild(systemLine(ev, pauseDetail(ev, n.detail), fmtTime(n.timestamp)));
       // other events are internal pipeline steps — skip for a clean customer view
     });
     // Final resolution chip — only once the ticket is actually resolved/closed;
@@ -293,7 +295,15 @@ function systemLine(ev, detail, time) {
 function symbol(ev) {
   return { processing: '⏳ ', auto_execute: '🤖 ', awaiting_approval: '🕓 ', escalated: '🔀 ',
            checkin_request: '⏰ ', agent_retry: '🔁 ', priority_change: '🏷️ ',
-           autoclosed: '🗄️ ', agent_failed: '❌ ', completed: '✅ ' }[ev] || '';
+           autoclosed: '🗄️ ', agent_failed: '❌ ', completed: '✅ ',
+           pause_until: '⏸ ', pause_cleared: '▶️ ' }[ev] || '';
+}
+function pauseDetail(ev, detail) {
+  if (ev === 'pause_cleared') return 'Resumed';
+  // pause_until detail is a naive-UTC ISO timestamp; render it in local time.
+  const d = new Date(detail && detail.endsWith('Z') ? detail : (detail || '') + 'Z');
+  if (isNaN(d)) return 'Paused';
+  return 'Paused until ' + d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 function el(tag, cls, ...children) {
   const d = document.createElement(tag); d.className = cls;

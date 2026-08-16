@@ -14,6 +14,7 @@ class User(Base):
     hashed_password = Column(String(256), nullable=False)
     role = Column(String(16), default="admin")  # admin | operator | readonly | tenant
     is_active = Column(Boolean, default=True)
+    is_bot = Column(Boolean, default=False)  # True for bot users (Juniper Queue Manager) — chat participants, not humans
     must_change_password = Column(Boolean, default=False)
     default_ticket_status = Column(String(24), nullable=True)   # tickets page default status filter
     default_ticket_priority = Column(String(4), nullable=True)  # tickets page default priority filter

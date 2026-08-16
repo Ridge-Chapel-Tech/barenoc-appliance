@@ -48,6 +48,24 @@ class ChatSend(BaseModel):
     body: str = Field(..., min_length=1, max_length=4000)
 
 
+def _find_recipient(db, username: str) -> User:
+    """Resolve a messageable user by username, including bot users.
+
+    The Queue Manager bot (Juniper) is a real User row (is_bot=True) seeded at
+    startup, so the exact username normally resolves. The case-insensitive
+    fallback covers a client that sends the configured display name (e.g.
+    'Juniper') instead of the lowercased stored username ('juniper'). A truly
+    unknown username still returns None -> the existing 404 behavior.
+    """
+    other = db.query(User).filter(User.username == username).first()
+    if other:
+        return other
+    return db.query(User).filter(
+        User.is_bot == True,  # noqa: E712
+        func.lower(User.username) == username.lower(),
+    ).first()
+
+
 def _user_brief(u: User) -> dict:
     return {
         "id": u.id,
@@ -131,7 +149,7 @@ def chat_messages(
     user: User = Depends(require_chat_enabled),
 ):
     """Full thread with another user; marks incoming messages as read."""
-    other = db.query(User).filter(User.username == with_username).first()
+    other = _find_recipient(db, with_username)
     if not other:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -161,7 +179,7 @@ def chat_messages(
 
 @router.post("/messages", status_code=201)
 def chat_send(data: ChatSend, db: Session = Depends(get_db), user: User = Depends(require_chat_enabled)):
-    other = db.query(User).filter(User.username == data.to_username).first()
+    other = _find_recipient(db, data.to_username)
     if not other:
         raise HTTPException(status_code=404, detail="User not found")
     if other.id == user.id:

@@ -4,13 +4,13 @@ from sqlalchemy import func
 from typing import Optional
 from pydantic import BaseModel, Field
 import datetime
-import json
 import os
 from database import get_db
 from models import Ticket, Device, User
 from schemas import TicketCreate, TicketUpdate, TicketResponse, generate_ticket_id
 from auth import get_current_user, get_access_context, require_any_role
 from worknotes import add_note
+from queue_status import derive_status
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 
@@ -105,47 +105,8 @@ def get_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Depen
 
 
 # ── live status (read-only; "where are you at?" without creating new work) ──
-# Stage derived from the last meaningful work_note event. The chat thread can
-# query this repeatedly while the technician works — it never mutates the
-# ticket and never interrupts the pipeline.
-_STATUS_STAGES = {
-    "agent_progress":   ("working", "Working on it — {detail}"),
-    "processing":       ("working", "Picked up — the technician is working on this"),
-    "auto_execute":     ("working", "Running the action (autonomous)"),
-    "agent_response":   ("working", "Interim response — {detail}"),
-    "agent_retry":      ("working", "Retrying — {detail}"),
-    "awaiting_approval":("review",  "Awaiting your approval"),
-    "escalated":        ("review",  "Escalated — needs your review"),
-    "customer_input":   ("waiting", "Waiting on you — {detail}"),
-    "ai_tech_feedback": ("answered","Answered — awaiting your confirmation"),
-    "agent_completed":  ("done",    "Completed"),
-    "completed":        ("done",    "Completed ✓"),
-}
-_ACTIVE_STATUSES = ("open", "in_progress", "awaiting_approval", "escalated")
-
-
-def _last_meaningful_note(ticket):
-    """Most recent work_note that isn't user/checkin chatter, or None."""
-    try:
-        notes = json.loads(ticket.work_notes) if ticket.work_notes else []
-    except Exception:
-        notes = []
-    for n in reversed(notes):
-        if not isinstance(n, dict):
-            continue
-        ev = n.get("event") or ""
-        if ev in ("user_message", "checkin_request"):
-            continue
-        return n
-    return None
-
-
-def _parse_note_time(n) -> "datetime.datetime | None":
-    ts = (n or {}).get("timestamp") or ""
-    try:
-        return datetime.datetime.fromisoformat(str(ts).replace("Z", ""))
-    except Exception:
-        return None
+# Stage derivation lives in queue_status.py (shared with the Juniper responder
+# in the worker) — one source, byte-identical output.
 
 
 @router.get("/{ticket_id}/status")
@@ -160,35 +121,7 @@ def ticket_status(ticket_id: str, db: Session = Depends(get_db),
     if not _tenant_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    now = datetime.datetime.utcnow()
-    n = _last_meaningful_note(ticket)
-    ev = (n or {}).get("event") or ""
-    kind, label_t = _STATUS_STAGES.get(ev, ("waiting", "No activity yet — queued"))
-    detail = str((n or {}).get("detail") or "")[:200]
-    label = label_t.format(detail=detail) if detail else label_t.split("{")[0].rstrip(" — ")
-    at = _parse_note_time(n)
-
-    active = ticket.status in _ACTIVE_STATUSES
-    idle = None
-    if active and at:
-        try:
-            idle = max(0, int((now - at).total_seconds()))
-        except Exception:
-            idle = None
-
-    return {
-        "ticket_id": ticket.ticket_id,
-        "status": ticket.status,
-        "stage": kind,
-        "label": label,
-        "last_event": ev,
-        "last_event_at": at.isoformat() + "Z" if at else None,
-        "idle_seconds": idle,
-        "assigned_to": ticket.assigned_to,
-        "action": ticket.action,
-        "confidence": ticket.llm_confidence,
-        "resolution": ticket.resolution,
-    }
+    return derive_status(ticket)
 
 
 @router.post("", response_model=TicketResponse, status_code=201)

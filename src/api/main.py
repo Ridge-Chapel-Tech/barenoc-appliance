@@ -206,12 +206,70 @@ def seed_demo_data():
         db.close()
 
 
+def ensure_juniper_bot():
+    """Idempotently seed the Queue Manager bot user (Juniper).
+
+    The bot is a REAL chat participant: a User row with is_bot=True, username =
+    BOT_QUEUE_MANAGER_NAME lowercased (e.g. 'juniper'), display name = the
+    configured name, is_active=True. The responder (worker/juniper.py) finds it
+    via is_bot=True and writes ChatMessage replies from it. Runs on every
+    startup; safe to call repeatedly.
+    """
+    db = SessionLocal()
+    try:
+        from llm_providers import read_env_file
+        name = (read_env_file().get("BOT_QUEUE_MANAGER_NAME")
+                or os.getenv("BOT_QUEUE_MANAGER_NAME") or "").strip() or "Juniper"
+        username = name.lower()
+
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        if bot:
+            # Keep the display name/active flag in sync with config; never
+            # steal an existing username (renames are out of scope here).
+            changed = False
+            if bot.display_name != name:
+                bot.display_name = name
+                changed = True
+            if bot.is_active is not True:
+                bot.is_active = True
+                changed = True
+            if changed:
+                db.commit()
+            return
+
+        if db.query(User).filter(User.username == username).first():
+            # A real user already holds the bot's username — leave them alone.
+            logger.warning(
+                "Bot username '%s' is taken by an existing user; skipping bot seed",
+                username)
+            return
+
+        bot = User(
+            username=username,
+            display_name=name,
+            email=None,
+            hashed_password=hash_password(secrets.token_urlsafe(32)),
+            role="tenant",
+            is_active=True,
+            is_bot=True,
+        )
+        db.add(bot)
+        db.commit()
+        logger.info("Seeded Queue Manager bot user '%s'", username)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Bot user seed failed: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle."""
     logger.info("Starting BareNOC API...")
     init_db()
     seed_demo_data()
+    ensure_juniper_bot()
     from alerting import start_alert_engine
     start_alert_engine()  # background: device-down alerts + daily digest
     from routes.settings import _write_provider_secret

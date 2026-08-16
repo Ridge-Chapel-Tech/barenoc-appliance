@@ -15,6 +15,20 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.i] — 2026-08-16
+
+### Added
+- **Juniper — Queue Manager bot (Phase 1)** — a real chat entity (`User.is_bot`,
+  idempotently seeded at startup, messageable via `/api/v1/chat`). The worker
+  runs a Juniper responder alongside the ticket loop: deterministic
+  status/queue snapshots, LLM ticket summaries (deterministic fallback),
+  casual intake that opens a real ticket with a judged priority
+  (`source=chat`), and pause/resume/note-to-tech directives the worker honors.
+- **Pause directives** — `pause TKT-… until <time>` / `resume TKT-…` write
+  `pause_until` / `pause_cleared` work notes; the worker skips paused tickets
+  in every poll loop (including the stalled-job watchdog), and the chat thread
+  renders the directive as a visible system line (⏸ / ▶️).
+
 ## [2026.08.16.h] — 2026-08-16
 
 ### Fixed

@@ -21,6 +21,8 @@ from sanitizer import sanitize_ticket
 from action_validator import AllowedAction, validate_action, validate_target
 from audit import log_event
 from worknotes import add_note
+from queue_status import is_paused
+import juniper
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("barenoc-worker")
@@ -136,6 +138,12 @@ def _customer_reply(reason: str) -> str:
 def process_ticket(db, ticket):
     """Process a single ticket through the LLM pipeline."""
     from llm_client import call_llm
+
+    # Defense-in-depth: the poll loops already skip paused tickets, but a
+    # direct caller must never start work on a ticket the customer paused.
+    if is_paused(ticket):
+        logger.info(f"Ticket {ticket.ticket_id}: paused — skipping")
+        return
 
     ticket_id = ticket.ticket_id
     logger.info(f"Processing ticket {ticket_id}: {ticket.title}")
@@ -1002,7 +1010,17 @@ def poll_for_tickets():
             # Refresh managed devices periodically
             load_managed_devices(db)
 
-            # Fresh tickets waiting for the AI assistant
+            # Juniper (Queue Manager) — answer unread bot messages on the same
+            # cadence as ticket polling. Reads state, creates new tickets, and
+            # writes directive notes only; never mutates in-flight work.
+            try:
+                juniper.respond_once(db)
+            except Exception as e:
+                logger.exception(f"Juniper responder error: {e}")
+
+            # Fresh tickets waiting for the AI assistant. Fetch a wider window
+            # then drop paused tickets BEFORE capping, so a handful of held
+            # tickets can't starve the rest of the queue.
             tickets = (
                 db.query(Ticket)
                 .filter(
@@ -1010,9 +1028,10 @@ def poll_for_tickets():
                     Ticket.source != "auto",  # Let scheduler handle auto tickets
                 )
                 .order_by(Ticket.priority.asc())
-                .limit(5)
+                .limit(20)
                 .all()
             )
+            tickets = [t for t in tickets if not is_paused(t)][:5]
 
             # Tickets with new customer replies (feedback loop)
             re_process = (
@@ -1024,6 +1043,9 @@ def poll_for_tickets():
                 .all()
             )
             for ticket in re_process:
+                if is_paused(ticket):
+                    logger.info(f"Ticket {ticket.ticket_id}: paused — skipping reprocess")
+                    continue
                 count = _count_user_notes(ticket)
                 seen = _USER_COMMENT_COUNT.get(ticket.ticket_id, -1)
                 if seen == -1:
@@ -1052,6 +1074,9 @@ def poll_for_tickets():
                 .all()
             )
             for ticket in due_retries:
+                if is_paused(ticket):
+                    logger.info(f"Ticket {ticket.ticket_id}: paused — skipping LLM retry")
+                    continue
                 if _last_note_event(ticket) == "agent_retry":
                     logger.info(f"Ticket {ticket.ticket_id}: LLM retry due — re-processing")
                     tickets.append(ticket)
@@ -1069,6 +1094,9 @@ def poll_for_tickets():
                 .all()
             )
             for ticket in due_failures:
+                if is_paused(ticket):
+                    logger.info(f"Ticket {ticket.ticket_id}: paused — skipping failure feedback")
+                    continue
                 # agent_failed present, not superseded by a successful run,
                 # and still within the attempt budget (jobs.py appends an
                 # ai_tech_feedback note after agent_failed, so check presence).
@@ -1092,6 +1120,9 @@ def poll_for_tickets():
                 .all()
             )
             for t in stuck:
+                if is_paused(t):
+                    logger.info(f"Ticket {t.ticket_id}: paused — watchdog exempt")
+                    continue
                 evs = [str(n.get("event") or "") for n in _notes_list(t)]
                 if ("auto_execute" in evs
                         and "agent_completed" not in evs

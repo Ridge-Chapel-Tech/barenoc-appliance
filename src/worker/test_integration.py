@@ -19,6 +19,11 @@ _TMP = tempfile.mkdtemp(prefix="barenoc-int-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 os.environ["LLM_JUDGE_ENABLED"] = "true"
 
+# Shared modules (database/models/…) live in src/api — append it so this test
+# runs from src/worker on the dev box / CI, not just in the flattened container.
+# APPEND (not insert-0) so `import main` still resolves to src/worker/main.py.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api"))
+
 from database import SessionLocal, init_db
 from models import Ticket
 from schemas import generate_ticket_id
@@ -288,6 +293,10 @@ def main():
     reset_policy_cache()
 
     # 12. NEW READS: unifi_firewall_rules auto-executes as read-only
+    # This exercises the judge/executor split under the LEGACY (no-profile)
+    # policy, so re-enable the judge for just this case (test #7 left it off
+    # for the single-phase regression; #14+ override it back off via policy).
+    os.environ["LLM_JUDGE_ENABLED"] = "true"
     t = make_ticket("show my firewall rules", "P4")
     db = SessionLocal()
     verdict = Verdict(lawful="yes", action_class="unifi_firewall_rules", risk="low",
@@ -304,6 +313,7 @@ def main():
     ok("unifi_firewall_rules auto-executed (read-only)", t.status == "in_progress", t.status)
     ok("unifi_firewall_rules job written", bool(t.job_file_path))
     db.close()
+    os.environ["LLM_JUDGE_ENABLED"] = "false"
 
     # 13. NEW WRITE: unifi_restart goes to the approval queue in strict
     os.environ["LLM_POLICY_PROFILE"] = "strict"
@@ -385,6 +395,11 @@ def main():
            str(job.get("params")))
         ok("auto-exec job NOT flagged requires_approval", not job.get("requires_approval"))
     db.close()
+    # #15 disabled the judge via a policy override; drop it so the strict test
+    # below actually exercises the judge/executor path again.
+    os.environ.pop("LLM_POLICY_JUDGE_REQUIRED", None)
+    os.environ.pop("LLM_POLICY_PROFILE", None)
+    reset_policy_cache()
 
     # 16. BATCH under strict -> held for approval (requires_approval in file)
     os.environ["LLM_POLICY_PROFILE"] = "strict"

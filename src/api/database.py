@@ -135,3 +135,12 @@ def init_db():
             ))
     except OperationalError:
         pass  # Columns already exist
+    # Migration: is_bot (Juniper Queue Manager bot user, Phase 1) — idempotent;
+    # create_all won't add a column to an existing users table.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN is_bot BOOLEAN DEFAULT 0"
+            ))
+    except OperationalError:
+        pass  # Column already exists
