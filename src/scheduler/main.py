@@ -242,6 +242,48 @@ def check_update_schedule(token: str, last_triggered: dict):
         logger.warning(f"Scheduled update not queued: {e}")
 
 
+def check_update_progress(token: str, last_notified: dict):
+    """Watch the host self-update service's progress file (exposed via
+    /updates/status). When it reaches a terminal stage (done/failed), email
+    the alert channel ONCE per transition. Persists the last-notified key so a
+    scheduler restart doesn't re-notify."""
+    marker = "/opt/barenoc/jobs/update_notified.key"
+    try:
+        st = _api_get("/updates/status", token)
+    except Exception as e:
+        logger.debug(f"update progress read failed: {e}")
+        return
+    prog = st.get("progress") or {}
+    stage = prog.get("stage") or ""
+    if stage not in ("done", "failed"):
+        return
+    key = f"{stage}:{prog.get('at', '')}"
+    if last_notified.get("update") == key:
+        return
+    try:
+        with open(marker) as f:
+            if f.read().strip() == key:
+                last_notified["update"] = key
+                return
+    except Exception:
+        pass
+    try:
+        _api_post("/updates/notify", {
+            "stage": stage,
+            "message": prog.get("message", ""),
+            "version": st.get("current", ""),
+        }, token)
+        last_notified["update"] = key
+        try:
+            with open(marker, "w") as f:
+                f.write(key)
+        except Exception:
+            pass
+        logger.info(f"Update notification sent ({key})")
+    except Exception as e:
+        logger.warning(f"Update notification failed: {e}")
+
+
 def run():
     """Main scheduler loop."""
     logger.info("BareNOC Scheduler starting...")
@@ -251,6 +293,7 @@ def run():
     last_snmp = 0
     last_unifi = 0
     last_upd_sched = 0
+    last_upd_prog = 0
     _last_triggered = {}
 
     while True:
@@ -282,6 +325,11 @@ def run():
             if now - last_upd_sched >= 60:
                 check_update_schedule(token, _last_triggered)
                 last_upd_sched = now
+
+            # Update progress notifications (done/failed) — every 60s.
+            if now - last_upd_prog >= 60:
+                check_update_progress(token, _last_triggered)
+                last_upd_prog = now
 
         except Exception as e:
             logger.error(f"Scheduler error: {e}")

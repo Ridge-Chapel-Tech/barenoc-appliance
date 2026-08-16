@@ -38,6 +38,15 @@
         </div>
       </div>
       <div id="upd-body" class="mt-3 text-sm text-gray-600"></div>
+      <div id="upd-progress" class="mt-3 hidden">
+        <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+          <span id="upd-prog-stage">…</span><span id="upd-prog-pct">0%</span>
+        </div>
+        <div class="h-2 w-full rounded bg-gray-200 overflow-hidden">
+          <div id="upd-prog-bar" class="h-full bg-barenoc-600 transition-all" style="width:0%"></div>
+        </div>
+        <div id="upd-prog-msg" class="mt-1 text-xs text-gray-500"></div>
+      </div>
       <div id="upd-schedule" class="mt-3 hidden border-t pt-3 text-xs text-gray-500">
         <label><input type="checkbox" id="upd-sched-enable" class="mr-1"> enable scheduled update</label>
         <select id="upd-sched-day" class="ml-2 rounded border px-1 py-0.5">
@@ -129,6 +138,32 @@ async function updFetch(path, opts) {
   return r.json();
 }
 function updKind(k) { return k === 'major' ? '🟥 major' : k === 'minor' ? '🟧 minor' : k === 'patch' ? '🟨 patch' : ''; }
+var _updPollTimer = null;
+function renderUpdateProgress(prog) {
+  var box = document.getElementById('upd-progress');
+  var stage = prog && prog.stage;
+  if (!stage || stage === '') {
+    box.classList.add('hidden');
+    if (_updPollTimer) { clearInterval(_updPollTimer); _updPollTimer = null; }
+    return;
+  }
+  box.classList.remove('hidden');
+  var pct = Math.min(100, Math.max(0, Math.round(prog.pct || 0)));
+  var isTerminal = stage === 'done' || stage === 'failed';
+  var ok = stage === 'done';
+  document.getElementById('upd-prog-bar').style.width = pct + '%';
+  document.getElementById('upd-prog-bar').className = 'h-full transition-all ' + (isTerminal ? (ok ? 'bg-green-500' : 'bg-red-500') : 'bg-barenoc-600');
+  document.getElementById('upd-prog-pct').textContent = pct + '%';
+  document.getElementById('upd-prog-stage').textContent = (isTerminal ? (ok ? '✅ Complete' : '❌ Failed') : '⏳ ' + (stage || 'updating'));
+  document.getElementById('upd-prog-msg').textContent = prog.message || '';
+  var btn = document.getElementById('upd-now-btn');
+  if (btn && !isTerminal) btn.disabled = true;   // never start a second update mid-flight
+  if (!isTerminal && !_updPollTimer) {
+    _updPollTimer = setInterval(function () { updLoad(); }, 3000);  // poll while in flight
+  } else if (isTerminal && _updPollTimer) {
+    clearInterval(_updPollTimer); _updPollTimer = null;
+  }
+}
 async function updLoad() {
   try {
     const s = await updFetch('/status');
@@ -148,6 +183,7 @@ async function updLoad() {
       + (s.last_update && s.last_update.at ? '<div class="mt-1 text-xs text-gray-400">Last update: ' + (s.last_update.ok ? '✅ ' : '❌ ') + esc((s.last_update.version || '') + (s.last_update.error ? ' — ' + s.last_update.error : '')) + '</div>' : '')
       + (s.checked_at ? '<div class="mt-1 text-xs text-gray-400">Checked ' + esc(fmtTz(s.checked_at)) + '</div>' : '');
     document.getElementById('upd-now-btn').disabled = !s.available;
+    renderUpdateProgress(s.progress);
     const sc = s.schedule || {};
     document.getElementById('upd-sched-enable').checked = !!sc.enabled;
     document.getElementById('upd-sched-day').value = sc.day || 'daily';

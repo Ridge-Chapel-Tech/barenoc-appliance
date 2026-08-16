@@ -20,8 +20,16 @@ STATUS_DIR="$BASE/volumes/update_status"
 REQ="$STATUS_DIR/update_request.json"
 RB="$STATUS_DIR/rollback_request.json"
 RESULT="$STATUS_DIR/update_result.json"
+PROG="$STATUS_DIR/progress.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# Progress reporting — the API surfaces this in the Updates card (progress
+# bar + stage message); the scheduler emails on the terminal stage.
+progress() {  # progress <pct> <stage> <message>
+  printf '{"stage": "%s", "pct": %s, "message": "%s", "at": "%s"}\n' \
+    "$2" "$1" "$3" "$(date -Is)" > "$PROG" 2>/dev/null || true
+}
 
 # host snapshot access (optional) — read from .env
 UPDATE_HOST="$(grep -E '^UPDATE_HOST=' "$BASE/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
@@ -33,7 +41,9 @@ report() { echo "$1" > "$RESULT"; }
 # ── rollback ───────────────────────────────────────────────────────────────
 if [ -f "$RB" ]; then
   rm -f "$RB"
+  progress 5 "rollback" "restoring previous release"
   if [ ! -d "$BASE/.previous" ]; then
+    progress 100 "failed" "rollback failed — no previous release found"
     report '{"ok": false, "action": "rollback", "error": "no previous release found"}'
     exit 1
   fi
@@ -45,13 +55,16 @@ if [ -f "$RB" ]; then
   chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
           "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
   chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
+  progress 60 "rollback" "rebuilding stack"
   cd "$BASE" && docker compose up --build -d >/dev/null 2>&1
   sleep 8
   if curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health | grep -q 200; then
     systemctl restart pi-agent-runner 2>/dev/null || true
+    progress 100 "done" "rollback complete — previous release restored"
     report "{\"ok\": true, \"action\": \"rollback\", \"version\": \"previous\", \"at\": \"$(date -Is)\"}"
     echo "==> rollback complete"
   else
+    progress 100 "failed" "rollback failed — health check failed"
     report '{"ok": false, "action": "rollback", "error": "health check failed after rollback"}'
   fi
   exit 0
@@ -65,6 +78,7 @@ CHECKSUMS="$(python3 -c "import json;print(json.load(open('$REQ')).get('checksum
 [ -n "$TARBALL" ] || { report '{"ok": false, "action": "update", "error": "no tarball URL in update request"}'; exit 1; }
 
 # 1. snapshot before (restricted host key — qm snapshot only, optional)
+progress 8 "snapshot" "host snapshot (optional)"
 if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; then
   echo "==> snapshot before-$VERSION on $UPDATE_HOST"
   ssh -i "$UPDATE_HOST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -74,17 +88,20 @@ if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; 
 fi
 
 # 2. download + verify
+progress 20 "download" "downloading release"
 echo "==> fetching $TARBALL"
-curl -fsSL "$TARBALL" -o "$TMP/app.tar.gz" || { report '{"ok": false, "action": "update", "error": "download failed"}'; exit 1; }
+curl -fsSL "$TARBALL" -o "$TMP/app.tar.gz" || { progress 100 "failed" "download failed"; report '{"ok": false, "action": "update", "error": "download failed"}'; exit 1; }
 if [ -n "$CHECKSUMS" ]; then
   curl -fsSL "$CHECKSUMS" -o "$TMP/sums" 2>/dev/null || true
   if [ -s "$TMP/sums" ]; then
+    progress 40 "verify" "verifying checksum"
     ( cd "$TMP" && sha256sum -c --ignore-missing sums ) \
-      || { report '{"ok": false, "action": "update", "error": "checksum mismatch"}'; exit 1; }
+      || { progress 100 "failed" "checksum mismatch"; report '{"ok": false, "action": "update", "error": "checksum mismatch"}'; exit 1; }
   fi
 fi
 
 # 3. backup current code
+progress 50 "backup" "backing up current release"
 echo "==> backing up current code to .previous"
 rm -rf "$BASE/.previous"
 mkdir -p "$BASE/.previous"
@@ -93,6 +110,7 @@ for d in api worker scheduler nginx scripts agent client docker-compose.yml; do
 done
 
 # 4. extract + map release tree (src/ layout) onto the flat /opt/barenoc layout
+progress 65 "apply" "applying release"
 echo "==> extracting release"
 tar xzf "$TMP/app.tar.gz" -C "$TMP"
 SRC="$TMP/src"
@@ -125,17 +143,22 @@ done
 systemctl daemon-reload 2>/dev/null || true
 
 # 5. rebuild + health
+progress 80 "rebuild" "rebuilding containers"
 echo "==> rebuilding stack"
 cd "$BASE" && docker compose up --build -d >/dev/null 2>&1
+progress 92 "healthcheck" "waiting for the web UI"
 sleep 8
 OK="$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health)"
 if [ "$OK" = "200" ]; then
   systemctl restart pi-agent-runner 2>/dev/null || true
   rm -f "$REQ"
-  report "{\"ok\": true, \"action\": \"update\", \"version\": \"$VERSION\", \"at\": \"$(date -Is)\"}"
+  progress 100 "done" "update complete — services restarted"
+  report "{\"ok\": true, \"action\": \"update\", \"version\": \"$VERSION\", \"at\": \"$(date -Is)\", \"services_restarted\": true, \"reboot_required\": false}"
   echo "==> updated to $VERSION (health $OK)"
   exit 0
 fi
+
+progress 100 "failed" "update failed — health check; restoring previous release"
 
 # 6. failure -> restore previous + optional qm rollback
 echo "==> update failed (health $OK) — restoring previous"

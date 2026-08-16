@@ -18,6 +18,14 @@ Categories per release:
 ## [2026.08.16.a] — 2026-08-16
 
 ### Added
+- **Update progress + notifications** — the self-update flow now reports live
+  stages (snapshot → download → verify → backup → apply → rebuild →
+  healthcheck → done/failed) with a progress bar on the dashboard Updates
+  card (polls 3 s while in flight; Update-now disabled mid-update). Email
+  notification (ALERT_RECIPIENTS) on completion/failure — once per
+  transition, persisted across scheduler restarts. Update results now carry
+  `services_restarted` + `reboot_required` for the UI (reboot-aware hook).
+
 - **Customer support bundle** — System page → "Support / Bug Report": export a
   redacted diagnostic markdown bundle to attach to a bug report. Contents:
   version, system snapshot, redacted app-config presence, safe-field device

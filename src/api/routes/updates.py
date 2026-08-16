@@ -61,6 +61,15 @@ def _read_status() -> dict:
         return {}
 
 
+def _read_progress() -> dict:
+    """Read the host self-update service's progress file (stages/pct/message)."""
+    try:
+        with open(os.path.join(STATUS_DIR, "progress.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _write_status(status: dict):
     try:
         os.makedirs(STATUS_DIR, exist_ok=True)
@@ -131,6 +140,7 @@ def update_status(user: User = Depends(require_any_role("operator", "admin", "ag
     except Exception:
         pass
     status["last_update"] = last
+    status["progress"] = _read_progress()
     return status
 
 
@@ -185,6 +195,43 @@ def _read_schedule() -> dict:
     except Exception:
         pass
     return conf
+
+
+@router.post("/notify")
+def update_notify(body: dict = None,
+                  user: User = Depends(require_any_role("operator", "admin", "agent"))):
+    """Email the terminal update state (called by the scheduler when the
+    host service's progress flips to done/failed). Best-effort; never raises.
+    Reuses the alert channel (ALERT_RECIPIENTS) with a rendered HTML table.
+    """
+    body = body or {}
+    stage = str(body.get("stage") or "").strip()
+    message = str(body.get("message") or "").strip()
+    version = str(body.get("version") or "").strip() or _current_version()
+    if stage not in ("done", "failed"):
+        raise HTTPException(status_code=400, detail="stage must be done or failed")
+    try:
+        from emailer import alert_html, send_email
+        from llm_providers import read_env_file as _env
+        recipients = (_env().get("ALERT_RECIPIENTS") or "").strip() or None
+        if not recipients:
+            return {"status": "ok", "notified": False, "note": "no ALERT_RECIPIENTS configured"}
+        ok = stage == "done"
+        rows = [
+            ["Appliance", "BareNOC"],
+            ["Version", version],
+            ["Outcome", "✅ update complete" if ok else "❌ update failed"],
+            ["Detail", message or ("—" if ok else "see the Updates card")],
+        ]
+        subject = (
+            f"BareNOC appliance updated to {version}"
+            if ok else f"BareNOC update FAILED ({version})"
+        )
+        body_html = alert_html(subject, rows)
+        result, err = send_email(recipients, subject, body_html=body_html)
+        return {"status": "ok", "notified": result, "error": err}
+    except Exception as e:
+        return {"status": "ok", "notified": False, "error": str(e)}
 
 
 @router.get("/schedule")
