@@ -9,6 +9,7 @@ holds a valid cert for its identity.
 """
 
 import datetime
+import json
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -37,20 +38,41 @@ def _client_cn(request: Request) -> str:
     return cn
 
 
+def _json_text(value):
+    """Serialize a value to JSON text, or None if it can't be represented."""
+    if value is None:
+        return None
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.post("/report")
 async def device_report(request: Request, db: Session = Depends(get_db)):
     """The device's heartbeat/status report. First successful call LINKS the
     device to its inventory record (adoption completes). The cert proves the
     device owns the identity; revocation is instant at this layer (a revoked
-    record is rejected even if the cert is still within its TTL)."""
-    # Optional payload: the device can report its hostname on each beat.
-    hostname = ""
+    record is rejected even if the cert is still within its TTL).
+
+    Two report shapes are accepted, distinguished by the body:
+      * plain cert heartbeat (no agent fields) — links/keeps method="cert",
+        exactly as before (backward compatible, path untouched);
+      * NOC_Agent self-report (agent_version or adoption_method=="agent") —
+        links/keeps method="agent" and stores agent_version + capabilities +
+        the facts object.
+    """
+    body = {}
     try:
-        body = await request.json()
-        if isinstance(body, dict):
-            hostname = str(body.get("hostname") or "").strip()
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            body = parsed
     except Exception:
         pass
+    hostname = str(body.get("hostname") or "").strip()
+    agent_version = str(body.get("agent_version") or "").strip()
+    adoption_method = str(body.get("adoption_method") or "").strip().lower()
+    is_agent = bool(agent_version) or adoption_method == "agent"
     cn = _client_cn(request)
     device = db.query(Device).filter(Device.cert_cn == cn).first()
     if not device:
@@ -79,7 +101,7 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
         device.hostname = hostname[:120]
     if device.adoption_status != "linked":
         device.adoption_status = "linked"
-        device.adoption_method = "cert"
+        device.adoption_method = "agent" if is_agent else "cert"
         device.cert_cn = cn
         device.cert_enrolled_at = device.cert_enrolled_at or now
         device.claimed = True
@@ -87,7 +109,9 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
         # (the /onboard script adds its public half to authorized_keys + enables
         # sshd) — pair it by storing the control key as this device's SSH
         # credential, making it immediately SSH-controllable by the agent.
-        if not device.ssh_key_fingerprint:
+        # Agent adoption does NOT provision SSH credentials: the agent IS the
+        # control path (no stored SSH secrets on the appliance).
+        if not is_agent and not device.ssh_key_fingerprint:
             try:
                 from control_key import ensure_control_key
                 from routes.devices import _store_ssh_key
@@ -96,6 +120,24 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
                     device.name, ensure_control_key()["private_key"])
             except Exception:
                 pass
+    if is_agent:
+        # Every agent report refreshes the method + version + capabilities and
+        # the latest facts (design §4 / §12: a cert-adopted device flips to
+        # method="agent" on its first agent report).
+        device.adoption_method = "agent"
+        if agent_version:
+            device.agent_version = agent_version[:64]
+        if body.get("agent_capabilities") is not None:
+            device.agent_capabilities = _json_text(body.get("agent_capabilities"))
+        device.facts_json = _json_text({
+            "hostname": body.get("hostname"),
+            "os": body.get("os"),
+            "kernel": body.get("kernel"),
+            "macs": body.get("macs"),
+            "ips": body.get("ips"),
+            "uptime_s": body.get("uptime_s"),
+            "disk_free_gb": body.get("disk_free_gb"),
+        })
     device.cert_last_seen = now
     device.last_seen = now
     device.status = "online"

@@ -15,6 +15,29 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.a] — 2026-08-16
+
+### Added
+- **Customer support bundle** — System page → "Support / Bug Report": export a
+  redacted diagnostic markdown bundle to attach to a bug report. Contents:
+  version, system snapshot, redacted app-config presence, safe-field device
+  inventory, ticket summary, redacted audit trail, error-signal scan, and
+  container log tails (via the Docker engine socket). Secrets are scrubbed
+  before export (API keys, tokens, passwords, certs, private keys; .env is
+  presence-only with a safe-value whitelist).
+- **NOC_Agent P1a (Go endpoint agent skeleton)** — `agent-go/` module: mTLS
+  self-report over the existing `/api/v1/device/report` channel (facts: OS,
+  kernel, hostname, MACs, IPs, uptime, disk), config, Linux systemd install
+  script, unit tests. Appliance-side: `device_report` accepts agent reports
+  (`adoption_method="agent"`, stores `agent_version`/`agent_capabilities`/
+  `facts_json`), no SSH credentials provisioned for agent devices; plain cert
+  heartbeats stay `method="cert"` (backward compatible). Idempotent schema
+  migration for the new Device columns.
+
+### Ops
+- **CI now gates the agent** — `setup-go` in CI + `go build/vet/test` wired
+  into `run_tests.sh` (portable go discovery).
+
 ## [2026.08.16] — 2026-08-16
 
 ### Fixed

@@ -120,3 +120,18 @@ def init_db():
             ))
     except OperationalError:
         pass  # Columns already exist
+    # Migration: NOC_Agent self-report fields (P1a) — idempotent, like the
+    # rest: create_all won't add columns to an existing DB, so add them here.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN agent_version VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN agent_capabilities TEXT"
+            ))
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN facts_json TEXT"
+            ))
+    except OperationalError:
+        pass  # Columns already exist

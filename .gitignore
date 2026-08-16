@@ -27,3 +27,6 @@ client_secret_*.json
 # Internal ops log — contains test-build detail; kept local only
 SESSION_LOG.md
 scripts/.early-access-state.json
+
+# Historical log (same class as SESSION_LOG.md — keep local only)
+SESSION_LOG.md.orig-*

@@ -54,6 +54,10 @@ class Device(Base):
     cert_serial = Column(String(64), nullable=True)   # last certificate serial
     cert_enrolled_at = Column(DateTime, nullable=True)
     cert_last_seen = Column(DateTime, nullable=True)
+    # NOC_Agent self-report (P1a) — set when an endpoint agent reports in
+    agent_version = Column(String(64), nullable=True)      # e.g. "0.1.0-p1a"
+    agent_capabilities = Column(Text, nullable=True)       # JSON array of capability names
+    facts_json = Column(Text, nullable=True)               # last-reported host facts as JSON
     adoption_status = Column(String(16), default="none")  # none | enrolling | linked | revoked
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # tenant who adopted it (tenant view = own devices only)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
