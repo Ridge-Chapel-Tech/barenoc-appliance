@@ -65,7 +65,7 @@ services:
       - /opt/barenoc/volumes/logs/scheduler:/opt/barenoc/volumes/logs/scheduler
       - /opt/barenoc/jobs:/opt/barenoc/jobs
       - /opt/barenoc/.env:/opt/barenoc/.env:ro
-      - /opt/barenoc/agent/credentials:/opt/barenoc/agent/credentials:ro
+      - /opt/barenoc/agent:/opt/barenoc/agent:ro
     environment:
       - SERVICE_NAME=scheduler
       - PYTHONUNBUFFERED=1

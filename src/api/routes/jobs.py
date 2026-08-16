@@ -204,7 +204,11 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
     (the runner's identity)."""
     ticket = db.query(Ticket).filter(Ticket.ticket_id == result.ticket_id).first()
     if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+        # Synthetic jobs (e.g. discovery ping sweeps: disc-<ip>-<ts>) have no
+        # Ticket row. The runner already wrote the result file; the
+        # discover_add callback (runner-side) handles inventory additions.
+        # Don't 404 — it just polluted every discovery run's runner log.
+        return {"status": "ok", "ticket_id": result.ticket_id, "no_ticket": True}
 
     # Dedup guard: the agent may post its own result (legacy behavior) or the
     # runner may retry — if the last note is already an agent_completed posted

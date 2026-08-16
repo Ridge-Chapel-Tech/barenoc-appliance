@@ -361,5 +361,33 @@ class AutoAdoptTest(unittest.TestCase):
         db.close()
 
 
+class RouteBindingRegressionTest(unittest.TestCase):
+    """Route-level guard: a decorator must bind to the intended endpoint.
+    (2026-08-16: the /config decorator bound to the extracted _write_env
+    helper → every POST /api/v1/unifi/config 422'd 'env_path required'. Unit
+    tests call functions directly, so only a route-level check catches it.)"""
+
+    def _app(self):
+        from main import app
+        return app
+
+    def test_unifi_config_route_binds_to_set_config(self):
+        from fastapi.testclient import TestClient
+        app = self._app()
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/unifi/config"
+                     and "POST" in getattr(r, "methods", []))
+        self.assertEqual(route.endpoint.__name__, "set_config")
+        r = TestClient(app).post("/api/v1/unifi/config", json={"url": "https://x:443"})
+        self.assertNotEqual(r.status_code, 422, f"route misbound: {r.text}")
+        self.assertEqual(r.status_code, 401, "unauthenticated POST should 401")
+
+    def test_support_bundle_route_binds_to_export(self):
+        app = self._app()
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/support/bundle")
+        self.assertEqual(route.endpoint.__name__, "export_bundle")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

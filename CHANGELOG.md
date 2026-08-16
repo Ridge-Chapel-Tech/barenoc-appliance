@@ -15,6 +15,28 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.e] — 2026-08-16
+
+### Fixed
+- **UniFi settings save 422'd ("Cannot save unifi settings")** — the /config
+  route decorator bound to a helper instead of set_config after a refactor;
+  every save failed with `env_path required`. Route-binding regression tests
+  added.
+- **Scheduler 401 storm on fresh installs** — credentials file bind-mount
+  went stale when the path was a directory at container start ("Is a
+  directory"); now mounts the parent directory so the file resolves at
+  runtime.
+- **First-boot nginx cert race** — the TLS cert is now generated BEFORE the
+  first `compose up` (nginx crash-looped without it: "API not healthy after
+  60s" + [emerg] cert errors on fresh installs).
+- **Scan Network scanned the wrong subnet** — discovery defaulted to
+  192.168.0.0/24; now derived from APPLIANCE_IP, pinned by the installer, and
+  configurable in Settings → General → Discovery subnets.
+- **System page firmware-status 400 spam** — only queried when UniFi is
+  configured.
+- **Update UX** — progress bar clears after completion; version refreshes in
+  the card + nav; "Update now" auto-arms on load.
+
 ## [2026.08.16.d] — 2026-08-16
 
 ### Fixed

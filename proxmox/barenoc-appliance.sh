@@ -363,6 +363,9 @@ ENCRYPTION_KEY="$(openssl rand -hex 32)"   # pocket-id requires >=16 bytes
 # remote \${GW} inside the sed replacement would be written literally).
 GW="$(ip route | awk '/default/{print $3; exit}')"
 GW="${GW:-$(echo "$IP" | awk -F. '{print $1"."$2"."$3".1"}')}"
+# Discovery LAN: the appliance's own /24 (so "Scan Network" hits the right
+# subnet out of the box; overridable in Settings → General → Discovery).
+DISCOVERY_SUBNETS="$(echo "$IP" | awk -F. '{print $1"."$2"."$3".0/24"}')"
 if [[ $SKIP_APP -eq 0 ]]; then
   echo "==> Bootstrapping /opt/barenoc/.env (template + seeded admin + identity)"
   scp -q "$REPO/src/.env.example" "barenoc@$IP:/tmp/barenoc-env.example"
@@ -372,7 +375,8 @@ if [[ $SKIP_APP -eq 0 ]]; then
      s|^# ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENCRYPTION_KEY}|;
      s|^# APPLIANCE_IP=.*|APPLIANCE_IP=${IP}|;
      s|^# APPLIANCE_HOST=.*|APPLIANCE_HOST=${APPLIANCE_HOST}|;
-     s|^# INTERNET_PROBE_GATEWAY=.*|INTERNET_PROBE_GATEWAY=${GW}|;' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
+     s|^# INTERNET_PROBE_GATEWAY=.*|INTERNET_PROBE_GATEWAY=${GW}|;
+     s|^# DISCOVERY_SUBNETS=.*|DISCOVERY_SUBNETS=${DISCOVERY_SUBNETS}|;' /opt/barenoc/.env && rm -f /tmp/barenoc-env.example"
 fi
 
 # ── 5. application install (same path as updates) ──────────────────────────

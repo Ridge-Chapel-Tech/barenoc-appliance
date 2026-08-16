@@ -374,8 +374,14 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
             s.close()
         # Multi-VLAN discovery: DISCOVERY_SUBNETS is a comma list of CIDRs
         # (e.g. 192.168.4.0/24,192.168.8.0/24). Legacy DISCOVERY_SUBNET
-        # (a bare 3-octet prefix) still works. Defaults to the management LAN.
-        raw = env.get("DISCOVERY_SUBNETS") or env.get("DISCOVERY_SUBNET") or "192.168.0.0/24"
+        # (a bare 3-octet prefix) still works. Default: derive the LAN from
+        # APPLIANCE_IP (installer + Settings always know it) — the old
+        # 192.168.0.0/24 hard default made "Scan Network" scan the wrong
+        # network on fresh installs (nothing was ever found).
+        raw = env.get("DISCOVERY_SUBNETS") or env.get("DISCOVERY_SUBNET")
+        if not raw:
+            aip = (env.get("APPLIANCE_IP") or "").strip()
+            raw = ".".join(aip.split(".")[:3]) + ".0/24" if aip.count(".") == 3 else "192.168.0.0/24"
         subnets = [s.strip() for s in raw.split(",") if s.strip()]
         max_per_subnet = 50
         try:

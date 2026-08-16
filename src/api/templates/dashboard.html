@@ -163,6 +163,19 @@ function renderUpdateProgress(prog) {
   } else if (isTerminal && _updPollTimer) {
     clearInterval(_updPollTimer); _updPollTimer = null;
   }
+  // Terminal: show the result briefly, then clear the bar and refresh the
+  // version shown in the card + nav (the running build just changed).
+  if (isTerminal && !window._updClearTimer) {
+    window._updClearTimer = true;
+    setTimeout(function () {
+      box.classList.add('hidden');
+      updLoad();
+      fetch('/api/v1/health').then(r => r.json()).then(d => {
+        var el = document.getElementById('barenooc-version');
+        if (el) el.textContent = 'v' + (d.version || '');
+      }).catch(function () {});
+    }, 12000);
+  }
 }
 var _updAutoCheck = false;
 async function updLoad() {

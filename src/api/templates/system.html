@@ -60,22 +60,27 @@ async function loadSystem() {
     var resp = await fetch('/api/v1/system/status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
     var d = await resp.json();
 
-    // UniFi controller firmware (from the controller, read-only)
+    // UniFi controller firmware (from the controller, read-only) — only
+    // when UniFi auth is actually configured (the endpoint 400s otherwise
+    // and every System-page load spammed the api log).
     try {
-      var fr = await fetch('/api/v1/unifi/firmware-status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
-      if (fr.ok) {
-        var f = await fr.json();
-        var el = document.getElementById('unifi-firmware');
-        if (el && f.gateway) {
-          var list = (f.devices || []).map(function(x) {
-            return '<div class="flex justify-between text-sm"><span>' + esc(x.name) + ' <span class="text-gray-400">(' + esc(x.model) + ')</span></span><span class="font-mono">' + esc(x.version) + '</span></div>';
-          }).join('');
-          el.classList.remove('hidden');
-          el.innerHTML =
-            '<div class="flex justify-between items-center"><div class="text-sm font-medium text-gray-700">UniFi Controller</div>' +
-            '<div class="text-sm font-mono">' + esc(f.gateway.version) + '</div></div>' +
-            '<p class="text-xs text-gray-400 mt-1">' + esc(f.gateway.name) + ' (gateway) · firmware updates are applied in the UniFi UI. Newer UniFi OS may fix API VLAN tagging.</p>' +
-            '<div class="mt-2 space-y-1">' + list + '</div>';
+      var ucfg = await (await fetch('/api/v1/unifi/config', { headers: { 'Authorization': 'Bearer ' + getToken() } })).json();
+      if (ucfg.password_configured || ucfg.api_key_configured) {
+        var fr = await fetch('/api/v1/unifi/firmware-status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+        if (fr.ok) {
+          var f = await fr.json();
+          var el = document.getElementById('unifi-firmware');
+          if (el && f.gateway) {
+            var list = (f.devices || []).map(function(x) {
+              return '<div class="flex justify-between text-sm"><span>' + esc(x.name) + ' <span class="text-gray-400">(' + esc(x.model) + ')</span></span><span class="font-mono">' + esc(x.version) + '</span></div>';
+            }).join('');
+            el.classList.remove('hidden');
+            el.innerHTML =
+              '<div class="flex justify-between items-center"><div class="text-sm font-medium text-gray-700">UniFi Controller</div>' +
+              '<div class="text-sm font-mono">' + esc(f.gateway.version) + '</div></div>' +
+              '<p class="text-xs text-gray-400 mt-1">' + esc(f.gateway.name) + ' (gateway) · firmware updates are applied in the UniFi UI. Newer UniFi OS may fix API VLAN tagging.</p>' +
+              '<div class="mt-2 space-y-1">' + list + '</div>';
+          }
         }
       }
     } catch (e) { /* unifi not configured — ignore */ }

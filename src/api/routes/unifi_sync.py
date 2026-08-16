@@ -86,7 +86,6 @@ def _env_int(value: str, default: int) -> int:
         return default
 
 
-@router.post("/config")
 def _write_env(env_path: str, updates: dict) -> None:
     """Apply key=value updates to a .env file, creating missing keys."""
     with open(env_path, "r") as f:
@@ -107,6 +106,7 @@ def _write_env(env_path: str, updates: dict) -> None:
         f.writelines(lines)
 
 
+@router.post("/config")
 def set_config(config: dict, db: Session = Depends(get_db),
                user: User = Depends(require_role("admin"))):
     """Update UniFi config in .env (audit-logged)."""

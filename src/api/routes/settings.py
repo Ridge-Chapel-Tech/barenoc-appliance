@@ -39,6 +39,7 @@ SECTIONS = {
             "logo": "BRANDING_LOGO",
             "queue_manager_name": "BOT_QUEUE_MANAGER_NAME",
             "assistant_name": "BOT_ASSISTANT_NAME",
+            "discovery_subnets": "DISCOVERY_SUBNETS",
         },
         "redact": set(),
     },
