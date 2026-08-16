@@ -15,7 +15,7 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
-## [2026.08.16.a] — 2026-08-16
+## [2026.08.16.b] — 2026-08-16
 
 ### Added
 - **Update progress + notifications** — the self-update flow now reports live
@@ -26,6 +26,9 @@ Categories per release:
   transition, persisted across scheduler restarts. Update results now carry
   `services_restarted` + `reboot_required` for the UI (reboot-aware hook).
 
+## [2026.08.16.a] — 2026-08-16
+
+### Added
 - **Customer support bundle** — System page → "Support / Bug Report": export a
   redacted diagnostic markdown bundle to attach to a bug report. Contents:
   version, system snapshot, redacted app-config presence, safe-field device
