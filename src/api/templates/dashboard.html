@@ -164,9 +164,19 @@ function renderUpdateProgress(prog) {
     clearInterval(_updPollTimer); _updPollTimer = null;
   }
 }
+var _updAutoCheck = false;
 async function updLoad() {
   try {
     const s = await updFetch('/status');
+    // Never-checked trap: "Update now" stays disabled until a manifest check
+    // has run. Auto-check ONCE on load so the button arms itself (idempotent;
+    // checked_at is set after the first successful check).
+    if (!s.checked_at && !_updAutoCheck) {
+      _updAutoCheck = true;
+      try { await updFetch('/check', { method: 'POST' }); } catch (e) { /* retry next load */ }
+      updLoad();
+      return;
+    }
     const acc = s.update_access || {};
     const card = document.getElementById('updates-card');
     const el = document.getElementById('upd-body');

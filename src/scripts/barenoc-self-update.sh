@@ -75,7 +75,7 @@ fi
 VERSION="$(python3 -c "import json;print(json.load(open('$REQ'))['version'])" 2>/dev/null || echo '?')"
 TARBALL="$(python3 -c "import json;print(json.load(open('$REQ')).get('tarball',''))" 2>/dev/null || true)"
 CHECKSUMS="$(python3 -c "import json;print(json.load(open('$REQ')).get('checksums',''))" 2>/dev/null || true)"
-[ -n "$TARBALL" ] || { report '{"ok": false, "action": "update", "error": "no tarball URL in update request"}'; exit 1; }
+[ -n "$TARBALL" ] || { report '{"ok": false, "action": "update", "error": "no tarball URL in update request"}'; rm -f "$REQ"; exit 1; }
 
 # 1. snapshot before (restricted host key — qm snapshot only, optional)
 progress 8 "snapshot" "host snapshot (optional)"
@@ -90,13 +90,24 @@ fi
 # 2. download + verify
 progress 20 "download" "downloading release"
 echo "==> fetching $TARBALL"
-curl -fsSL "$TARBALL" -o "$TMP/app.tar.gz" || { progress 100 "failed" "download failed"; report '{"ok": false, "action": "update", "error": "download failed"}'; exit 1; }
+curl -fsSL "$TARBALL" -o "$TMP/app.tar.gz" || { rm -f "$REQ"; progress 100 "failed" "download failed"; report '{"ok": false, "action": "update", "error": "download failed"}'; exit 1; }
 if [ -n "$CHECKSUMS" ]; then
   curl -fsSL "$CHECKSUMS" -o "$TMP/sums" 2>/dev/null || true
   if [ -s "$TMP/sums" ]; then
     progress 40 "verify" "verifying checksum"
-    ( cd "$TMP" && sha256sum -c --ignore-missing sums ) \
-      || { progress 100 "failed" "checksum mismatch"; report '{"ok": false, "action": "update", "error": "checksum mismatch"}'; exit 1; }
+    # Name-independent compare: the sums file lists the release asset name
+    # (bareNOC-<ver>.tar.gz) but we download to app.tar.gz — sha256sum -c
+    # --ignore-missing would verify NOTHING and exit 1 ("no file was
+    # verified"), failing every update. Compare hashes directly instead.
+    EXPECTED="$(awk 'NR==1{print $1}' "$TMP/sums")"
+    ACTUAL="$(sha256sum "$TMP/app.tar.gz" | awk '{print $1}')"
+    if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+      rm -f "$REQ"
+      progress 100 "failed" "checksum mismatch"
+      report '{"ok": false, "action": "update", "error": "checksum mismatch"}'
+      exit 1
+    fi
+    echo "checksum ok ($ACTUAL)"
   fi
 fi
 

@@ -15,6 +15,22 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.d] — 2026-08-16
+
+### Fixed
+- **Self-update checksum step broke EVERY update** — `sha256sum -c
+  --ignore-missing` compared the release asset name against the
+  locally-renamed `app.tar.gz` → "no file was verified" → exit 1 →
+  "checksum mismatch" on every in-app update, silently on pre-.b builds
+  (this is why the first in-app update attempts appeared to "do nothing").
+  Now compares the downloaded file's hash directly against the sums value;
+  stale update_request files are cleared on failure.
+- **"Update now" button stayed disabled until a manual "Check now"** — the
+  Updates card now auto-checks the manifest on load so the button arms
+  itself.
+- **Support-bundle download named `=.md`** — Content-Disposition filename
+  parse fixed (filename*/filename= aware).
+
 ## [2026.08.16.c] — 2026-08-16
 
 ### Ops

@@ -206,7 +206,7 @@ async function exportSupportBundle() {
       return;
     }
     var blob = await r.blob();
-    var m = (r.headers.get('Content-Disposition') || '').match(/filename\"?([^";]+)\"?/);
+        var m = (r.headers.get('Content-Disposition') || '').match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
     var fname = m ? m[1] : 'barenoc-support.md';
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
