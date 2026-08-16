@@ -205,7 +205,8 @@ async function updLoad() {
       + '<div class="mt-1">' + accTxt + '</div>'
       + (s.last_update && s.last_update.at ? '<div class="mt-1 text-xs text-gray-400">Last update: ' + (s.last_update.ok ? '✅ ' : '❌ ') + esc((s.last_update.version || '') + (s.last_update.error ? ' — ' + s.last_update.error : '')) + '</div>' : '')
       + (s.checked_at ? '<div class="mt-1 text-xs text-gray-400">Checked ' + esc(fmtTz(s.checked_at)) + '</div>' : '');
-    document.getElementById('upd-now-btn').disabled = !s.available;
+    var ub = document.getElementById('upd-now-btn');
+    if (ub) { ub.style.display = s.available ? '' : 'none'; ub.disabled = false; }  // only visible when a check found an update
     renderUpdateProgress(s.progress);
     const sc = s.schedule || {};
     document.getElementById('upd-sched-enable').checked = !!sc.enabled;

@@ -24,6 +24,7 @@ type Config struct {
 	CertFile     string `json:"cert_file"`
 	KeyFile      string `json:"key_file"`
 	CAFile       string `json:"ca_file"`
+	StateDB      string `json:"state_db"`
 	PollInterval string `json:"poll_interval"`
 	LogLevel     string `json:"log_level"`
 }
@@ -34,6 +35,7 @@ func Default() *Config {
 		CertFile:     "/opt/noc-agent/certs/noc-agent.crt",
 		KeyFile:      "/opt/noc-agent/certs/noc-agent.key",
 		CAFile:       "/opt/noc-agent/certs/ca.crt",
+		StateDB:      "/opt/noc-agent/state/noc-agent.db",
 		PollInterval: "30s",
 		LogLevel:     "info",
 	}
@@ -54,6 +56,7 @@ func Load(path string) (*Config, error) {
 	cfg.CertFile = strings.TrimSpace(cfg.CertFile)
 	cfg.KeyFile = strings.TrimSpace(cfg.KeyFile)
 	cfg.CAFile = strings.TrimSpace(cfg.CAFile)
+	cfg.StateDB = strings.TrimSpace(cfg.StateDB)
 	cfg.PollInterval = strings.TrimSpace(cfg.PollInterval)
 	cfg.LogLevel = strings.TrimSpace(cfg.LogLevel)
 	if err := cfg.Validate(); err != nil {
@@ -79,6 +82,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CAFile == "" {
 		return fmt.Errorf("ca_file is required (the BareNOC CA root)")
+	}
+	if c.StateDB == "" {
+		return fmt.Errorf("state_db is required (the local SQLite state path)")
 	}
 	d, err := time.ParseDuration(c.PollInterval)
 	if err != nil || d <= 0 {

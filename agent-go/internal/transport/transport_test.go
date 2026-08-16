@@ -34,6 +34,26 @@ func TestReportURLErrors(t *testing.T) {
 	}
 }
 
+func TestJobsURLs(t *testing.T) {
+	pull, err := JobsPullURL("https://appliance.example/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pull != "https://appliance.example/api/v1/device/jobs/pull" {
+		t.Fatalf("pull url = %q", pull)
+	}
+	result, err := JobsResultURL("https://appliance.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "https://appliance.example/api/v1/device/jobs/result" {
+		t.Fatalf("result url = %q", result)
+	}
+	if _, err := JobsPullURL("http://appliance.example"); err == nil {
+		t.Fatal("expected error for http appliance_url")
+	}
+}
+
 func TestReportBodyShape(t *testing.T) {
 	f := facts.Facts{
 		Hostname: "box1", OS: "ubuntu-24.04", Kernel: "6.8.0-136",

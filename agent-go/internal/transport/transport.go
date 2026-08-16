@@ -22,6 +22,10 @@ import (
 // ReportPath is the appliance endpoint the agent posts to (mTLS location).
 const ReportPath = "/api/v1/device/report"
 
+// JobsPullPath / JobsResultPath are the P1b job-transport endpoints (design §5).
+const JobsPullPath = "/api/v1/device/jobs/pull"
+const JobsResultPath = "/api/v1/device/jobs/result"
+
 // ReportBody is the JSON payload POSTed to the appliance.
 type ReportBody struct {
 	Hostname          string   `json:"hostname"`
@@ -54,6 +58,21 @@ func NewReportBody(f facts.Facts) ReportBody {
 
 // ReportURL builds the absolute report endpoint from the appliance base URL.
 func ReportURL(applianceURL string) (string, error) {
+	return endpointURL(applianceURL, ReportPath)
+}
+
+// JobsPullURL builds the absolute jobs/pull endpoint from the appliance base URL.
+func JobsPullURL(applianceURL string) (string, error) {
+	return endpointURL(applianceURL, JobsPullPath)
+}
+
+// JobsResultURL builds the absolute jobs/result endpoint from the appliance base URL.
+func JobsResultURL(applianceURL string) (string, error) {
+	return endpointURL(applianceURL, JobsResultPath)
+}
+
+// endpointURL joins a path onto the appliance base URL, enforcing https.
+func endpointURL(applianceURL, path string) (string, error) {
 	base := strings.TrimRight(strings.TrimSpace(applianceURL), "/")
 	if base == "" {
 		return "", fmt.Errorf("appliance_url is empty")
@@ -61,7 +80,7 @@ func ReportURL(applianceURL string) (string, error) {
 	if !strings.HasPrefix(base, "https://") {
 		return "", fmt.Errorf("appliance_url must be https")
 	}
-	return base + ReportPath, nil
+	return base + path, nil
 }
 
 // Client wraps an mTLS-configured http.Client.
@@ -100,11 +119,17 @@ func NewClient(certFile, keyFile, caFile string) (*Client, error) {
 
 // Report POSTs the body to url and returns the HTTP status and response body.
 func (c *Client) Report(url string, body ReportBody) (int, []byte, error) {
-	payload, err := json.Marshal(body)
+	return c.PostJSON(url, body)
+}
+
+// PostJSON POSTs an arbitrary JSON payload to url (mTLS), returning status
+// and body. Used by the report and by the jobs pull/result transport.
+func (c *Client) PostJSON(url string, payload any) (int, []byte, error) {
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("marshal report: %w", err)
+		return 0, nil, fmt.Errorf("marshal payload: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
@@ -115,6 +140,6 @@ func (c *Client) Report(url string, body ReportBody) (int, []byte, error) {
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, data, nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, body, nil
 }

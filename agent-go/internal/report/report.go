@@ -1,40 +1,33 @@
-// Package report runs the report loop: collect facts, POST them to the
-// appliance, sleep, repeat. Transient errors are logged and retried on the
-// next cycle (no backoff in P1a — the fixed poll cadence is the retry).
+// Package report sends the agent's heartbeat/facts report to the appliance.
+// It exposes a single-shot Once() so the caller can interleave it with the
+// job loop on a shared poll cadence.
 package report
 
 import (
+	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/config"
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/facts"
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/transport"
 )
 
-// Run blocks until stop is closed, reporting facts once per poll_interval.
-func Run(cfg *config.Config, client *transport.Client, stop <-chan struct{}) {
+// Once collects facts and POSTs a single report. It returns the HTTP status
+// (0 when the request never completed) and any error. A 403 means the device
+// was revoked — the caller should treat it as fatal (design §4).
+func Once(cfg *config.Config, client *transport.Client) (int, error) {
 	url, err := transport.ReportURL(cfg.ApplianceURL)
 	if err != nil {
-		slog.Error("invalid appliance_url", "err", err)
-		return
+		return 0, err
 	}
-	interval := cfg.PollDuration()
-	slog.Info("report loop starting", "url", url, "interval", interval)
-	for {
-		status, resp, err := client.Report(url, transport.NewReportBody(facts.Collect()))
-		switch {
-		case err != nil:
-			slog.Warn("report failed; retrying next cycle", "err", err)
-		case status < 200 || status >= 300:
-			slog.Warn("report rejected", "status", status, "body", string(resp))
-		default:
-			slog.Debug("report accepted", "status", status)
-		}
-		select {
-		case <-stop:
-			return
-		case <-time.After(interval):
-		}
+	status, resp, err := client.Report(url, transport.NewReportBody(facts.Collect()))
+	switch {
+	case err != nil:
+		return status, err
+	case status < 200 || status >= 300:
+		return status, fmt.Errorf("report rejected: %d %s", status, string(resp))
+	default:
+		slog.Debug("report accepted", "status", status)
+		return status, nil
 	}
 }

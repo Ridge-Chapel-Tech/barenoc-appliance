@@ -54,6 +54,7 @@ if [[ ! -f "${CONFIG}" ]]; then
   "cert_file": "/opt/noc-agent/certs/noc-agent.crt",
   "key_file": "/opt/noc-agent/certs/noc-agent.key",
   "ca_file": "/opt/noc-agent/certs/ca.crt",
+  "state_db": "/opt/noc-agent/state/noc-agent.db",
   "poll_interval": "30s",
   "log_level": "info"
 }

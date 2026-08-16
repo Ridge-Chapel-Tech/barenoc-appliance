@@ -108,6 +108,25 @@ class AuditLog(Base):
     sha256_hash = Column(String(64), nullable=False)
 
 
+class DeviceJob(Base):
+    """A job the appliance enqueues for an endpoint agent to pull + execute
+    (design §5). RLS-equivalent scoping by CN: a device can only see/complete
+    jobs whose device_id resolves from its own cert CN. The wire job_id is
+    str(id); nonce is the replay/idempotency key."""
+
+    __tablename__ = "device_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True, nullable=False)
+    action = Column(String(64), nullable=False)
+    params = Column(JSON, default=dict)
+    nonce = Column(String(64), nullable=False)
+    status = Column(String(16), default="pending", index=True)  # pending | running | done
+    result_json = Column(JSON, nullable=True)
+    deadline = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 class ChatMessage(Base):
     """Tech-to-tech internal chat (AIM-style buddy messaging)."""
 

@@ -15,6 +15,27 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.g] — 2026-08-16
+
+### Added
+- **Live ticket status in chat** — "🔄 Status" on an open ticket answers
+  "where are you at?" (derived stage from work notes + idle time) without
+  creating new work or interrupting the technician.
+- **Settings → General → Parallel agent jobs** — `MAX_CONCURRENT` is now a
+  UI field (1–8, default 2; applies on runner restart).
+- **Update now is hidden until available** — the Updates card only shows the
+  button after a Check now finds a release.
+
+- **NOC_Agent P1b — Linux adoption + job loop** — the endpoint agent
+  (`agent-go/`) now installs via a one-command `agent_install.sh` (step-ca
+  enroll by fingerprint → config → systemd `noc-agent.service` →
+  capability-gated sudoers) and runs a pull/execute/result job loop against a
+  new appliance-side transport (`POST /api/v1/device/jobs/pull` +
+  `/jobs/result`, backed by a `device_jobs` table scoped by cert CN). Action
+  set: `collect_logs`, `reboot` (confirm-gated), `check_updates`
+  (read-only), `report_facts`. Nonce dedupe + offline buffering via local
+  SQLite state. No SSH involved.
+
 ## [2026.08.16.f] — 2026-08-16
 
 ### Fixed
@@ -27,6 +48,7 @@ Categories per release:
   string when the model returns no content.
 
 ## [2026.08.16.e] — 2026-08-16
+
 
 ### Fixed
 - **UniFi settings save 422'd ("Cannot save unifi settings")** — the /config

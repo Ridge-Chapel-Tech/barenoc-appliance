@@ -40,6 +40,7 @@ SECTIONS = {
             "queue_manager_name": "BOT_QUEUE_MANAGER_NAME",
             "assistant_name": "BOT_ASSISTANT_NAME",
             "discovery_subnets": "DISCOVERY_SUBNETS",
+            "runner_concurrency": "MAX_CONCURRENT",
         },
         "redact": set(),
     },

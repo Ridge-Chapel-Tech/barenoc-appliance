@@ -268,6 +268,9 @@ async function loadThread() {
     if (stick) box.scrollTop = box.scrollHeight;
     else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
     const acts = $('th-actions'); acts.innerHTML = '';
+    if (!['closed','completed'].includes(t.status)) {
+      acts.innerHTML += '<button onclick="requestStatus()" class="flex-1 rounded-lg bg-barenoc-700 py-2 text-sm font-semibold text-white">🔄 Status</button>';
+    }
     if (t.status === 'failed' || t.status === 'escalated')
       acts.innerHTML = '<button onclick="retryTicket()" class="flex-1 rounded-lg bg-amber-500 py-2 text-sm font-semibold text-white">Retry</button>';
     if (!['closed','completed'].includes(t.status))
@@ -302,6 +305,22 @@ function el(tag, cls, ...children) {
   return d;
 }
 
+async function requestStatus() {
+  if (!curTicket) return;
+  try {
+    const s = await api('/api/v1/tickets/' + curTicket + '/status');
+    const box = $('thread-body');
+    let line = '🔄 ' + esc(s.label || s.status || '');
+    if (s.stage === 'working' && s.idle_seconds != null) {
+      const m = Math.round(s.idle_seconds / 60);
+      line += ' · last activity ' + (m < 1 ? '<1m' : m + 'm') + ' ago';
+    } else if (s.stage === 'done') {
+      line += (s.resolution ? ' — ' + esc(s.resolution) : '');
+    }
+    box.appendChild(systemLine('status', line, fmtTime(new Date().toISOString())));
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { /* silent — the 4s poll keeps the thread fresh */ }
+}
 async function sendReply() {
   const msg = $('reply-msg').value.trim(); if (!msg || !curTicket) return;
   $('reply-msg').value = '';

@@ -1,9 +1,8 @@
 // Command noc-agent is the BareNOC endpoint agent (NOC_Agent).
 //
-// P1a: it loads its config, then loops forever collecting host facts and
-// POSTing them to the appliance over mTLS (self-report + auto-claim with
-// adoption_method="agent"). Jobs pull/execute (§5) and the update channel
-// (§9) arrive in P2/P3.
+// P1b: it loads its config, then loops forever — reporting host facts over
+// mTLS (auto-claim method="agent"), then pulling/executing/results-returning
+// jobs from the appliance (design §5). The update channel (§9) arrives in P3.
 package main
 
 import (
@@ -14,9 +13,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/config"
+	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/jobs"
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/report"
+	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/state"
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/transport"
 	"github.com/Ridge-Chapel-Tech/BareNOC/agent-go/internal/version"
 )
@@ -47,6 +49,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	store, err := state.Open(cfg.StateDB)
+	if err != nil {
+		slog.Error("local state open failed", "err", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+	if err := store.Prune(state.LedgerRetention); err != nil {
+		slog.Warn("ledger prune failed", "err", err)
+	}
+
+	runner, err := jobs.NewRunner(cfg, client, store)
+	if err != nil {
+		slog.Error("job runner init failed", "err", err)
+		os.Exit(1)
+	}
+
 	stop := make(chan struct{})
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -56,8 +74,29 @@ func main() {
 		close(stop)
 	}()
 
-	report.Run(cfg, client, stop)
-	slog.Info("noc-agent stopped")
+	interval := cfg.PollDuration()
+	slog.Info("agent loop starting", "interval", interval)
+	for {
+		status, rerr := report.Once(cfg, client)
+		switch {
+		case rerr != nil:
+			slog.Warn("report failed; retrying next cycle", "err", rerr)
+		case status == 403:
+			// Revoked at the API layer — stop working (design §4: disable, keep
+			// the cert, run no jobs).
+			slog.Error("adoption revoked (403) — agent stopping")
+			return
+		}
+		if err := runner.Cycle(); err != nil {
+			slog.Warn("job cycle failed", "err", err)
+		}
+		select {
+		case <-stop:
+			slog.Info("noc-agent stopped")
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 func newLogger(level string) *slog.Logger {
