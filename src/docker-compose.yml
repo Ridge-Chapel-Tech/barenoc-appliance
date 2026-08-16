@@ -63,6 +63,7 @@ services:
     volumes:
       - /opt/barenoc/volumes/db:/opt/barenoc/volumes/db
       - /opt/barenoc/volumes/logs/scheduler:/opt/barenoc/volumes/logs/scheduler
+      - /opt/barenoc/volumes/logs/agent:/opt/barenoc/volumes/logs/agent:ro
       - /opt/barenoc/jobs:/opt/barenoc/jobs
       - /opt/barenoc/.env:/opt/barenoc/.env:ro
       - /opt/barenoc/agent:/opt/barenoc/agent:ro

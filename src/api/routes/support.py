@@ -195,6 +195,20 @@ def export_bundle(body: BundleRequest = None,
         error_lines += [l for l in lines
                         if re.search(r"(?i)\b(error|traceback|exception|failed|panic)\b", l)]
 
+    # Host-side agent runner log (jobs it executed / results it posted — the
+    # first place to look when an auto-executed job stalls silently).
+    runner_log = ""
+    try:
+        with open("/opt/barenoc/volumes/logs/agent/agent.log") as f:
+            runner_log = "\n".join(f.read().splitlines()[-150:])
+    except Exception:
+        pass
+    if runner_log.strip():
+        rl = [redact(l) for l in runner_log.splitlines()]
+        log_sections.append(("barenoc-agent-runner (host)", rl))
+        error_lines += [l for l in rl
+                        if re.search(r"(?i)\b(error|traceback|exception|failed|panic)\b", l)]
+
     L = []
     L.append("# BareNOC support bundle")
     L.append("")

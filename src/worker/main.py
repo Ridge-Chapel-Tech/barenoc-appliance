@@ -1078,6 +1078,35 @@ def poll_for_tickets():
                     logger.info(f"Ticket {ticket.ticket_id}: failed run {_count_failed_notes(ticket)}/{budget} — feeding error back to the AI")
                     tickets.append(ticket)
 
+            # Stuck-job watchdog: an auto-executed job that never produced a
+            # result (runner down, result POST lost) leaves the ticket
+            # silently in_progress with "Working…" forever. Escalate so it's
+            # visible in the thread and the failure-feedback loop re-engages
+            # the AI with the error (bounded by the attempt budget).
+            stuck_cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
+            stuck = (
+                db.query(Ticket)
+                .filter(Ticket.status == "in_progress",
+                        Ticket.updated_at <= stuck_cutoff)
+                .limit(10)
+                .all()
+            )
+            for t in stuck:
+                evs = [str(n.get("event") or "") for n in _notes_list(t)]
+                if ("auto_execute" in evs
+                        and "agent_completed" not in evs
+                        and "agent_failed" not in evs
+                        and "escalated" not in evs):
+                    logger.warning(
+                        f"Ticket {t.ticket_id}: auto-executed job never reported back "
+                        f"— escalating (runner may be down)")
+                    add_note(t, "escalated",
+                             "The dispatched job never reported back — the agent runner "
+                             "may be down. Routed to human review.")
+                    t.status = "escalated"
+                    t.assigned_to = "human-tech"
+            db.commit()
+
             # The same ticket can surface from several paths in one poll (e.g.
             # reopened to 'open' AND carrying a new user comment): process it
             # ONCE, or the agent gets dispatched twice for the same follow-up.

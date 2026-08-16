@@ -15,6 +15,18 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.h] — 2026-08-16
+
+### Fixed
+- **Stalled auto-executed jobs** — a dispatched job that never reported back
+  left the ticket silently in_progress; a watchdog now escalates it after
+  10 min ("the agent runner may be down"), visible in the thread and fed
+  back to the AI (budget-bounded).
+- **Support bundle includes the host-side agent runner log** (tail, redacted)
+  — the first place to look when a job stalls; the runner log was previously
+  invisible to bundles.
+- **agent_failed shows in the chat thread** (was hidden).
+
 ## [2026.08.16.g] — 2026-08-16
 
 ### Added

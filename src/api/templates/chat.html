@@ -257,7 +257,7 @@ async function loadThread() {
       if (ev === 'user_message') box.appendChild(bubble('user', n.detail, fmtTime(n.timestamp), null));
       else if (ev === 'agent_completed' || ev === 'ai_tech_feedback' || ev === 'agent_progress')
         box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
-      else if (ev === 'escalated' || ev === 'failed' || ev === 'completed' || ev === 'autoclosed')
+      else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'autoclosed')
         box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
       // other events are internal pipeline steps — skip for a clean customer view
     });
