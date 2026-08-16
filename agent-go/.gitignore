@@ -1,0 +1,3 @@
+# build output — never commit the compiled agent
+/noc-agent
+/bin/

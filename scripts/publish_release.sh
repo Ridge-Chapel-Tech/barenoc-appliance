@@ -53,7 +53,7 @@ cd "$TMP/pub"
 git rm -rq --ignore-unmatch . 2>/dev/null || true
 
 # ── the release contract ────────────────────────────────────────────────────
-for d in src client proxmox scripts .github; do
+for d in src client proxmox scripts .github agent-go; do
   rsync -rltz --delete "$SRC/$d/" "$TMP/pub/$d/"
 done
 # docs: everything except internal-only artifacts
