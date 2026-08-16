@@ -15,6 +15,15 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.c] — 2026-08-16
+
+### Ops
+- **Update-path verification build (v2026.08.16.c)** — first in-app
+  self-update test on the reference appliance (.207): exercises versions.json
+  → Update now → host self-update service → apply → version flip. No
+  functional changes; the version marker (System page / Updates card /
+  /api/v1/health) is the proof of apply.
+
 ## [2026.08.16.b] — 2026-08-16
 
 ### Added
