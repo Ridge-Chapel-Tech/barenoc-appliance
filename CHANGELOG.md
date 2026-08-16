@@ -15,6 +15,17 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.16.f] — 2026-08-16
+
+### Fixed
+- **"Error loading tickets" after approving an escalated ticket** — the
+  ticket row's cost render (`(llm_cost_usd || '0').toFixed(6)`) threw a
+  TypeError whenever cost was 0.0 or null, killing the whole list render.
+- **Device cards show "Last seen"** (local time).
+- **Chat gains a Dashboard button** in the header (mobile-friendly return).
+- **LLM escalation reason** shows "(empty response)" instead of an empty
+  string when the model returns no content.
+
 ## [2026.08.16.e] — 2026-08-16
 
 ### Fixed

@@ -39,6 +39,7 @@
       <div class="font-semibold leading-tight truncate">{{ site_name }}</div>
       <div class="text-xs text-white/70 leading-tight">Chat with your network</div>
     </div>
+    <button id="btn-dash" onclick="window.location.href='/dashboard'" class="hidden text-sm px-2 py-1 rounded-full hover:bg-white/10" title="Back to the dashboard">Dashboard</button>
     <button id="btn-logout" onclick="logout()" class="hidden text-sm px-2 py-1 rounded-full hover:bg-white/10">Sign out</button>
   </header>
 
@@ -134,7 +135,7 @@ async function api(path, opts) {
 function showAuth() { stopPolling(); curTicket = null;
   $('screen-auth').style.display = 'block';
   $('screen-list').style.display = 'none'; $('screen-thread').style.display = 'none';
-  $('btn-logout').style.display = 'none'; $('btn-back').style.display = 'none';
+  $('btn-logout').style.display = 'none'; $('btn-back').style.display = 'none'; $('btn-dash').style.display = 'none';
 }
 function showList() { curTicket = null; if (!token()) return showAuth();
   $('screen-list').style.display = 'flex'; $('screen-thread').style.display = 'none';
@@ -143,7 +144,7 @@ function showList() { curTicket = null; if (!token()) return showAuth();
 }
 function showThread(id) { curTicket = id;
   $('screen-thread').style.display = 'flex'; $('screen-list').style.display = 'none';
-  $('screen-auth').style.display = 'none'; $('btn-back').style.display = 'block';
+  $('screen-auth').style.display = 'none'; $('btn-back').style.display = 'block'; $('btn-dash').style.display = 'block';
   loadThread(); threadTimer = setInterval(loadThread, 4000);
 }
 function stopPolling() { clearInterval(listTimer); clearInterval(threadTimer); listTimer = threadTimer = null; }

@@ -522,6 +522,7 @@ async function fetchDevices(offset) {
           + ((d.hostname && (fp.os || fp.os_guess)) ? ' · ' : '')
           + ((fp.os || fp.os_guess) ? esc(fp.os || fp.os_guess) : '')
           + '</div>' : '')
+        + (d.last_seen ? '<div class="mt-1 text-xs text-gray-400">Last seen: ' + fmtTz(d.last_seen) + '</div>' : '')
         + '<div class="mt-3 grid grid-cols-3 gap-2">'
         + metricBadge('Latency', latency)
         + metricBadge('CPU', cpu)

@@ -323,11 +323,14 @@ def call_llm(
                 # the ticket — escalate to the human approval queue, preserving
                 # the response. (The provider DID respond — not a failover case.)
                 print("[LLM] No JSON envelope after repair; escalating with raw text")
+                snippet = (raw_text or "").strip()[:300]
+                if not snippet:
+                    snippet = "(empty response — the model returned no content)"
                 parsed = {
                     "action": "escalate_human",
                     "target": "",
                     "params": {},
-                    "reason": f"The model returned a non-JSON response: {raw_text[:300]}",
+                    "reason": f"The model returned a non-JSON response: {snippet}",
                     "confidence": 0.80,
                 }
 

@@ -163,7 +163,7 @@ async function fetchTickets(offset) {
         + '<td class="px-6 py-4 text-sm font-mono text-barenoc-600">' + esc(t.ticket_id) + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-900">' + esc(t.title) + '</td>'
         + '<td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ' + pc + '">' + t.priority + '</span></td>'
-        + '<td class="px-6 py-4 text-sm ' + sc + '">' + esc(t.status.replace(/_/g, ' ')) + '</td>'
+        + '<td class="px-6 py-4 text-sm ' + sc + '">' + esc(String(t.status || '').replace(/_/g, ' ')) + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.assigned_to || '\u2014') + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(fmtTz(t.created_at)) + '</td>'
         + '<td class="px-6 py-4 text-right"><button onclick="toggleDetail(\'' + t.ticket_id + '\')" class="text-barenoc-600 hover:text-barenoc-800 text-sm">View</button></td></tr>'
@@ -173,7 +173,7 @@ async function fetchTickets(offset) {
         + (t.resolution ? '<p class="mt-1"><strong>Resolution:</strong> ' + esc(t.resolution) + '</p>' : '')
         + '<p class="mt-1"><strong>Source:</strong> ' + esc(t.source) + '</p>'
         + (t.work_notes ? '<div class="mt-2"><details><summary class="cursor-pointer text-barenoc-600 text-xs font-medium">Work Notes</summary><div class="mt-1 space-y-1 max-h-40 overflow-y-auto">' + renderNotes(t.work_notes) + '</div></details></div>' : '')
-        + (t.llm_model ? '<p class="mt-1"><strong>LLM:</strong> ' + esc(t.llm_model) + ' (conf: ' + (t.llm_confidence || '-') + ', cost: $' + (t.llm_cost_usd || '0').toFixed(6) + ')</p>' : '')
+        + (t.llm_model ? '<p class="mt-1"><strong>LLM:</strong> ' + esc(t.llm_model) + ' (conf: ' + (t.llm_confidence || '-') + ', cost: $' + Number(t.llm_cost_usd || 0).toFixed(6) + ')</p>' : '')
         + (t.status === 'closed' ? '<p class="mt-1"><strong>Closed by:</strong> ' + esc(t.assigned_to || 'system') + '</p>' : '')
         + (t.resolved_at ? '<p class="mt-1"><strong>Closed at:</strong> ' + esc(t.resolved_at) + '</p>' : '')
         + (function(){ var b = ''; if (t.status === 'escalated') { b += '<button onclick="approveTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Approve</button><button onclick="retryTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Retry</button><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700">Reject/Close</button>'; } else if (t.status === 'customer_action') { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Confirm & Close</button>'; } else if (showClose) { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Close</button>'; } if (t.status !== 'closed' && t.status !== 'resolved') { b += '<button onclick="addComment(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Add Comment</button>'; } return b ? '<div class="mt-2 flex gap-2">' + b + '</div>' : ''; })()
