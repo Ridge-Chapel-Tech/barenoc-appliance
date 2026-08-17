@@ -96,6 +96,85 @@ class PolicyGetEffectiveTest(unittest.TestCase):
         self.assertEqual(r["risk_filters"], "all")
 
 
+class AutonomyPiFlagTest(unittest.TestCase):
+    """Saving autonomy=autonomous must write an ACTIVE PI_AGENT_ENABLED=true
+    (bare value) so the worker's _pi_enabled() hot-read path routes open-ended
+    tickets to Lily instead of silently falling back to the judge (08-17 bug)."""
+
+    def _save_policy(self, config: dict, read_env: dict) -> dict:
+        from database import SessionLocal, init_db
+        init_db()
+        db = SessionLocal()
+        captured = {}
+        try:
+            with patch.object(s, "_read_env_file", return_value=dict(read_env)), \
+                 patch.object(s, "_write_env_file", side_effect=lambda e: captured.update(e)):
+                s.update_section("policy", config, db=db,
+                                 user=SimpleNamespace(role="admin", username="tester"))
+        finally:
+            db.close()
+        return captured
+
+    def test_autonomous_save_writes_pi_flag(self):
+        captured = self._save_policy({"profile": "autonomous"}, {})
+        self.assertEqual(captured["LLM_POLICY_PROFILE"], "autonomous")
+        self.assertEqual(captured["PI_AGENT_ENABLED"], "true")
+
+    def test_fresh_install_autonomous_default_enables_pi(self):
+        # Fresh install: .env.example ships PI_AGENT_ENABLED commented out, so
+        # the read env has no key. Saving the wizard's autonomous default must
+        # still append the active flag (order-independent).
+        captured = self._save_policy({"profile": "autonomous"}, {})
+        self.assertEqual(captured["PI_AGENT_ENABLED"], "true")
+
+    def test_existing_false_flag_overwritten(self):
+        # Order-independent the other way: an already-active false line is rewritten.
+        captured = self._save_policy({"profile": "autonomous"},
+                                     {"PI_AGENT_ENABLED": "false"})
+        self.assertEqual(captured["PI_AGENT_ENABLED"], "true")
+
+    def test_flag_value_is_bare(self):
+        # No inline "#" comment or trailing whitespace — either becomes part of
+        # the value and breaks read_env_file's parse (found 08-17).
+        captured = self._save_policy({"profile": "autonomous"}, {})
+        self.assertEqual(captured["PI_AGENT_ENABLED"], "true")
+        self.assertNotIn("#", captured["PI_AGENT_ENABLED"])
+        self.assertNotIn(" ", captured["PI_AGENT_ENABLED"])
+
+    def test_non_autonomous_leaves_flag_untouched(self):
+        # Balanced/strict don't touch the flag (semantics unchanged): a
+        # manually-enabled pi stays enabled, an unset one stays unset.
+        captured = self._save_policy({"profile": "balanced"},
+                                     {"PI_AGENT_ENABLED": "true"})
+        self.assertEqual(captured["PI_AGENT_ENABLED"], "true")
+        captured2 = self._save_policy({"profile": "strict"}, {})
+        self.assertNotIn("PI_AGENT_ENABLED", captured2)
+
+
+class EnvFileWriteTest(unittest.TestCase):
+    """_write_env_file: in-place (same inode) + bare values, no inline comments."""
+
+    def test_write_preserves_inode_and_writes_bare_flag(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            path = f.name
+            f.write("# PI_AGENT_ENABLED=false\nLLM_POLICY_PROFILE=balanced\n")
+        try:
+            ino_before = os.stat(path).st_ino
+            s._write_env_file({"LLM_POLICY_PROFILE": "autonomous",
+                               "PI_AGENT_ENABLED": "true"}, path=path)
+            ino_after = os.stat(path).st_ino
+            self.assertEqual(ino_before, ino_after)  # in-place, not tmpfile+rename
+            content = open(path).read()
+            # active flag is bare (no inline comment), commented line preserved
+            self.assertIn("PI_AGENT_ENABLED=true\n", content)
+            self.assertNotIn("PI_AGENT_ENABLED=true #", content)
+            self.assertIn("# PI_AGENT_ENABLED=false", content)
+            self.assertIn("LLM_POLICY_PROFILE=autonomous\n", content)
+        finally:
+            os.unlink(path)
+
+
 class LlmProviderUpdateTest(unittest.TestCase):
     """PUT /settings/llm: provider_order validation + pruning removed providers."""
 

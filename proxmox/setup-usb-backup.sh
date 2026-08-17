@@ -30,15 +30,19 @@ Usage: bash proxmox/setup-usb-backup.sh --dev /dev/sdX [--vm-host <ip>]
   --dev <dev>       Whole device to wipe + encrypt (e.g. /dev/sdb)
                     Omit to see a list of USB candidates.
   --vm-host <ip>    BareNOC VM address (for app-backup sync; default 192.0.2.207)
+  --yes             Skip the primary-disk confirmation (only for guided UI flows
+                    where the user already confirmed the wipe).
   --dry-run         Show what would run, don't touch the device
 EOF
 }
 
 DRY=0
+YES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) DEV="$2"; shift 2 ;;
     --vm-host) VM_HOST="$2"; shift 2 ;;
+    --yes) YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -58,9 +62,13 @@ fi
 
 # safety: refuse obvious non-sticks
 if echo "$DEV" | grep -qE '/dev/(sd[ab]$|nvme[0-9]+$)'; then
-  # require a second confirmation for the first two disk names
-  read -r -p "WARNING: $DEV looks like a primary disk. Type YES to wipe it: " CONFIRM
-  [[ "$CONFIRM" == "YES" ]] || { echo "aborted"; exit 1; }
+  if [[ "$YES" -eq 1 ]]; then
+    echo "WARNING: $DEV looks like a primary disk — proceeding (--yes given, user confirmed the wipe)"
+  else
+    # require a second confirmation for the first two disk names
+    read -r -p "WARNING: $DEV looks like a primary disk. Type YES to wipe it: " CONFIRM
+    [[ "$CONFIRM" == "YES" ]] || { echo "aborted"; exit 1; }
+  fi
 fi
 
 if [[ $DRY -eq 1 ]]; then
@@ -126,6 +134,7 @@ umount "$MOUNT"
 cryptsetup close "$CRYPT_NAME"
 
 echo
+
 echo "════════════════════════════════════════════════════════════════"
 echo "  USB backup stick READY. Seal this passphrase on the rack card:"
 echo
@@ -135,3 +144,6 @@ echo "  (also stored at $KEYFILE — 0600 root — for cron automation)"
 echo "  Stick is locked now. Plug/unplug freely; weekly cron opens it."
 echo "  To test now: bash proxmox/backup-to-usb.sh"
 echo "════════════════════════════════════════════════════════════════"
+# Machine-readable marker so the appliance UI can surface the passphrase ONCE
+# for the rack card (never written to disk by the script).
+echo "RECOVERY_PASSPHRASE=\"$PASSPHRASE\""

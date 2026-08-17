@@ -75,7 +75,9 @@ install -m 0755 /tmp/step /usr/local/bin/step
 
 echo "==> Bootstrapping the CA by fingerprint + enrolling $CN"
 export STEPPATH=/root/.step
-step ca bootstrap --ca-url "$CA_URL" --fingerprint "$CA_FP" </dev/null >/dev/null 2>&1 \
+# --force: a stale /root/.step (e.g. from a previous CA) made bootstrap open an
+# interactive overwrite prompt and hang forever (08-17, twice). Idempotent re-enroll.
+step ca bootstrap --ca-url "$CA_URL" --fingerprint "$CA_FP" --force </dev/null >/dev/null 2>&1 \
   || fail "CA bootstrap failed (ca-url $CA_URL)"
 step ca certificate "$CN" "$CERTS/noc-agent.crt" "$CERTS/noc-agent.key" \
   --token "$TOKEN" --root "$CA_CERT_PATH" \
@@ -119,7 +121,12 @@ Group=nocagent
 ExecStart=/opt/noc-agent/noc-agent -config /opt/noc-agent/config.json
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# NoNewPrivileges would block the capability-gated sudo actions
+# (check_updates/collect_logs/reboot via the scoped sudoers allowlist) —
+# found 08-17 on the first real agent job: 'the "no new privileges" flag is
+# set, which prevents sudo from running as root'. The sudoers allowlist IS
+# the control; keep the service unprivileged (User=nocagent) instead.
+# NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/noc-agent

@@ -1,6 +1,7 @@
 """Settings — system config, API keys, email, integrations."""
 
 import os
+import re
 import json
 import time
 import shlex
@@ -173,18 +174,48 @@ BACKUP_STATUS_JSON = "/opt/barenoc/volumes/backup_status/status.json"
 NET_MOUNT_POINT = "/opt/barenoc/backups/network"
 NET_CREDS_FILE = "/opt/barenoc/volumes/backup_status/net-credentials"
 
+# Host-side USB stick setup (Layer 3, LUKS). The appliance drives it through
+# the same privileged-helper mechanism as the NAS mount; when chroot_host=True
+# the command runs in the HOST's mount namespace with the host rootfs as /
+# (so /etc, /dev, /sys and /mnt are the HOST's, not the container's).
+USB_SETUP_SCRIPT = "/usr/local/bin/setup-usb-backup.sh"
 
-def _host_run(script: str, timeout: int = 120) -> tuple:
+
+def _host_run_cmd(script: str, chroot_host: bool = False) -> str:
+    """Build the shell command the privileged helper container runs.
+
+    The helper runs with PidMode=host, so `nsenter -t 1 -m` enters the host's
+    (PID 1) mount namespace. Once switched, `/` IS the host rootfs — /etc,
+    /dev, /proc, /sys, /run and /opt are all the host's — so NO chroot or /host
+    bind is needed. (The earlier `chroot /host` form was broken on fresh
+    installs: /host is a container-only bind mount that disappears once
+    nsenter switches to the host mount namespace, so chroot failed with
+    "cannot change root directory to '/host': No such file or directory".)
+
+    chroot_host=True additionally wraps the script in `env -i` with a full
+    host-style PATH so host binaries in /usr/sbin (e.g. cryptsetup) resolve
+    for device operations (USB stick setup)."""
+    if chroot_host:
+        return ("nsenter -t 1 -m -- /usr/bin/env -i "
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+                "/bin/sh -c " + shlex.quote(script))
+    return script
+
+
+def _host_run(script: str, timeout: int = 120, chroot_host: bool = False) -> tuple:
     """Run a shell script in the HOST's mount namespace via a throwaway
     privileged container (docker.sock). Returns (exit_code, output).
-    The caller builds the script with shlex.quote() around any variable parts."""
+    The caller builds the script with shlex.quote() around any variable parts.
+    chroot_host=True runs the script with the host rootfs as / + a clean
+    host-style PATH (needed for host-side device ops like USB stick setup)."""
     import httpx
     import time as _t
+    cmd = _host_run_cmd(script, chroot_host)
     body = {
         "Image": "barenoc-api",
-        "Cmd": ["sh", "-c", script],
+        "Cmd": ["sh", "-c", cmd],
         "HostConfig": {"Privileged": True, "PidMode": "host",
-                       "Binds": ["/:/host", "/lib/modules:/lib/modules:ro"]},
+                       "Binds": []},
     }
     name = "barenoc-net-helper"
     try:
@@ -237,7 +268,7 @@ def _net_mounted() -> bool:
 def _net_mount(proto: str, host: str, share: str) -> tuple:
     """Mount the NAS share at NET_MOUNT_POINT in the host namespace.
     Returns (exit_code, output). The credentials file must already exist."""
-    mkdir = f"mkdir -p {shlex.quote('/host' + NET_MOUNT_POINT)}"
+    mkdir = f"nsenter -t 1 -m -- mkdir -p {shlex.quote(NET_MOUNT_POINT)}"
     if proto == "nfs":
         src = shlex.quote(f"{host}:/{share.strip('/')}")
         opts = "vers=4,nofail,noatime"
@@ -392,9 +423,14 @@ def _read_env_file() -> dict:
     return env
 
 
-def _write_env_file(env: dict):
-    """Write dict back to .env preserving comments."""
-    path = "/opt/barenoc/.env"
+def _write_env_file(env: dict, path: str = "/opt/barenoc/.env"):
+    """Write dict back to .env preserving comments.
+
+    In-place rewrite: opens the existing file for writing (same inode) rather
+    than sed -i / tmpfile+rename, so a bind-mounted .env keeps the inode the
+    containers see. Values are written BARE (no inline comments) — an inline
+    "#" would become part of the value and break read_env_file's parse.
+    """
     lines_out = []
     try:
         with open(path) as f:
@@ -849,6 +885,18 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
                 raise HTTPException(status_code=400,
                                     detail="profile must be autonomous, balanced, strict, or empty")
             env["LLM_POLICY_PROFILE"] = profile
+            # Autonomous mode dispatches open-ended tickets to Lily (the Pi
+            # Coding Agent). The worker's hot-read path gates that dispatch on
+            # PI_AGENT_ENABLED, so saving autonomous must enable the flag or
+            # the profile silently degrades to the judge/catalog (08-17 bug:
+            # the wizard saved autonomy=autonomous but left the flag off).
+            # Value stays BARE — an inline "#" becomes part of the value and
+            # breaks read_env_file's parse. Non-autonomous profiles leave the
+            # flag untouched (it's a no-op there — semantics unchanged).
+            if profile == "autonomous":
+                env["PI_AGENT_ENABLED"] = "true"
+                changed.append("pi_agent_enabled")
+                values["pi_agent_enabled"] = "true"
             changed.append("profile")
             values["profile"] = profile or "(inherit)"
         if "risk_filters" in config:
@@ -1090,6 +1138,127 @@ def test_backup_target(target: dict, user: User = Depends(require_role("admin"))
         else " on the same disk — mount a share for true off-appliance copies"
     return {"status": "ok", "mounted": mounted, "writable": True,
             "detail": f"✅ Writable and{note}."}
+
+
+# ── Guided USB-stick setup (Layer 3, LUKS) — host-side, driven from the UI ──
+
+def _lsblk_field(line: str, key: str) -> str:
+    """Extract a KEY="value" field from an lsblk -P output line."""
+    m = re.search(rf'{key}="([^"]*)"', line)
+    return m.group(1) if m else ""
+
+
+def _usb_candidates() -> dict:
+    """List USB candidates visible on the Proxmox host (whole devices,
+    transport=usb). Runs lsblk in the host mount namespace so /sys is the
+    host's (lsblk needs it to read the transport type)."""
+    script = "lsblk -dnPo NAME,SIZE,MODEL,TRAN 2>/dev/null || true"
+    code, out = _host_run(script, timeout=30, chroot_host=True)
+    if code != 0:
+        # One-directional host→VM model: the appliance may not be able to reach
+        # the Proxmox host. Never dead-end — return the MANUAL path with the
+        # exact host command + how to refresh (08-17: "Can't reach the Proxmox
+        # host to list USB devices. Plug the stick in and use the manual command
+        # on the host instead.").
+        return {"status": "manual", "candidates": [],
+                "detail": ("The appliance can't reach the Proxmox host from here (one-directional "
+                           "host→VM model). Plug a ≥4 GB stick into the Proxmox host, then run "
+                           "the manual command on the HOST — it detects the stick, wipes + "
+                           "LUKS2-encrypts it, and installs the backup cron. Then refresh Status "
+                           "here (the host pushes it every 10 min)."),
+                "command": "sudo bash setup-usb-backup.sh",
+                "steps": [
+                    "Plug a ≥4 GB USB stick into the Proxmox host (not the appliance's own USB port).",
+                    "On the HOST: sudo bash setup-usb-backup.sh   (wipes + encrypts the stick, installs the cron).",
+                    "Back here: click Refresh Status — the host pushes the result every 10 min.",
+                ]}
+    candidates = []
+    for line in out.splitlines():
+        if 'TRAN="usb"' not in line:
+            continue
+        name = _lsblk_field(line, "NAME")
+        if not name:
+            continue
+        candidates.append({
+            "dev": f"/dev/{name}",
+            "size": _lsblk_field(line, "SIZE"),
+            "model": _lsblk_field(line, "MODEL"),
+        })
+    detail = ("" if candidates else
+              "No USB stick found on the Proxmox host. Plug one in (≥4 GB), then refresh.")
+    return {"status": "ok", "candidates": candidates, "detail": detail}
+
+
+def _usb_passphrase(out: str) -> str:
+    """Pull the one-time recovery passphrase the setup script prints (it is
+    never written to disk — surfaced exactly once for the sealed rack card)."""
+    m = re.search(r'RECOVERY_PASSPHRASE="([^"]*)"', out)
+    return m.group(1) if m else ""
+
+
+def _usb_setup(dev: str, db: Session, user: User) -> dict:
+    """Run the host-side setup-usb-backup.sh for one device. Best-effort
+    automation; falls back to the exact manual command when the host script
+    isn't installed (older/BYO hosts). Never stores the recovery passphrase."""
+    if not re.fullmatch(r"/dev/[a-zA-Z0-9]+", dev):
+        raise HTTPException(status_code=400,
+                            detail="Invalid device path — use a whole disk like /dev/sdb")
+    manual = {
+        "status": "manual",
+        "detail": ("The host-side setup script isn't installed on this appliance host. "
+                   "Run the command below on the Proxmox host, then refresh Status here."),
+        "command": f"bash {USB_SETUP_SCRIPT} --dev {dev}",
+    }
+    code, out = _host_run(f"test -x {shlex.quote(USB_SETUP_SCRIPT)} && echo present",
+                          timeout=30, chroot_host=True)
+    if code != 0 or "present" not in out:
+        log_event(db, "settings_change", user.username, {
+            "section": "backups-usb", "fields": ["usb_setup"],
+            "values": {"usb_setup": "manual", "dev": dev}})
+        return manual
+    # --yes (skip the primary-disk re-prompt; the UI already confirmed) exists
+    # on current hosts; older copies still work for /dev/sd[c-z] without it.
+    code, out = _host_run(f"grep -q -- '--yes' {shlex.quote(USB_SETUP_SCRIPT)} && echo yes",
+                          timeout=30, chroot_host=True)
+    yes = "--yes" if (code == 0 and "yes" in out) else ""
+    script = f"{USB_SETUP_SCRIPT} --dev {shlex.quote(dev)}" + (f" {yes}" if yes else "")
+    code, out = _host_run(script, timeout=300, chroot_host=True)
+    if code != 0:
+        tail = (out or "setup failed").strip()[-600:]
+        log_event(db, "settings_change", user.username, {
+            "section": "backups-usb", "fields": ["usb_setup"],
+            "values": {"usb_setup": "error", "dev": dev}})
+        return {"status": "error", "detail": "USB setup failed on the host.",
+                "output": tail, "command": f"bash {USB_SETUP_SCRIPT} --dev {dev}"}
+    log_event(db, "settings_change", user.username, {
+        "section": "backups-usb", "fields": ["usb_setup"],
+        "values": {"usb_setup": "ok", "dev": dev}})
+    return {"status": "ok",
+            "detail": "USB stick is wiped + LUKS2-encrypted and ready for the schedule.",
+            "recovery_passphrase": _usb_passphrase(out),
+            "output": (out or "").strip()[-1000:]}
+
+
+@router.post("/backups/usb-setup")
+def backup_usb_setup(config: dict, db: Session = Depends(get_db),
+                     user: User = Depends(require_role("admin"))):
+    """Guided USB-stick setup (Layer 3, LUKS) — drives the host-side
+    setup-usb-backup.sh through the existing privileged helper.
+
+    action=list   → USB candidates visible on the Proxmox host.
+    action=setup  → wipe+encrypt one device (requires confirm=true)."""
+    action = str(config.get("action", "")).strip().lower()
+    if action == "list":
+        return _usb_candidates()
+    if action == "setup":
+        dev = str(config.get("dev", "")).strip()
+        if not dev:
+            raise HTTPException(status_code=400, detail="Pick a USB device (e.g. /dev/sdb)")
+        if not config.get("confirm"):
+            raise HTTPException(status_code=400,
+                                detail="Confirm the stick will be ERASED before continuing")
+        return _usb_setup(dev, db, user)
+    raise HTTPException(status_code=400, detail="action must be 'list' or 'setup'")
 
 
 def _llm_section(env: dict) -> dict:

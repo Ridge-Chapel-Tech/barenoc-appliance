@@ -508,6 +508,57 @@
         </dl>
       </div>
       <div class="mt-6 border-t pt-5">
+        <h4 class="text-sm font-medium text-gray-900">Network copy (NAS) <span class="font-normal text-gray-400">— optional, off-appliance</span></h4>
+        <p id="bk-net-status" class="text-xs mt-1 text-gray-500">—</p>
+        <div class="mt-2 grid grid-cols-2 gap-2">
+          <select id="bk-net-proto" class="rounded-md border-gray-300 border px-3 py-2 text-sm">
+            <option value="cifs">SMB (most NAS)</option>
+            <option value="nfs">NFS</option>
+          </select>
+          <input id="bk-net-host" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="NAS address (e.g. 192.168.4.50)">
+        </div>
+        <div class="mt-2 grid grid-cols-2 gap-2">
+          <input id="bk-net-share" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Share name (e.g. barenoc)">
+          <input id="bk-net-user" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Username (blank = guest)" autocomplete="off">
+        </div>
+        <input id="bk-net-pass" type="password" class="mt-2 w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Password" autocomplete="new-password">
+        <div class="mt-2 flex items-center gap-3">
+          <button onclick="netConnect()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Connect</button>
+          <button onclick="netDisconnect()" class="rounded-md border border-barenoc-600 px-4 py-2 text-sm font-semibold text-barenoc-700 hover:bg-barenoc-50">Disconnect</button>
+          <span id="bk-net-msg" class="text-xs"></span>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">No root needed — BareNOC mounts the share and reconnects after a reboot. Already have a folder mounted (or a local second disk)? Point the copy at it directly:</p>
+        <div class="mt-2 flex items-center gap-2">
+          <input id="bk-target" class="flex-1 rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="/opt/barenoc/backups/network">
+          <button onclick="netSaveFolder()" class="rounded-md bg-gray-700 px-3 py-2 text-sm font-semibold text-white">Save folder</button>
+          <button onclick="netTestFolder()" class="rounded-md border border-gray-600 px-3 py-2 text-sm font-semibold text-gray-700">Test folder</button>
+          <span id="bk-folder-msg" class="text-xs"></span>
+        </div>
+      </div>
+      <div id="bk-usb-setup" class="mt-6 border-t pt-5 hidden">
+        <h4 class="text-sm font-medium text-gray-900">Set up a new USB stick</h4>
+        <p class="text-xs text-gray-500 mt-1">No encrypted USB stick is configured yet. The weekly backup (full VM image + app data) needs one — plug a <b>≥4 GB</b> USB stick into the <b>Proxmox host</b> (not the appliance's own USB port).</p>
+        <ul class="mt-2 text-xs text-gray-600 space-y-1 list-disc list-inside">
+          <li>The stick is <b>wiped and LUKS2-encrypted</b> — anything on it is erased.</li>
+          <li>The host keeps a keyfile for automatic backups; a <b>recovery passphrase</b> is shown once — write it on the rack card.</li>
+        </ul>
+        <div class="mt-3 flex items-center gap-3">
+          <button onclick="usbSetupList()" class="rounded-md border border-barenoc-600 px-4 py-2 text-sm font-semibold text-barenoc-700 hover:bg-barenoc-50">Detect USB stick on the host</button>
+          <span id="bk-usb-setup-msg" class="text-xs"></span>
+        </div>
+        <div id="bk-usb-picker" class="hidden mt-3 rounded-md border border-gray-200 p-3">
+          <label class="block text-sm font-medium text-gray-700" for="bk-usb-dev">USB device</label>
+          <select id="bk-usb-dev" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+          <label class="mt-3 flex items-start gap-2 text-xs text-gray-600">
+            <input id="bk-usb-confirm" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300">
+            <span>I understand this <b>erases the whole stick</b> and encrypts it for backups.</span>
+          </label>
+          <button onclick="usbSetupRun()" class="mt-3 rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Erase &amp; encrypt this stick</button>
+        </div>
+        <div id="bk-usb-setup-result" class="hidden mt-3 rounded-md border border-gray-200 p-3 text-xs"></div>
+        <div id="bk-usb-manual" class="hidden mt-3 rounded-md border border-gray-200 p-3"></div>
+      </div>
+      <div class="mt-6 border-t pt-5">
         <h4 class="text-sm font-medium text-gray-900">Keys &amp; recovery</h4>
         <p class="text-xs text-gray-500 mt-1">The USB stick is LUKS-encrypted. Two ways to unlock it:</p>
         <ul class="mt-2 text-xs text-gray-600 space-y-1 list-disc list-inside">
@@ -1448,6 +1499,17 @@ async function loadBackups() {
     document.getElementById('bk-usb-last').textContent = d.usb_last_backup && d.usb_last_backup !== 'none' ? d.usb_last_backup : '—';
     document.getElementById('bk-vm-last').textContent = d.vm_snapshot_last && d.vm_snapshot_last !== 'none' ? d.vm_snapshot_last : '—';
     document.getElementById('bk-status-updated').textContent = d.status_updated || '—';
+    // network copy (NAS) form
+    document.getElementById('bk-net-proto').value = d.net_proto || 'cifs';
+    document.getElementById('bk-net-host').value = d.net_host || '';
+    document.getElementById('bk-net-share').value = d.net_share || '';
+    document.getElementById('bk-target').value = d.backup_target_dir || '';
+    document.getElementById('bk-net-status').textContent = d.net_mounted
+      ? ('✅ Connected to ' + (d.net_host || '') + (d.net_share ? '/' + d.net_share : ''))
+      : 'Not connected — every 6 h the app-data archive is copied to your NAS (kept 30 days).';
+    document.getElementById('bk-net-status').className = d.net_mounted ? 'text-xs mt-1 text-green-700' : 'text-xs mt-1 text-gray-500';
+    // guided USB setup: offer it on the appliance when no stick is encrypted yet
+    document.getElementById('bk-usb-setup').classList.toggle('hidden', !(app && !d.usb_encrypted));
   } catch (e) { console.error(e); }
 }
 
@@ -1481,6 +1543,174 @@ async function runBackupNow() {
     msg.textContent = d.status === 'ok' ? '✅ Backup queued — the host starts it within ~10 minutes (see Status above).' : '❌ ' + (d.detail || 'Failed to queue');
     msg.className = d.status === 'ok' ? 'text-sm text-green-600' : 'text-sm text-red-600';
   } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Network copy (NAS) — reuses POST /settings/backups/net-mount | net-unmount ──
+function netSetMsg(el, text, ok) {
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'text-xs ' + (ok === true ? 'text-green-600' : ok === false ? 'text-red-600' : 'text-gray-500');
+}
+
+async function netConnect() {
+  var msg = document.getElementById('bk-net-msg');
+  netSetMsg(msg, 'connecting…');
+  try {
+    var r = await fetch('/api/v1/settings/backups/net-mount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        proto: document.getElementById('bk-net-proto').value,
+        host: document.getElementById('bk-net-host').value.trim(),
+        share: document.getElementById('bk-net-share').value.trim(),
+        user: document.getElementById('bk-net-user').value.trim(),
+        pass: document.getElementById('bk-net-pass').value
+      })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    netSetMsg(msg, d.detail || '✅ Connected', true);
+    loadBackups();
+  } catch (e) { netSetMsg(msg, '✗ ' + e.message, false); }
+}
+
+async function netDisconnect() {
+  var msg = document.getElementById('bk-net-msg');
+  netSetMsg(msg, 'disconnecting…');
+  try {
+    var r = await fetch('/api/v1/settings/backups/net-unmount', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    netSetMsg(msg, d.detail || 'Disconnected');
+    loadBackups();
+  } catch (e) { netSetMsg(msg, '✗ ' + e.message, false); }
+}
+
+async function netSaveFolder() {
+  var msg = document.getElementById('bk-folder-msg');
+  netSetMsg(msg, 'saving…');
+  try {
+    var r = await fetch('/api/v1/settings/backups', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ backup_target_dir: document.getElementById('bk-target').value.trim() })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    netSetMsg(msg, '✅ Saved — next archive (≤6 h) is copied there', true);
+  } catch (e) { netSetMsg(msg, '✗ ' + e.message, false); }
+}
+
+async function netTestFolder() {
+  var msg = document.getElementById('bk-folder-msg');
+  netSetMsg(msg, 'testing…');
+  try {
+    var r = await fetch('/api/v1/settings/backups/test-target', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ dir: document.getElementById('bk-target').value.trim() })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    netSetMsg(msg, d.detail || 'ok', d.status === 'ok');
+  } catch (e) { netSetMsg(msg, '✗ ' + e.message, false); }
+}
+
+// ── Guided USB stick setup (host-side, LUKS) ──
+function usbSetupMsg(text, ok) {
+  var el = document.getElementById('bk-usb-setup-msg');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'text-xs ml-2 ' + (ok === true ? 'text-green-600' : ok === false ? 'text-red-600' : 'text-gray-500');
+}
+
+async function usbSetupList() {
+  usbSetupMsg('detecting…');
+  var picker = document.getElementById('bk-usb-picker');
+  var result = document.getElementById('bk-usb-setup-result');
+  result.classList.add('hidden');
+  try {
+    var r = await fetch('/api/v1/settings/backups/usb-setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ action: 'list' })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    var sel = document.getElementById('bk-usb-dev');
+    sel.innerHTML = '';
+    (d.candidates || []).forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c.dev;
+      o.textContent = c.dev + ' — ' + (c.size || '?') + (c.model ? ' · ' + c.model : '');
+      sel.appendChild(o);
+    });
+    // Manual path (host unreachable / no automated detect): show the exact host
+    // command + steps instead of dead-ending (08-17).
+    if (d.status === 'manual') {
+      var steps = (d.steps || []).map(function (s) { return '<li>' + s + '</li>'; }).join('');
+      usbSetupMsg((d.detail || '') + (d.command ? ' <code>' + esc(d.command) + '</code>' : ''), false);
+      var man = document.getElementById('bk-usb-manual');
+      if (man) { man.classList.remove('hidden'); man.innerHTML = '<ul class="mt-2 space-y-1 list-disc list-inside text-xs text-gray-600">' + steps + '</ul>'; }
+      picker.classList.add('hidden');
+      return;
+    }
+    if (!(d.candidates || []).length) {
+      usbSetupMsg(d.detail || 'No USB stick found — plug one into the Proxmox host, then retry.', false);
+      picker.classList.add('hidden');
+      return;
+    }
+    usbSetupMsg((d.candidates.length === 1 ? 'Found 1 stick — ' : 'Found ' + d.candidates.length + ' sticks — ') + 'pick one and confirm.', true);
+    picker.classList.remove('hidden');
+  } catch (e) { usbSetupMsg('✗ ' + e.message, false); }
+}
+
+async function usbSetupRun() {
+  var dev = document.getElementById('bk-usb-dev').value;
+  if (!dev) { usbSetupMsg('Pick a USB device first.', false); return; }
+  if (!document.getElementById('bk-usb-confirm').checked) { usbSetupMsg('Check the “erases the whole stick” box first.', false); return; }
+  var result = document.getElementById('bk-usb-setup-result');
+  result.classList.remove('hidden');
+  result.className = 'mt-3 rounded-md border border-gray-200 p-3 text-xs text-gray-600';
+  result.innerHTML = 'Erasing + encrypting <b>' + esc(dev) + '</b> on the host… this can take a minute.';
+  usbSetupMsg('setting up…');
+  try {
+    var r = await fetch('/api/v1/settings/backups/usb-setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ action: 'setup', dev: dev, confirm: true })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (d.status === 'manual') {
+      usbSetupMsg('See the command below.', false);
+      result.innerHTML = '<p class="text-amber-700"><b>Run this on the Proxmox host</b> (the appliance couldn\'t automate it), then click the Status refresh below:</p>'
+        + '<pre class="mt-2 rounded bg-gray-100 p-2 font-mono text-xs break-all">' + esc(d.command || '') + '</pre>'
+        + '<button onclick="loadBackups()" class="mt-2 rounded-md bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Refresh status</button>';
+      return;
+    }
+    if (d.status === 'error') {
+      usbSetupMsg('✗ setup failed', false);
+      result.className = 'mt-3 rounded-md border border-red-200 p-3 text-xs text-red-700';
+      result.innerHTML = '<p><b>Setup failed.</b></p>'
+        + (d.output ? '<pre class="mt-2 rounded bg-gray-100 p-2 font-mono text-xs break-all">' + esc(d.output) + '</pre>' : '')
+        + (d.command ? '<p class="mt-2">Manual fallback — run on the Proxmox host:<br><code class="break-all">' + esc(d.command) + '</code></p>' : '');
+      return;
+    }
+    usbSetupMsg('✅ stick ready', true);
+    result.className = 'mt-3 rounded-md border border-green-200 p-3 text-xs text-green-700';
+    var html = '<p><b>✅ USB stick is wiped + LUKS2-encrypted.</b></p>';
+    if (d.recovery_passphrase) {
+      html += '<p class="mt-2">Write this <b>recovery passphrase</b> on the rack card now — it is shown only once:</p>'
+        + '<pre class="mt-2 rounded bg-gray-100 p-2 font-mono text-xs break-all">' + esc(d.recovery_passphrase) + '</pre>';
+    }
+    html += '<button onclick="loadBackups()" class="mt-2 rounded-md bg-barenoc-600 px-3 py-1.5 text-xs font-semibold text-white">Refresh status</button>';
+    result.innerHTML = html;
+  } catch (e) {
+    usbSetupMsg('✗ ' + e.message, false);
+    result.className = 'mt-3 rounded-md border border-red-200 p-3 text-xs text-red-700';
+    result.innerHTML = '<p><b>' + esc(e.message) + '</b></p>';
+  }
 }
 </script>
 {% endblock %}

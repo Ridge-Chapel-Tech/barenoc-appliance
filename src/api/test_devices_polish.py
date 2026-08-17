@@ -61,9 +61,29 @@ class DevicesPolishTemplateTest(unittest.TestCase):
         html = self._read("devices.html")
         # The Onboarded card no longer carries a Fingerprint action…
         self.assertNotIn('Re-run nmap fingerprint', html)
-        # …while the Unclaimed list keeps Fingerprint + Identify (discovery).
-        self.assertIn('Run the nmap fingerprint to identify this host', html)
+        # …while the Unclaimed list keeps a single Identify action.
         self.assertIn('>Identify</button>', html)
+
+    def test_unclaimed_row_has_single_identify_action(self):
+        """08-17: Fingerprint + Identify collapse into ONE button (no duplicate)."""
+        html = self._read("devices.html")
+        self.assertIn('identifyDevice(', html)            # the merged handler
+        self.assertNotIn('>Fingerprint</button>', html)   # separate Fingerprint gone
+        self.assertNotIn('toggleIdentify', html)          # separate toggle gone
+        self.assertIn('revealedIdentifies', html)         # reveal survives re-render
+        self.assertIn("/fingerprint'", html)              # merged action still scans
+        self.assertIn('fingerprint/unclaimed', html)      # Identify All unchanged
+
+    def test_adopt_chooser_reflects_decisions(self):
+        """08-17: API kept + made real; Manual record relabeled + explained."""
+        html = self._read("devices.html")
+        # Register via API is real: login → register curl, ready to run.
+        self.assertIn('Register via API', html)
+        self.assertIn('/api/v1/auth/login', html)
+        self.assertIn('api-register-cmd', html)
+        # Manual record kept, relabeled + explained (monitor-only until channel).
+        self.assertIn('Add to inventory (no credentials)', html)
+        self.assertIn('Monitor-only until a channel connects', html)
 
     def test_existing_labels_still_present(self):
         """The relabels from #24/#31 are untouched by this pass."""

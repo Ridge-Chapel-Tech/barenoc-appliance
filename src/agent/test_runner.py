@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -388,6 +389,114 @@ class ProgressSnippetTest(unittest.TestCase):
 
     def test_non_dict_returns_none(self):
         self.assertIsNone(runner._assistant_complete_text(None))
+
+
+class LoginCacheAndBackoffTest(unittest.TestCase):
+    """08-17 runner-login robustness: a short-lived token cache (reuse ≤5 min)
+    + retry/backoff on 429/5xx + a single re-login on 401 for the /jobs/result
+    POST, so a rate-limit blip can never orphan a finished job again."""
+
+    def setUp(self):
+        runner._TOKEN_CACHE["token"] = None
+        runner._TOKEN_CACHE["expires_at"] = 0.0
+
+    @staticmethod
+    def _fake_resp(status=200, body='{"access_token": "TOK1"}'):
+        class Resp:
+            def __init__(self, status, body):
+                self.status = status
+                self._body = body
+
+            def read(self):
+                return self._body.encode() if isinstance(self._body, str) else self._body
+        return Resp(status, body)
+
+    @staticmethod
+    def _http_error(code):
+        import io
+        return __import__("urllib.error", fromlist=["HTTPError"]).HTTPError(
+            "https://localhost/x", code, f"err {code}", None, io.BytesIO(b""))
+
+    def test_login_is_cached_within_ttl(self):
+        with patch("runner._api_credentials", return_value={"username": "agent", "password": "pw"}), \
+             patch("runner.urllib.request.urlopen",
+                   return_value=self._fake_resp()) as urlopen:
+            t1 = runner._api_login()
+            t2 = runner._api_login()
+        self.assertEqual(t1, "TOK1")
+        self.assertEqual(t2, "TOK1")          # reused from the cache
+        self.assertEqual(urlopen.call_count, 1)  # only ONE login POST
+
+    def test_login_renews_after_ttl_expiry(self):
+        runner._TOKEN_CACHE["token"] = "OLD"
+        runner._TOKEN_CACHE["expires_at"] = time.time() - 1
+        with patch("runner._api_credentials", return_value={"username": "agent", "password": "pw"}), \
+             patch("runner.urllib.request.urlopen",
+                   return_value=self._fake_resp(body='{"access_token": "NEW"}')):
+            token = runner._api_login()
+        self.assertEqual(token, "NEW")
+
+    def test_login_retries_429_then_succeeds(self):
+        with patch("runner._api_credentials", return_value={"username": "agent", "password": "pw"}), \
+             patch("runner.urllib.request.urlopen",
+                   side_effect=[self._http_error(429), self._http_error(503),
+                                self._fake_resp()]) as urlopen, \
+             patch("runner._sleep") as sleep:
+            token = runner._api_login()
+        self.assertEqual(token, "TOK1")
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertTrue(sleep.call_count >= 2)  # backoff between attempts
+
+    def test_login_401_returns_empty_and_clears_cache(self):
+        runner._TOKEN_CACHE["token"] = "STALE"
+        runner._TOKEN_CACHE["expires_at"] = time.time() + 1000
+        with patch("runner._api_credentials", return_value={"username": "agent", "password": "pw"}), \
+             patch("runner.urllib.request.urlopen", side_effect=self._http_error(401)):
+            token = runner._api_login(force=True)
+        self.assertEqual(token, "")
+        self.assertIsNone(runner._TOKEN_CACHE["token"])
+
+    def test_login_surfaces_error_after_retries(self):
+        with patch("runner._api_credentials", return_value={"username": "agent", "password": "pw"}), \
+             patch("runner.urllib.request.urlopen", side_effect=self._http_error(429)), \
+             patch("runner._sleep"):
+            token = runner._api_login()
+        self.assertEqual(token, "")
+
+    def test_post_result_relogins_once_on_401(self):
+        payload = {"ticket_id": "TKT-1", "success": True}
+        with patch("runner._api_login", side_effect=["STALE", "FRESH"]) as login, \
+             patch("runner.urllib.request.urlopen",
+                   side_effect=[self._http_error(401), self._fake_resp(body="{}")]) as urlopen:
+            ok = runner._post_jobs_result("TKT-1", payload)
+        self.assertTrue(ok)
+        self.assertEqual(urlopen.call_count, 2)
+        # second login must be a forced, cache-bypassing re-login
+        login.assert_any_call(force=True)
+
+    def test_post_result_retries_429_with_backoff(self):
+        with patch("runner._api_login", return_value="TOK"), \
+             patch("runner.urllib.request.urlopen",
+                   side_effect=[self._http_error(429), self._fake_resp(body="{}")]) as urlopen, \
+             patch("runner._sleep") as sleep:
+            ok = runner._post_jobs_result("TKT-1", {"success": True})
+        self.assertTrue(ok)
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertTrue(sleep.called)
+
+    def test_post_result_second_401_surfaces_error(self):
+        # re-login ONCE then surface the error — never loop on bad creds
+        with patch("runner._api_login", side_effect=["STALE", "STALE2"]), \
+             patch("runner.urllib.request.urlopen", side_effect=self._http_error(401)):
+            ok = runner._post_jobs_result("TKT-1", {"success": True})
+        self.assertFalse(ok)
+
+    def test_post_result_no_token_returns_false(self):
+        with patch("runner._api_login", return_value=""), \
+             patch("runner.urllib.request.urlopen") as urlopen:
+            ok = runner._post_jobs_result("TKT-1", {"success": True})
+        self.assertFalse(ok)
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

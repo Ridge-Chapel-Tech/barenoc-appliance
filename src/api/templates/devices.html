@@ -7,7 +7,7 @@
     <div class="flex gap-2 items-center">
       <button id="scan-btn" onclick="discoverNetwork()" class="rounded-md bg-gray-600 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700">Scan Network</button>
       <button id="sync-btn" onclick="syncNow()" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700" title="Pull the latest devices + clients from the UniFi controller">🔄 Sync Now</button>
-      <button onclick="showAdoptModal()" title="Adopt a device — choose how: manual record, SSH credentials, the desktop agent script, or the API." class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">➕ Adopt a device</button>
+      <button onclick="showAdoptModal()" title="Adopt a device — choose how: add to inventory, SSH credentials, the desktop agent script, or register via API." class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">➕ Adopt a device</button>
       <span id="sync-msg" class="text-sm text-gray-500"></span>
     </div>
   </div>
@@ -68,7 +68,7 @@
     <div class="flex items-center justify-between">
       <div>
         <h2 class="text-lg font-medium text-gray-900">Unclaimed devices</h2>
-        <p class="text-sm text-gray-500">Found on the network, not yet in your inventory — a compact list. <b>Adopt</b> to claim one, <b>Identify</b> to see its fingerprint + recommended control channel, or <b>Fingerprint</b> to re-scan it.</p>
+        <p class="text-sm text-gray-500">Found on the network, not yet in your inventory — a compact list. <b>Adopt</b> to claim one, or <b>Identify</b> to fingerprint it (if not yet scanned) and see the result + recommended control channel.</p>
       </div>
       <button onclick="fingerprintAll()" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">🔎 Identify All</button>
     </div>
@@ -83,10 +83,10 @@
     <div class="px-6 py-4 border-b flex items-center justify-between"><h3 class="text-lg font-medium">➕ Adopt a device</h3>
       <button onclick="hideAdoptModal()" class="text-gray-400 hover:text-gray-600">✕</button></div>
     <div class="px-6 py-4 space-y-3">
-      <p class="text-sm text-gray-500">Choose how BareNOC connects to the device. (SNMP/vendor channels can be added on the device card afterwards — see the fingerprint recommendation.)</p>
+      <p class="text-sm text-gray-500">Choose how to bring a device into management. (SNMP/vendor channels can be added on the device card afterwards — see the fingerprint recommendation.)</p>
       <button onclick="showAddDeviceModal()" class="w-full text-left rounded-lg border border-gray-200 hover:border-barenoc-600 p-3">
-        <div class="font-semibold text-gray-800">📝 Manual record</div>
-        <div class="text-xs text-gray-500">Type the name/IP yourself — no credentials yet; add a channel later.</div></button>
+        <div class="font-semibold text-gray-800">📝 Add to inventory (no credentials)</div>
+        <div class="text-xs text-gray-500">Type the name/IP yourself — claim it now, connect a control channel later. Monitor-only until a channel connects.</div></button>
       <button onclick="showClaimModalFromAdopt()" class="w-full text-left rounded-lg border border-gray-200 hover:border-barenoc-600 p-3">
         <div class="font-semibold text-gray-800">🔑 SSH credentials</div>
         <div class="text-xs text-gray-500">Provide a control user + key, or run the enrollment script ON the device.</div></button>
@@ -95,7 +95,7 @@
         <div class="text-xs text-gray-500">One-command script ON the machine — mTLS certificate identity + job loop. Best for servers/workstations.</div></a>
       <button onclick="showApiModal()" class="w-full text-left rounded-lg border border-gray-200 hover:border-barenoc-600 p-3">
         <div class="font-semibold text-gray-800">🔌 Register via API</div>
-        <div class="text-xs text-gray-500">A token for your own scripts/integrators — the NOC_Agent is the reference client.</div></button>
+        <div class="text-xs text-gray-500">Add devices from your scripts/integrators — live endpoint with a ready-to-run example.</div></button>
     </div>
   </div>
 </div>
@@ -180,11 +180,24 @@
   <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
     <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Register via API</h3></div>
     <div class="px-6 py-4 space-y-3 text-sm text-gray-600">
-      <p>Integrators and scripts add devices with a bearer token — the NOC_Agent is the reference client of this API.</p>
-      <pre class="bg-gray-900 text-gray-100 rounded p-2 text-[11px] overflow-x-auto">POST /api/v1/devices
-Authorization: Bearer &lt;token&gt;
-{"name":"lab-switch","ip_address":"192.168.4.20","device_type":"switch","channels":["vendor_api"]}</pre>
-      <p class="text-xs text-gray-500">A device registered this way is <b>claimed</b> (owned) immediately; connect a control channel (channels field, SSH/SNMP creds, or the agent) to make it controllable. The record schema matches the UI fields above.</p>
+      <p>The devices API is live — two steps, both ready to run. The <b>NOC_Agent</b> is the reference client (it registers over mTLS); this bearer flow is for your own scripts/integrators.</p>
+      <div>
+        <p class="font-medium text-gray-800">1 · Get a token (login)</p>
+        <pre id="api-login-cmd" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto">curl -sk -X POST https://&lt;appliance&gt;/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"&lt;password&gt;"}'
+# returns {"access_token":"...","token_type":"bearer","expires_in":3600}</pre>
+        <button onclick="copyText('api-login-cmd')" class="text-barenoc-600 text-[11px]">copy</button>
+      </div>
+      <div>
+        <p class="font-medium text-gray-800">2 · Register the device</p>
+        <pre id="api-register-cmd" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto">curl -sk -X POST https://&lt;appliance&gt;/api/v1/devices \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"lab-switch","ip_address":"192.168.4.20","device_type":"switch","channels":["vendor_api"]}'</pre>
+        <button onclick="copyText('api-register-cmd')" class="text-barenoc-600 text-[11px]">copy</button>
+      </div>
+      <p class="text-xs text-gray-500">The token is a short-lived session token (60 min) — log in again for a fresh one. A device registered this way is <b>claimed</b> (owned) immediately; connect a control channel (<code>channels</code>, SSH/SNMP creds, or the agent) to make it controllable. Optional fields match the add-device form (<code>vendor</code>, <code>model</code>, <code>mac_address</code>, <code>tags</code>, <code>device_group</code>, <code>ssh_user</code>, <code>ssh_key</code>, <code>snmp_community</code>).</p>
     </div>
     <div class="px-6 py-4 border-t flex justify-end">
       <button onclick="hideApiModal()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Close</button>
@@ -242,12 +255,12 @@ Authorization: Bearer &lt;token&gt;
 </div>
 
 <!-- Adopt with certificate (step-ca) -->
-<div id="adopt-modal" class="fixed inset-0 bg-black/40 z-50 hidden">
+<div id="adopt-cert-modal" class="fixed inset-0 bg-black/40 z-50 hidden">
   <div class="flex items-center justify-center min-h-full p-4 overflow-y-auto">
     <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
       <div class="px-6 py-4 border-b flex justify-between items-center">
         <h3 class="text-lg font-medium">🔐 Adopt with certificate</h3>
-        <button onclick="hideAdoptModal()" class="text-gray-400 hover:text-gray-600">✕</button>
+        <button onclick="hideAdoptCertModal()" class="text-gray-400 hover:text-gray-600">✕</button>
       </div>
       <div class="px-6 py-4">
         <p class="text-sm text-gray-600">Device: <b id="adopt-name"></b> · identity <code id="adopt-cn"></code></p>
@@ -272,7 +285,7 @@ Authorization: Bearer &lt;token&gt;
       </div>
       <div class="px-6 py-4 border-t flex justify-end gap-3">
         <button onclick="revokeAdoption()" id="adopt-revoke-btn" class="hidden rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Revoke adoption</button>
-        <button onclick="hideAdoptModal()" class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700">Close</button>
+        <button onclick="hideAdoptCertModal()" class="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700">Close</button>
       </div>
     </div>
   </div>
@@ -325,6 +338,7 @@ var currentOffset = 0;
 var currentLimit = 24;
 var currentTotal = 0;
 var monitoredOnly = false;
+var revealedIdentifies = {};
 
 function statusClasses(s) {
   var border = s === 'online' ? 'border-green-500' : s === 'offline' ? 'border-red-500' : s === 'warning' ? 'border-yellow-500' : 'border-gray-300';
@@ -451,11 +465,10 @@ function unclaimedRow(d) {
     + '<span class="text-xs text-gray-400">' + meta.join(' · ') + '</span>'
     + adoptionBadge(d)
     + '</div>'
-    + '<div id="ident-' + d.id + '" class="hidden mt-1.5 rounded bg-gray-50 border border-gray-200 px-2 py-1 text-xs text-gray-600">' + identifyHtml(d) + '</div>'
+    + '<div id="ident-' + d.id + '" class="' + (revealedIdentifies[d.id] ? '' : 'hidden ') + 'mt-1.5 rounded bg-gray-50 border border-gray-200 px-2 py-1 text-xs text-gray-600">' + identifyHtml(d) + '</div>'
     + '</div>'
     + '<div class="flex items-center gap-1.5 shrink-0">'
-    + '<button onclick="fingerprintDevice(' + d.id + ')" class="px-2.5 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700" title="Run the nmap fingerprint to identify this host">Fingerprint</button>'
-    + '<button onclick="toggleIdentify(' + d.id + ')" class="px-2.5 py-1 bg-gray-100 text-gray-700 text-xs rounded hover:bg-gray-200" title="Show identity + recommended control channel">Identify</button>'
+    + '<button onclick="identifyDevice(' + d.id + ', ' + (d.fingerprint && d.fingerprint.count > 0 ? 'true' : 'false') + ')" class="px-2.5 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700" title="Identify — run the nmap fingerprint (if not yet scanned) and show the result + recommended control channel">Identify</button>'
     + '<button onclick="showAdoptModalForDevice(' + d.id + ',\'' + d.ip_address + '\')" class="px-2.5 py-1 bg-barenoc-600 text-white text-xs rounded hover:bg-barenoc-700" title="Adopt — choose how (SSH, agent, cert or API)">Adopt</button>'
     + '<button onclick="dismissUnclaimed(' + d.id + ',\'' + (d.name||'this device').replace(/\'/g,'') + '\')" class="px-2 py-1 text-gray-300 hover:text-red-600" title="Dismiss — hide this discovery; it reappears on the next scan">✕</button>'
     + '</div>'
@@ -477,7 +490,7 @@ function identifyHtml(d) {
   } else if (fp) {
     html += '<div>' + ((fp.os || fp.os_guess) ? esc(fp.os || fp.os_guess) : 'No open TCP ports found') + '</div>';
   } else {
-    html += '<div class="text-gray-400">Not fingerprinted yet — click <b>Fingerprint</b> to identify.</div>';
+    html += '<div class="text-gray-400">Fingerprint scan running — refresh in ~1 min to see the result + recommended control channel.</div>';
   }
   // Security-first channel recommendation (device_adoption_model.md §4)
   var sug = (fp && fp.suggestion) ? fp.suggestion : null;
@@ -495,9 +508,22 @@ function identifyHtml(d) {
   return html;
 }
 
-function toggleIdentify(id) {
+function identifyDevice(id, hasFp) {
+  revealedIdentifies[id] = true;
   var el = document.getElementById('ident-' + id);
-  if (el) el.classList.toggle('hidden');
+  if (el) {
+    el.classList.remove('hidden');
+    if (!hasFp) el.innerHTML = '<div class="text-indigo-600">🔎 Fingerprinting… refresh in ~1 min to see the result + recommended control channel.</div>';
+  }
+  if (hasFp) return;
+  fetch('/api/v1/devices/' + id + '/fingerprint', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } })
+    .then(function(r) { return r.json().catch(function() { return {}; }); })
+    .then(function(d) {
+      if (d.detail) { alert(d.detail); return; }
+      if (d.status === 'error') { alert(d.message || 'Could not queue fingerprint'); return; }
+      loadUnclaimed();
+    })
+    .catch(function(e) { alert('Failed: ' + e.message); });
 }
 
 // Scan Network is only useful WITHOUT a UniFi controller: when UniFi
@@ -515,15 +541,6 @@ async function refreshScanButton() {
     show = !(d.password_configured || d.api_key_configured) && !d.autosync_enabled;
   } catch (e) { /* keep scan visible if we can't reach the API */ }
   btn.style.display = show ? '' : 'none';
-}
-
-async function fingerprintDevice(id) {
-  try {
-    var r = await fetch('/api/v1/devices/' + id + '/fingerprint', { method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken() } });
-    var d = await r.json();
-    alert(d.message || (d.detail || 'Queued'));
-    loadUnclaimed();
-  } catch (e) { alert('Failed: ' + e.message); }
 }
 
 async function fingerprintAll() {
@@ -802,7 +819,7 @@ function copyText(id) {
   var el = document.getElementById(id);
   if (el) navigator.clipboard.writeText(el.textContent).catch(function(){});
 }
-function hideAdoptModal() { document.getElementById('adopt-modal').classList.add('hidden'); }
+function hideAdoptCertModal() { document.getElementById('adopt-cert-modal').classList.add('hidden'); }
 
 function adoptionBadge(d) {
   if (d.adoption_status === 'linked')
@@ -820,7 +837,7 @@ async function openAdopt(id, name) {
   var revokeBtn = document.getElementById('adopt-revoke-btn');
   revokeBtn.classList.add('hidden');
   document.getElementById('adopt-status').textContent = 'Minting enrollment token…';
-  document.getElementById('adopt-modal').classList.remove('hidden');
+  document.getElementById('adopt-cert-modal').classList.remove('hidden');
   try {
     var r = await fetch('/api/v1/devices/' + id + '/adopt/cert', {
       method: 'POST',

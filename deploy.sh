@@ -151,18 +151,50 @@ for m in "${SHARED_MODULES[@]}"; do
   rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/api/$m" "$VM:/opt/barenoc/worker/$m"
 done
 
-# TLS cert for nginx — self-signed with the appliance SANs (app.barenoc.com +
-# .local names + IP). Generated ONCE and BEFORE the first compose up: nginx
-# crash-loops without it, which on fresh installs delayed the API for minutes
-# ("API not healthy after 60s" + scary [emerg] cert errors in the bundle).
-IP="${APPLIANCE_IP:-$(grep -E '^APPLIANCE_IP=' <(ssh "$VM" 'cat /opt/barenoc/.env') | head -1 | cut -d= -f2-)}"
-ssh "$VM" "sudo mkdir -p /opt/barenoc/volumes/nginx/certs && \
-  [ -s /opt/barenoc/volumes/nginx/certs/barenoc.crt ] || \
-  sudo openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
-    -keyout /opt/barenoc/volumes/nginx/certs/barenoc.key \
-    -out /opt/barenoc/volumes/nginx/certs/barenoc.crt \
-    -subj '/CN=app.barenoc.com' \
-    -addext 'subjectAltName=DNS:app.barenoc.com,DNS:bareNOC.local,DNS:pocket-id.barenoc.local,DNS:stepca.barenoc.local,IP:${IP:-192.168.4.207}'"
+# TLS cert for the MAIN nginx vhost — issued from the BareNOC Internal CA as a
+# leaf + intermediate chain (same direct-openssl issuance as the stepca vhost
+# leaf above), so a browser that trusts the /onboard-distributed root CA also
+# trusts the web UI (was self-signed → "Not Secure" on https://<appliance>).
+# SANs: app.barenoc.com + bareNOC.local + pocket-id.barenoc.local + appliance IP.
+# Generated BEFORE the first compose up (nginx crash-loops without a cert).
+# Idempotent: regenerate only when missing / still self-signed / expired /
+# missing the appliance-IP SAN (IP changed in .env).
+# Gate verify:
+#   openssl s_client -connect <appliance>:443 </dev/null 2>/dev/null | \
+#     openssl x509 -noout -issuer -subject -ext subjectAltName   # issuer = BareNOC Intermediate CA
+#   openssl verify -CAfile /opt/barenoc/volumes/step-ca/certs/root_ca.crt \
+#     -untrusted /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt \
+#     /opt/barenoc/volumes/nginx/certs/barenoc.crt                # → barenoc.crt: OK
+ssh "$VM" 'set -e
+  ADMINPW=$(cat /opt/barenoc/volumes/step-ca/password-in)
+  sudo mkdir -p /opt/barenoc/volumes/nginx/certs
+  CERT=/opt/barenoc/volumes/nginx/certs/barenoc.crt
+  KEY=/opt/barenoc/volumes/nginx/certs/barenoc.key
+  IP="$(grep -E "^APPLIANCE_IP=" /opt/barenoc/.env | head -1 | cut -d= -f2-)"; IP="${IP:-192.168.4.207}"
+  ISSUER_HASH="$(openssl x509 -in "$CERT" -noout -issuer_hash 2>/dev/null || true)"
+  SUBJECT_HASH="$(openssl x509 -in "$CERT" -noout -subject_hash 2>/dev/null || true)"
+  if [ ! -s "$CERT" ] || [ ! -s "$KEY" ] || [ "$ISSUER_HASH" = "$SUBJECT_HASH" ] || \
+     ! openssl x509 -in "$CERT" -noout -ext subjectAltName 2>/dev/null | grep -qF "$IP" || \
+     ! openssl x509 -in "$CERT" -noout -checkend 0 >/dev/null 2>&1; then
+    T=$(mktemp -d)
+    sudo openssl ec -in /opt/barenoc/volumes/step-ca/secrets/intermediate_ca_key \
+      -passin pass:"$ADMINPW" -out "$T/int.key" 2>/dev/null
+    sudo openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+      -keyout "$T/server.key" -out "$T/server.csr" -subj "/CN=app.barenoc.com" 2>/dev/null
+    printf "subjectAltName=DNS:app.barenoc.com,DNS:bareNOC.local,DNS:pocket-id.barenoc.local,IP:%s\n" "$IP" > "$T/sans.cnf"
+    sudo openssl x509 -req -in "$T/server.csr" \
+      -CA /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt \
+      -CAkey "$T/int.key" -CAcreateserial -days 3650 -sha256 \
+      -extfile "$T/sans.cnf" -out "$T/server.crt" 2>/dev/null
+    cat "$T/server.crt" /opt/barenoc/volumes/step-ca/certs/intermediate_ca.crt | sudo tee "$CERT" >/dev/null
+    sudo cp "$T/server.key" "$KEY"
+    sudo chmod 0644 "$CERT"
+    sudo chmod 0640 "$KEY"
+    sudo rm -rf "$T"
+    echo "main vhost cert issued from the BareNOC CA (SANs: app.barenoc.com + appliance IP)"
+  else
+    echo "main vhost CA-signed cert present (appliance-IP SAN) — keeping"
+  fi'
 
 echo "==> Rebuilding stack (docker compose up --build -d)"
 ssh "$VM" "cd /opt/barenoc && docker compose up --build -d"

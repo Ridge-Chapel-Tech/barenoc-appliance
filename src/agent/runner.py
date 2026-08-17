@@ -61,23 +61,82 @@ def _api_credentials() -> dict:
     return creds
 
 
-def _api_login() -> str:
-    """Log in as the agent service account; returns an access token (or "")."""
-    creds = _api_credentials()
-    if not creds:
-        return ""
-    try:
-        login_data = json.dumps({"username": creds["username"],
-                                 "password": creds["password"]}).encode()
-        login_req = urllib.request.Request(
-            "https://localhost/api/v1/auth/login",
-            data=login_data, headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        login_resp = urllib.request.urlopen(login_req, timeout=5, context=SSL_CTX)
-        return json.loads(login_resp.read().decode()).get("access_token", "")
-    except Exception as e:
-        logger.error(f"Agent API login failed: {e}")
+# ── Login token cache + backoff ──────────────────────────────────────────────
+# The runner logs in at ~11 call sites; without a cache every API call mints a
+# new token, which under load trips RATE_LIMIT_LOGIN (429) and loses job
+# results (the /jobs/result POST then goes out with an empty Bearer -> 401 ->
+# the ticket never updates -> the watchdog falsely escalates a job that
+# succeeded). Reuse one token for up to 5 minutes, re-login on 401/expiry, and
+# back off on 429/5xx so a transient rate-limit never costs a job result.
+TOKEN_TTL_SECONDS = 300  # ≤5 min reuse
+
+_TOKEN_CACHE = {"token": None, "expires_at": 0.0}
+_TOKEN_CACHE_LOCK = threading.Lock()
+_LOGIN_LOCK = threading.Lock()
+
+
+def _retry_backoff(attempt: int) -> float:
+    """Backoff in seconds for a 429/5xx retry (attempt is 0-based)."""
+    return min(0.5 * (2 ** attempt), 8.0)
+
+
+def _sleep(seconds: float) -> None:
+    """Sleep indirection so tests can patch the wait out."""
+    time.sleep(seconds)
+
+
+def _api_login(force: bool = False) -> str:
+    """Return a cached agent access token (reused ≤5 min), logging in when the
+    cache is cold/expired, force=True, or a previous login was rejected (401).
+    429/5xx are retried with backoff; a 401 (bad creds) surfaces as ""."""
+    with _TOKEN_CACHE_LOCK:
+        if not force and _TOKEN_CACHE["token"] and time.time() < _TOKEN_CACHE["expires_at"]:
+            return _TOKEN_CACHE["token"]
+    # Serialize actual logins so a burst of cold-cache callers (job threads +
+    # the main loop) doesn't stampede the login endpoint into a 429.
+    with _LOGIN_LOCK:
+        with _TOKEN_CACHE_LOCK:
+            if not force and _TOKEN_CACHE["token"] and time.time() < _TOKEN_CACHE["expires_at"]:
+                return _TOKEN_CACHE["token"]
+        creds = _api_credentials()
+        if not creds:
+            return ""
+        last_err = "unknown"
+        for attempt in range(4):
+            if attempt:
+                _sleep(_retry_backoff(attempt - 1))
+            try:
+                login_data = json.dumps({"username": creds["username"],
+                                         "password": creds["password"]}).encode()
+                login_req = urllib.request.Request(
+                    "https://localhost/api/v1/auth/login",
+                    data=login_data, headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                login_resp = urllib.request.urlopen(login_req, timeout=5, context=SSL_CTX)
+                token = json.loads(login_resp.read().decode()).get("access_token", "")
+                if token:
+                    with _TOKEN_CACHE_LOCK:
+                        _TOKEN_CACHE["token"] = token
+                        _TOKEN_CACHE["expires_at"] = time.time() + TOKEN_TTL_SECONDS
+                    return token
+                last_err = "empty access_token in login response"
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    logger.error("Agent API login rejected (401) — check agent credentials")
+                    with _TOKEN_CACHE_LOCK:
+                        _TOKEN_CACHE["token"] = None
+                        _TOKEN_CACHE["expires_at"] = 0.0
+                    return ""
+                if e.code in (429, 500, 502, 503, 504):
+                    last_err = f"HTTP {e.code}"
+                    continue  # retry with backoff
+                last_err = f"HTTP {e.code}"
+                break
+            except Exception as e:
+                last_err = str(e)
+                # network/timeout — retry with backoff
+        logger.error(f"Agent API login failed after retries: {last_err}")
         return ""
 
 # Config
@@ -1013,6 +1072,50 @@ def execute_job(job: dict) -> dict:
     return _run_single(action, target, params, ticket_id, env_tz=job.get("tz", ""))
 
 
+def _post_jobs_result(ticket_id: str, payload: dict) -> bool:
+    """POST the job result to /jobs/result, the one call that must not be
+    lost (a dropped result -> ticket stuck in_progress -> watchdog false
+    escalation). Retries 429/5xx with backoff; on 401 re-logs-in ONCE then
+    surfaces the error. Returns True on HTTP 200, False otherwise."""
+    body = json.dumps(payload).encode()
+    token = _api_login()
+    relogged = False
+    attempt = 0
+    while True:
+        if not token:
+            return False
+        try:
+            req = urllib.request.Request(
+                "https://localhost/api/v1/jobs/result",
+                data=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {token}"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
+            return resp.status == 200
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and not relogged:
+                # Token expired/revoked — re-login once (bypassing the cache)
+                # and retry. A second 401 surfaces as a failure.
+                relogged = True
+                token = _api_login(force=True)
+                continue
+            if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+                attempt += 1
+                _sleep(_retry_backoff(attempt - 1))
+                continue
+            logger.error(f"Could not update ticket {ticket_id}: HTTP {e.code}")
+            return False
+        except Exception as e:
+            if attempt < 3:
+                attempt += 1
+                _sleep(_retry_backoff(attempt - 1))
+                continue
+            logger.error(f"Could not update ticket {ticket_id}: {e}")
+            return False
+
+
 def write_result(job: dict, result: dict):
     """Write execution result to completed/ and update ticket."""
     ticket_id = job.get("ticket_id", "unknown")
@@ -1034,31 +1137,20 @@ def write_result(job: dict, result: dict):
 
     logger.info(f"Result written: {filepath}")
 
-    # Update ticket via API (using stdlib, no external deps)
-    try:
-        token = _api_login()
-        payload_bytes = json.dumps({
-            "ticket_id": ticket_id,
-            "action": job.get("action"),
-            "target": job.get("target"),
-            "success": result["success"],
-            "output": result.get("output", {}),
-            "error": result.get("error"),
-        }).encode()
-        req = urllib.request.Request(
-            "https://localhost/api/v1/jobs/result",
-            data=payload_bytes,
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"},
-            method="POST",
-        )
-        resp = urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
-        if resp.status == 200:
-            logger.info(f"Ticket {ticket_id} updated via API")
-        else:
-            logger.error(f"API update failed: {resp.status}")
-    except Exception as e:
-        logger.error(f"Could not update ticket {ticket_id}: {e}")
+    # Update ticket via API (using stdlib, no external deps). The result POST
+    # is the one call that must not be lost: a 429/401 here silently orphans a
+    # finished job and the watchdog falsely escalates it, so it gets its own
+    # retry/backoff + re-login-once path.
+    payload = {
+        "ticket_id": ticket_id,
+        "action": job.get("action"),
+        "target": job.get("target"),
+        "success": result["success"],
+        "output": result.get("output", {}),
+        "error": result.get("error"),
+    }
+    if _post_jobs_result(ticket_id, payload):
+        logger.info(f"Ticket {ticket_id} updated via API")
 
     # Handle callback (e.g., device verification)
     callback = job.get("_callback")

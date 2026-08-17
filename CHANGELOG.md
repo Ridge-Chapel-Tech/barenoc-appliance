@@ -15,6 +15,73 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.17.d] — 2026-08-17
+
+### Added
+- **Backups tab — remote (NAS) backup setup + guided new-USB setup** — the
+  Settings → Backups tab now exposes the same network-copy form the wizard's
+  Backups step has (proto cifs/nfs · host · share · user/pass → Connect /
+  Disconnect → status, plus the already-mounted-folder Save/Test), reusing the
+  existing `backup_net_mount` / `net-unmount` machinery (0600 creds file,
+  host-mount via the privileged nsenter helper, reboot-safe remount).
+- **Guided "Set up a new USB stick"** — when no encrypted USB stick is
+  configured, the Backups tab (and the wizard's Backups step) offer a guided
+  setup: prerequisites (stick in the appliance's Proxmox host, ≥4 GB, wiped +
+  LUKS2-encrypted), a **Detect** button that lists host USB candidates, a
+  confirm-to-erase gate, then the appliance drives the host-side
+  `setup-usb-backup.sh` through `_host_run` (run in the host mount namespace) and
+  polls the status (detected / encrypted / keyslots). The one-time recovery
+  passphrase is surfaced once for the rack card; failures (no stick, missing
+  host script) fall back to a clear message + the exact manual command.
+
+### Changed
+- `install.sh` now also installs `setup-usb-backup.sh` and
+  `sync-backup-schedule.sh` to `/usr/local/bin` (the docs already referenced
+  them there).
+
+### Fixed
+- **Agent runner no longer loses job results to the login rate limit** — the
+  host-side runner logged in at every API call site with no caching, so a burst
+  of verify/device work could 429 the login endpoint and send `/jobs/result`
+  with an empty Bearer → 401 → the ticket never updated and the watchdog
+  escalated a job that actually succeeded. The runner now reuses a cached token
+  (≤5 min), retries 429/5xx logins with backoff, re-logins once on a 401 for
+  the result POST, and retries that POST with backoff too. Other call sites
+  (progress notes, device verify callbacks) inherit the cached login. Login
+  rate-limit defaults are unchanged (prod already runs `RATE_LIMIT_LOGIN=120`).
+- **`_host_run` works again on fresh installs (USB detect + NAS mount)** — the
+  privileged helper ran `nsenter -t 1 -m -- chroot /host …`, but `/host` is a
+  container-only bind mount that disappears once nsenter switches to the host
+  mount namespace, so `chroot /host` failed with "No such file or directory"
+  and USB-detect/NAS-mount fell back to the manual path on the fresh .207. The
+  helper now relies on the mount-namespace switch alone (after `nsenter -t 1
+  -m`, `/` IS the host rootfs — /etc, /dev, /sys, /proc are the host's) with
+  `env -i` + a full host-style PATH so host binaries in /usr/sbin (e.g.
+  cryptsetup) resolve, and the NAS mkdir runs in the host namespace too. Manual
+  fallbacks are unchanged.
+- **Setup wizard: choosing autonomy=autonomous now enables `PI_AGENT_ENABLED`** —
+  the autonomy save path (`PUT /api/v1/settings/policy`, used by both the wizard
+  and Settings → Autonomy) writes an active `PI_AGENT_ENABLED=true` line when the
+  profile is `autonomous`, so a fresh install no longer silently degrades to the
+  judge/catalog (the 08-17 Doom-uninstall escalation: autonomous was saved but pi
+  stayed off). The value is written bare (no inline `#` comment, which would
+  become part of the value and break `read_env_file`'s parse); non-autonomous
+  profiles leave the flag untouched.
+### Security
+- **Main web UI cert is now signed by the BareNOC Internal CA** — `deploy.sh`
+  issues the main nginx vhost's server certificate from the same CA
+  intermediate as the stepca vhost (leaf + intermediate chain; SANs:
+  `app.barenoc.com` + `bareNOC.local` + `pocket-id.barenoc.local` + the
+  appliance IP), replacing the old self-signed cert. A browser that trusts the
+  `/onboard/root-ca.crt` root now trusts `https://<appliance>` (no more
+  "Not Secure"). Idempotent: the cert is regenerated only when missing, still
+  self-signed, expired, or missing the appliance-IP SAN.
+
+### Ops
+- `proxmox/setup-usb-backup.sh` gains `--yes` (skip the primary-disk re-prompt
+  for guided-UI flows) and prints a machine-readable `RECOVERY_PASSPHRASE="…"`
+  line so the UI can surface it exactly once.
+
 ## [2026.08.17.c] — 2026-08-17
 
 ### Added

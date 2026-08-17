@@ -11,10 +11,10 @@ echo "==> py_compile (whole tree)"
 find src -name '*.py' -not -path '*/__pycache__/*' -print0 | xargs -0 python3 -m py_compile
 
 echo "==> api tests"
-( cd src/api && python3 -m unittest test_devices test_device_agent test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_alerting test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter 2>&1 | tail -3 )
+( cd src/api && python3 -m unittest test_devices test_device_agent test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter 2>&1 | tail -3 )
 
 echo "==> worker tests"
-( cd src/worker && python3 -m unittest test_judge test_juniper test_integration 2>&1 | tail -3 )
+( cd src/worker && python3 -m unittest test_judge test_juniper test_pi_flag test_integration 2>&1 | tail -3 )
 
 echo "==> scheduler tests"
 ( cd src/scheduler && python3 -m unittest test_scheduler 2>&1 | tail -3 )

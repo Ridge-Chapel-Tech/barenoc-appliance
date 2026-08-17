@@ -59,8 +59,16 @@ writable, and on a separate filesystem (a real mount).
 
 ## First-time stick setup (LUKS encryption)
 
-The USB stick must be **encrypted once** before the schedule can use it. This is
-an install-time operation on the Proxmox host (root), done once per stick:
+The USB stick must be **encrypted once** before the schedule can use it. From
+**Settings → Backups** (or the first-run wizard's Backups step), when no
+encrypted stick is configured the page shows a **“Set up a new USB stick”**
+card: plug a ≥4 GB stick into the Proxmox host, click **Detect**, confirm the
+erase, and the appliance drives the host-side setup and then reports
+`🔐 LUKS2 · 2 keyslots`. The one-time recovery passphrase is shown for the
+rack card.
+
+On hosts where the appliance can't drive it automatically (or for a manual
+run), this is the equivalent command (root, on the Proxmox host):
 
 ```bash
 # on the Proxmox host, with the stick plugged in — lists USB candidates first

@@ -185,13 +185,13 @@ class DevicesUiSmokeTest(unittest.TestCase):
             html = f.read()
         for label in ("➕ Adopt a device",
                       "Adopt",
-                      "Manual record",
+                      "Add to inventory (no credentials)",
                       "SSH credentials",
                       "Desktop agent",
                       "Register via API",
                       "Enable control",
                       "Identify",
-                      "Fingerprint",
+                      "Identify All",
                       "Onboarded devices",
                       "Unclaimed devices"):
             self.assertIn(label, html, f"missing UI label: {label}")
