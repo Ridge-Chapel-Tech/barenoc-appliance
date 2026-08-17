@@ -73,6 +73,15 @@ class AgentCredentialsTest(unittest.TestCase):
         cmd = runner._build_cmd("unifi_port_rename", "aa:bb", {"port_idx": 7, "name": "cam"})
         self.assertEqual(cmd[-3:], ["aa:bb", "7", "cam"])
 
+    def test_build_cmd_ticket_status(self):
+        # read-only: script takes the TKT-… id as its only arg (no SSH)
+        cmd = runner._build_cmd("ticket_status", "",
+                                {"ticket_id": "TKT-20260816-5935"})
+        self.assertEqual(cmd[0:3], ["bash",
+                                     os.path.join(runner.SCRIPTS_DIR, "ticket_status.sh"),
+                                     "TKT-20260816-5935"])
+        self.assertNotIn("ssh", " ".join(cmd).lower())
+
     def test_build_cmd_unifi_network_create(self):
         # name + vlan required; subnet/dhcp optional (script defaults them)
         cmd = runner._build_cmd("unifi_network_create", "",

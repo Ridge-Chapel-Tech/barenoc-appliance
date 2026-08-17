@@ -10,6 +10,7 @@ gates in worker/main.py. Capability = fast chat model; authority stays in code.
 """
 
 import json
+import re
 
 from judge import ACTION_CATALOG, Verdict
 from llm_client import get_provider
@@ -80,6 +81,10 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
         params, reason = {}, "Fetching network/VLAN/SSID configuration"
     elif action == "system_time":
         params, reason = {}, "Reading appliance time and timezone"
+    elif action == "ticket_status":
+        m = re.search(r"\bTKT-\d{8}-\d{4}\b", ticket_text, re.I)
+        target, params, reason = "", {"ticket_id": m.group(0).upper() if m else ""}, \
+                                 "Looking up the ticket's live status"
     elif action == "unifi_clients":
         params, reason = {}, "Listing known + active clients from UniFi"
     elif action == "unifi_devices":

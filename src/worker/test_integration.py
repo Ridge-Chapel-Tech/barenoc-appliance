@@ -506,6 +506,33 @@ def main():
        str(worker._attempt_config()))
     db.close()
 
+    # 20. TICKET-STATUS SHORT-CIRCUIT: an explicit TKT-… status reference
+    # answers deterministically (ticket_status) in EVERY profile — never calls
+    # the judge/executor and never spawns a device-action ticket (bug #16).
+    os.environ["LLM_JUDGE_ENABLED"] = "true"
+    os.environ["LLM_POLICY_PROFILE"] = "strict"
+    reset_policy_cache()
+    t = make_ticket("Can you give me a status on TKT-20260816-5935?", "P3")
+    db = SessionLocal()
+    with patch("judge.judge_request") as mj, patch("executor.call_executor") as me:
+        worker.process_ticket(db, db.query(Ticket).filter(Ticket.id == t.id).first())
+    mj.assert_not_called()
+    me.assert_not_called()
+    t = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("tkt status -> auto-executed (strict)", t.status == "in_progress", t.status)
+    ok("tkt status -> job written", bool(t.job_file_path) and os.path.exists(t.job_file_path))
+    if t.job_file_path and os.path.exists(t.job_file_path):
+        job = json.load(open(t.job_file_path))
+        ok("job action = ticket_status", job["action"] == "ticket_status",
+           job.get("action"))
+        ok("job params carry ticket_id",
+           job.get("params", {}).get("ticket_id") == "TKT-20260816-5935",
+           str(job.get("params")))
+    db.close()
+    os.environ.pop("LLM_POLICY_PROFILE", None)
+    os.environ["LLM_JUDGE_ENABLED"] = "false"
+    reset_policy_cache()
+
     # ── provider failover: chain a→b, a fails (timeout), b answers ──
     from llm_client import _PROVIDER_FAILURES, _PROVIDER_DOWN
     _PROVIDER_FAILURES.clear(); _PROVIDER_DOWN.clear()

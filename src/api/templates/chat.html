@@ -140,7 +140,8 @@ function showAuth() { stopPolling(); curTicket = null;
 function showList() { curTicket = null; if (!token()) return showAuth();
   $('screen-list').style.display = 'flex'; $('screen-thread').style.display = 'none';
   $('screen-auth').style.display = 'none'; $('btn-logout').style.display = 'block';
-  $('btn-back').style.display = 'none'; loadList(); listTimer = setInterval(loadList, 10000);
+  $('btn-dash').style.display = 'block'; $('btn-back').style.display = 'none';
+  loadList(); listTimer = setInterval(loadList, 10000);
 }
 function showThread(id) { curTicket = id;
   $('screen-thread').style.display = 'flex'; $('screen-list').style.display = 'none';

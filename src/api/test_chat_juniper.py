@@ -139,5 +139,46 @@ class RouteBindingTest(unittest.TestCase):
         self.assertEqual(r.status_code, 401)
 
 
+class TicketStatusActionTest(unittest.TestCase):
+    """ticket_status — the read-only action that answers 'status on TKT-…'."""
+
+    def test_validate_action_accepts(self):
+        from action_validator import validate_action
+        self.assertTrue(validate_action("ticket_status")[0])
+
+    def test_validate_params_accepts_good_tkt(self):
+        from action_validator import validate_params
+        ok, _ = validate_params("ticket_status",
+                                {"ticket_id": "TKT-20260816-5935"})
+        self.assertTrue(ok)
+
+    def test_validate_params_rejects_bad_tkt(self):
+        from action_validator import validate_params
+        for bad in ("", "TKT-123", "TKT-20260816-593", "TKT-20260816-59355",
+                    "ABC-20260816-5935", "TKT-20260816-5935x"):
+            ok, msg = validate_params("ticket_status", {"ticket_id": bad})
+            self.assertFalse(ok, f"should reject {bad!r}: {msg}")
+        self.assertFalse(validate_params("ticket_status", {})[0])
+
+    def test_read_only_set_membership(self):
+        # ticket_status is read-only: it never needs a managed-device target and
+        # the worker's READ_ONLY_ACTIONS treats it like system_time.
+        from action_validator import ACTION_SCRIPTS, AllowedAction
+        self.assertEqual(ACTION_SCRIPTS[AllowedAction.TICKET_STATUS],
+                         "scripts/ticket_status.sh")
+
+    def test_status_route_binds(self):
+        from fastapi.testclient import TestClient
+        from main import app
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/tickets/{ticket_id}/status"
+                     and "GET" in getattr(r, "methods", []))
+        self.assertEqual(route.endpoint.__name__, "ticket_status")
+        c = TestClient(app)
+        r = c.get("/api/v1/tickets/TKT-20260816-0001/status")
+        self.assertNotEqual(r.status_code, 422, f"route misbound: {r.text}")
+        self.assertEqual(r.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

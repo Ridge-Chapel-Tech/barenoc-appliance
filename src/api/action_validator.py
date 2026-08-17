@@ -14,6 +14,7 @@ class AllowedAction(str, enum.Enum):
     NETWORK_DISCOVERY = "network_discovery"
     NETWORK_INFO = "network_info"  # logical: AI Tech answers network/VLAN queries from UniFi
     SYSTEM_TIME = "system_time"  # read-only: appliance current time + timezone
+    TICKET_STATUS = "ticket_status"  # read-only: live status of a ticket by TKT-… id
     UNIFI_CLIENTS = "unifi_clients"  # read-only: who is online (UniFi)
     UNIFI_DEVICES = "unifi_devices"  # read-only: device health/uptime (UniFi)
     UNIFI_PORTS = "unifi_ports"      # read-only: switch port table (UniFi)
@@ -48,6 +49,7 @@ ACTION_SCRIPTS = {
     AllowedAction.NETWORK_DISCOVERY: "scripts/discover.sh",
     AllowedAction.NETWORK_INFO: "scripts/network_info.sh",
     AllowedAction.SYSTEM_TIME: "scripts/system_time.sh",
+    AllowedAction.TICKET_STATUS: "scripts/ticket_status.sh",
     AllowedAction.UNIFI_CLIENTS: "scripts/unifi_clients.sh",
     AllowedAction.UNIFI_DEVICES: "scripts/unifi_devices.sh",
     AllowedAction.UNIFI_PORTS: "scripts/unifi_ports.sh",
@@ -129,6 +131,13 @@ def validate_params(action: str, params: dict) -> tuple[bool, str]:
     if action == AllowedAction.REBOOT_DEVICE.value:
         # reboot_device.sh reboots immediately over SSH (maintenance window is
         # enforced by the operator/AI judgement, not by a scheduled_at param).
+        return True, ""
+
+    if action == AllowedAction.TICKET_STATUS.value:
+        ticket_id = str(params.get("ticket_id", "")).strip().upper()
+        if not re.match(r"^TKT-\d{8}-\d{4}$", ticket_id):
+            return False, ("ticket_status requires 'ticket_id' in the form "
+                           "TKT-YYYYMMDD-NNNN")
         return True, ""
 
     if action == AllowedAction.APPLY_PATCH.value:

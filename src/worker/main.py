@@ -45,6 +45,28 @@ def _assistant_name() -> str:
     return name or "Lily"
 
 
+# ── deterministic ticket-status routing (bug #16) ────────────────────────
+# A chat message that names a ticket with a status/where-at intent must answer
+# read-only from the ticket's derived status — never spawn a device-action
+# ticket for a ticket id. The LLM catalog + prompt make `ticket_status` the
+# obvious pick generally; this short-circuit guarantees the explicit case in
+# every profile (strict/balanced/autonomous).
+_TKT_RE = re.compile(r"\bTKT-\d{8}-\d{4}\b", re.I)
+_TKT_STATUS_INTENT_RE = re.compile(
+    r"\b(status|where|where'?s|wheres|progress|update|doing|done|complete|completed|"
+    r"finished|state|happening)\b", re.I)
+
+
+def _ticket_status_intent(text: str):
+    """Return the TKT-… id when `text` names a ticket AND asks about its
+    status/where-it-is — the read-only ticket_status answer. None otherwise."""
+    t = text or ""
+    m = _TKT_RE.search(t)
+    if not m or not _TKT_STATUS_INTENT_RE.search(t):
+        return None
+    return m.group(0).upper()
+
+
 
 def _judge_enabled() -> bool:
     """Legacy switch: LLM_JUDGE_ENABLED. Policy profiles also enable the judge
@@ -135,6 +157,12 @@ def _customer_reply(reason: str) -> str:
     return f"Waiting on customer: {reason}"
 
 
+def _plain_reason(reason: str) -> str:
+    """One-line, human-facing reason for an escalation (no raw executor dump)."""
+    cleaned = " ".join((reason or "").split())
+    return cleaned[:240] or "the request needs manual review"
+
+
 def process_ticket(db, ticket):
     """Process a single ticket through the LLM pipeline."""
     from llm_client import call_llm
@@ -218,10 +246,26 @@ def process_ticket(db, ticket):
         log_event(db, "customer_action", "greeting", {"ticket_id": ticket_id}, ticket_id)
         return
 
+    # Deterministic ticket-status short-circuit (bug #16): an explicit TKT-…
+    # reference with a status/where-at intent is answered read-only from the
+    # ticket's derived status. Placed BEFORE the autonomous-pi dispatch and the
+    # judge/LLM so every profile answers the same and no device-action ticket
+    # is ever spawned for a ticket id.
+    _tkt_status_id = _ticket_status_intent(ticket_text)
+    if _tkt_status_id:
+        from llm_client import LLMResponse as _LLMResponse
+        llm_response = _LLMResponse(
+            action="ticket_status", target="", params={"ticket_id": _tkt_status_id},
+            reason=f"Look up the live status of {_tkt_status_id}",
+            confidence=0.99, raw_text="", model="deterministic",
+            prompt_tokens=0, response_tokens=0, cost_usd=0.0)
+    else:
+        llm_response = None
+
     # Autonomous + Lily mode: route open-ended tickets straight to the
     # local agent, Lily (full tool access, no gates — experimental).
     from policy import get_policy as _get_policy
-    if _get_policy().profile == "autonomous" and _pi_enabled():
+    if llm_response is None and _get_policy().profile == "autonomous" and _pi_enabled():
         _dispatch_pi(db, ticket, ticket_text)
         return
 
@@ -231,7 +275,7 @@ def process_ticket(db, ticket):
     policy = get_policy()
     judge_enabled = policy.judge_required or _judge_enabled()
     verdict = None
-    if judge_enabled:
+    if judge_enabled and llm_response is None:
         from judge import judge_request
         verdict = judge_request(
             ticket_text, priority=ticket.priority, device_context=device_context,
@@ -294,37 +338,41 @@ def process_ticket(db, ticket):
             return
 
     # Step 5: Call LLM — executor (judge-enabled) or the single-phase technician
+    # (skipped when the deterministic TKT-… status short-circuit already decided).
     # Failure-feedback loop: if an earlier agent run failed, feed the error back
     # so the AI can correct and retry instead of escalating. Also give it the
     # device inventory + the customer's latest comments (the full thread).
-    failure_ctx = _failure_context(ticket)
-    inv_ctx = _device_inventory_context(db)
-    user_ctx = _recent_user_context(ticket)
-    prior_ctx = _prior_agent_context(ticket)
-    extra_ctx = "\n\n".join(x for x in (user_ctx, failure_ctx, prior_ctx, inv_ctx) if x)
-    if judge_enabled:
-        from executor import call_executor
-        llm_response = call_executor(
-            ticket_text=ticket_text,
-            priority=ticket.priority,
-            device_context=device_context,
-            verdict=verdict,
-        )
-    else:
-        llm_response = call_llm(
-            ticket_text=ticket_text,
-            priority=ticket.priority,
-            device_context=device_context,
-            use_reasoner=use_reasoner,
-            extra_context=extra_ctx,
-        )
+    if llm_response is None:
+        failure_ctx = _failure_context(ticket)
+        inv_ctx = _device_inventory_context(db)
+        user_ctx = _recent_user_context(ticket)
+        prior_ctx = _prior_agent_context(ticket)
+        extra_ctx = "\n\n".join(x for x in (user_ctx, failure_ctx, prior_ctx, inv_ctx) if x)
+        if judge_enabled:
+            from executor import call_executor
+            llm_response = call_executor(
+                ticket_text=ticket_text,
+                priority=ticket.priority,
+                device_context=device_context,
+                verdict=verdict,
+            )
+        else:
+            llm_response = call_llm(
+                ticket_text=ticket_text,
+                priority=ticket.priority,
+                device_context=device_context,
+                use_reasoner=use_reasoner,
+                extra_context=extra_ctx,
+            )
 
-    if not llm_response:
-        _handle_llm_failure(db, ticket, "model service returned no response")
-        return
+        if not llm_response:
+            _handle_llm_failure(db, ticket, "model service returned no response")
+            return
 
     # The LLM chain answered — if an outage ticket is open, close it.
-    _clear_llm_outage(db, llm_response.model or "")
+    # (skipped for the deterministic TKT-… short-circuit: no provider answered)
+    if not _tkt_status_id:
+        _clear_llm_outage(db, llm_response.model or "")
 
     # Step 6: Store LLM metadata on ticket
     # Read-action guardrail: the ticket asked for a specific device subset but
@@ -440,9 +488,10 @@ def process_ticket(db, ticket):
             }, ticket_id)
             return
         add_note(ticket, "escalated",
-                 f"{_assistant_name()}: needs human input — {llm_response.reason}")
+                 f"{_assistant_name()} needs a human for this one: "
+                 f"{_plain_reason(llm_response.reason)}")
         ticket.status = "escalated"
-        ticket.resolution = f"Human tech required: {llm_response.reason}"
+        ticket.resolution = f"Human tech required: {_plain_reason(llm_response.reason)}"
         ticket.assigned_to = "human-tech"
         db.commit()
         log_event(db, "escalation", "ai-tech", {
@@ -466,7 +515,8 @@ def process_ticket(db, ticket):
         return
 
     READ_ONLY_ACTIONS = {"ping_test", "snmp_poll", "device_status", "network_discovery",
-                          "network_info", "system_time", "unifi_clients", "unifi_devices", "unifi_ports",
+                          "network_info", "system_time", "ticket_status",
+                          "unifi_clients", "unifi_devices", "unifi_ports",
                           "unifi_client_port", "unifi_firewall_rules",
                           "fingerprint_device"}
     conf = llm_response.confidence

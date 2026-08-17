@@ -118,6 +118,18 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append(f"  • UTC: {out['utc']}")
         if out.get("uptime"):
             lines.append(f"  • uptime: {out['uptime']}")
+    elif action == "ticket_status":
+        tid = out.get("ticket_id") or "?"
+        lines.append(f"Ticket {tid}: {out.get('label') or out.get('status') or 'no activity yet'}.")
+        idle = out.get("idle_seconds")
+        if idle is not None:
+            try:
+                mins = max(0, int(idle) // 60)
+                lines.append(f"  • last activity {'<1m' if mins < 1 else str(mins) + 'm'} ago")
+            except (TypeError, ValueError):
+                pass
+        if out.get("resolution"):
+            lines.append(f"  • resolution: {out['resolution']}")
     elif action == "enroll_device":
         if out.get("enrolled"):
             lines.append(f"✅ Adopted {out.get('device','the device')} with a certificate.")

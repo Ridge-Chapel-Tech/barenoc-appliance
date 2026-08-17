@@ -201,8 +201,14 @@ ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf
     # the live env's efivars into the target and re-run grub-install so the
     # 'ubuntu' entry is registered in the VM's NVRAM; --removable also leaves
     # EFI/BOOT/BOOTX64.EFI on the ESP as a firmware fallback.
+    #
+    # 2026-08-17: this re-install is now CONDITIONAL — curtin's own
+    # install-grub hook succeeds on current builds (grub-efi-amd64-signed +
+    # shim-signed + NVRAM entries registered) and the unconditional re-run was
+    # failing with exit 3 (grub-install error), killing the install. Fall back
+    # to the 08-14 re-install only when the 'ubuntu' NVRAM entry is missing.
     - mkdir -p /target/sys/firmware/efi/efivars && mount --bind /sys/firmware/efi/efivars /target/sys/firmware/efi/efivars
-    - curtin in-target -- bash -c "grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --removable && grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu && update-grub"
+    - curtin in-target -- bash -c "if ! efibootmgr 2>/dev/null | grep -qi ubuntu; then grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --removable && grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu && update-grub; fi"
     # first-boot unit: run provisioning + app deploy once (needs network)
     # NOTE: After=cloud-init.target — the barenoc identity user is created by
     # cloud-init at first boot, not during install (late-commands found no

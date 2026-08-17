@@ -15,6 +15,37 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.17.a] — 2026-08-17
+
+### Added
+- **`ticket_status` action — Lily answers "status on TKT-…"** — a new read-only
+  catalog action (`scripts/ticket_status.sh`) looks up a ticket's live status
+  by its `TKT-…` id via the existing `GET /api/v1/tickets/{id}/status`
+  endpoint (derived stage + idle age + last note). A chat message that names a
+  ticket with a status/where-at intent now routes deterministically to this
+  action in every profile instead of spawning a device-action ticket
+  (GitHub #16).
+
+### Fixed
+- **Chat ticket references (#16)** — "status on TKT-…" / "where's TKT-… at" /
+  "is TKT-… done?" now answer read-only from the ticket's derived status
+  instead of escalating with a confusing `device_status` error.
+- **Mobile chat: Dashboard button on the list view (#17)** — the chat list
+  screen now shows the Dashboard button (it was only visible inside a thread).
+
+### Changed
+- **Clearer escalation text** — the human-facing escalation line is now
+  "Lily needs a human for this one: …" instead of the raw executor reason.
+
+### Ops
+- **ISO installer: grub-install late-command is now a conditional fallback
+  (#19)** — curtin's own install-grub hook succeeds on current builds
+  (NVRAM entry + shim-signed installed); the seed's unconditional re-run was
+  failing with grub-install exit 3 and aborting installs. It now re-runs only
+  when the `ubuntu` boot entry is actually missing (preserves the 08-14
+  fallback for hosts where curtin can't write NVRAM). Found during the .i
+  ISO revalidation.
+
 ## [2026.08.16.i] — 2026-08-16
 
 ### Added

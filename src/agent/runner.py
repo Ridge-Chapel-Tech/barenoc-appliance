@@ -160,6 +160,7 @@ ACTION_SCRIPTS = {
     "network_discovery": "discover.sh",
     "network_info": "network_info.sh",
     "system_time": "system_time.sh",
+    "ticket_status": "ticket_status.sh",
     "unifi_clients": "unifi_clients.sh",
     "unifi_devices": "unifi_devices.sh",
     "unifi_ports": "unifi_ports.sh",
@@ -382,6 +383,8 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
     script_path = os.path.join(SCRIPTS_DIR, script)
     if action == "ping_test":
         return ["bash", script_path, target]
+    if action == "ticket_status":
+        return ["bash", script_path, str(params.get("ticket_id", ""))]
     if action == "network_discovery":
         return ["bash", script_path, target]
     if action == "unifi_port_config":

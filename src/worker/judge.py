@@ -46,6 +46,7 @@ from llm_client import get_provider
 ACTION_CATALOG = [
     "ping_test", "snmp_poll", "device_status", "apply_patch", "reboot_device",
     "collect_logs", "network_discovery", "network_info", "system_time",
+    "ticket_status",
     "unifi_clients", "unifi_devices", "unifi_ports", "unifi_port_config",
     "unifi_client_port", "unifi_firewall_rules", "unifi_restart",
     "unifi_port_bounce", "unifi_port_rename", "unifi_ensure_wireless_uplinks", "batch",
@@ -119,6 +120,11 @@ def _active_risk_patterns(risk_filters: "str | None") -> list:
 
 # Known-good read-only patterns -> immediate low-risk verdict, no LLM call.
 _KNOWN_GOOD_PATTERNS = [
+    # a bare ticket reference in the Lily/ticket pipeline is a status/summary
+    # request — answer read-only from the ticket's derived status (bug #16).
+    # Placed FIRST: it is the most specific signal and must win over the
+    # generic "status" -> device_status pattern below.
+    (re.compile(r"\bTKT-\d{8}-\d{4}\b", re.I), "ticket_status"),
     (re.compile(r"\bwho('s| is)? online\b|\b(connected|active) clients?\b", re.I), "unifi_clients"),
     (re.compile(r"\bswitch ports?\b|\bport table\b", re.I), "unifi_ports"),
     (re.compile(r"\bping\b", re.I), "ping_test"),
@@ -286,6 +292,11 @@ def _mock_judge(ticket_text: str, priority: str) -> Verdict:
         return Verdict(lawful="ambiguous", action_class="", risk="high", scope="managed",
                        checks={"legal": True, "doable": True, "safe": False, "in_scope": True},
                        reason="Mock judge: write action — needs a maintenance window + human approval.",
+                       model="mock")
+    if re.search(r"\bTKT-\d{8}-\d{4}\b", t):
+        return Verdict(lawful="yes", action_class="ticket_status", risk="low", scope="managed",
+                       checks={"legal": True, "doable": True, "safe": True, "in_scope": True},
+                       reason="Mock judge: ticket status lookup.",
                        model="mock")
     if any(w in t for w in ("ping", "status", "online", "report", "vlan", "network", "snmp")):
         return Verdict(lawful="yes", action_class="device_status", risk="low", scope="managed",

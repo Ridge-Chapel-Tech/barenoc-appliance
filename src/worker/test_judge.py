@@ -248,6 +248,56 @@ class NewReadActionsTest(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class TicketStatusActionTest(unittest.TestCase):
+    """ticket_status — read-only catalog action that answers TKT-… references."""
+
+    def test_in_catalog(self):
+        self.assertIn("ticket_status", judge.ACTION_CATALOG)
+
+    def test_validate_action(self):
+        from action_validator import validate_action, validate_params
+        self.assertTrue(validate_action("ticket_status")[0])
+        self.assertTrue(validate_params("ticket_status",
+                                        {"ticket_id": "TKT-20260816-5935"})[0])
+
+    def test_validate_params_rejects_bad_tkt(self):
+        from action_validator import validate_params
+        for bad in ("", "TKT-123", "TKT-20260816-593", "TKT-20260816-59355",
+                    "ABC-20260816-5935", "TKT-20260816-5935x"):
+            ok, msg = validate_params("ticket_status", {"ticket_id": bad})
+            self.assertFalse(ok, f"should reject {bad!r}: {msg}")
+        self.assertFalse(validate_params("ticket_status", {})[0])
+
+    def test_validate_params_normalizes_case(self):
+        from action_validator import validate_params
+        self.assertTrue(validate_params("ticket_status",
+                                        {"ticket_id": "tkt-20260816-5935"})[0])
+
+    def test_short_circuit_tkt_status(self):
+        v = short_circuit_verdict("where's TKT-20260816-5935 at?", "P3")
+        self.assertIsNotNone(v)
+        self.assertEqual(v.action_class, "ticket_status")
+        self.assertTrue(v.short_circuit)
+        # the TKT pattern must win over the generic "status" -> device_status
+        v2 = short_circuit_verdict("status on TKT-20260816-5935", "P3")
+        self.assertEqual(v2.action_class, "ticket_status")
+
+    def test_mock_judge_tkt_status(self):
+        with patch("judge.get_provider", return_value={"api_key": ""}):
+            v = judge_request("is TKT-20260816-5935 done?", "P3")
+        self.assertEqual(v.lawful, "yes")
+        self.assertEqual(v.action_class, "ticket_status")
+
+    def test_mock_executor_synthetic(self):
+        v = Verdict(lawful="yes", action_class="ticket_status", risk="low",
+                    checks={"legal": True}, reason="ok")
+        with patch("executor.get_provider", return_value={"api_key": ""}):
+            resp = call_executor("status on TKT-20260816-5935", "P3", verdict=v)
+        self.assertEqual(resp.action, "ticket_status")
+        self.assertEqual(resp.target, "")
+        self.assertEqual(resp.params.get("ticket_id"), "TKT-20260816-5935")
+
+
 class UnifiPortConfigTest(unittest.TestCase):
     """unifi_port_config is now a first-class worker action (was enum-gapped)."""
     def test_validate_action(self):
