@@ -11,7 +11,8 @@ Capabilities (deterministic-first, LLM polish):
   2. summarize TKT-…  — 2-4 sentence summary (LLM; deterministic fallback).
   3. intake           — "I need X installed" -> a real ticket with a judged
                         priority (deterministic rules + confidence note).
-  4. directives       — pause/resume/note-to-tech conduit the worker honors.
+  4. directives       — pause/resume/close/note-to-tech conduit the worker
+                        honors.
   5. anything else    — a short help reply.
 
 Parallel-safe by construction: reads state, creates NEW tickets, and writes
@@ -169,7 +170,7 @@ def _parse_pause_time(rest: str, now=None):
 
 def parse_directive(text: str, now=None) -> dict:
     """Parse a conduit directive from a message. Returns None when the message
-    is not a directive. Kinds: pause / resume / note."""
+    is not a directive. Kinds: pause / resume / close / note."""
     t = (text or "").strip()
 
     m = re.search(r"\b(pause|hold)\s+(TKT-\d{8}-\d{4})\b\s*(?:until\s+)?(.+)?", t, re.I)
@@ -189,6 +190,15 @@ def parse_directive(text: str, now=None) -> dict:
     m = re.search(r"\bresume\s+(TKT-\d{8}-\d{4})\b", t, re.I)
     if m:
         return {"kind": "resume", "ticket_id": m.group(1).upper()}
+
+    # close: "close TKT-…" (explicit) / "close the ticket" (context fallback).
+    # If the no-id wording also names a ticket, the explicit id wins.
+    m = re.search(r"\bclose\s+(TKT-\d{8}-\d{4})\b", t, re.I)
+    if m:
+        return {"kind": "close", "ticket_id": m.group(1).upper()}
+    if re.search(r"\bclose\s+(?:the\s+|this\s+)?ticket\b", t, re.I):
+        tkt = TKT_RE.search(t)
+        return {"kind": "close", "ticket_id": (tkt.group(0).upper() if tkt else None)}
 
     m = re.search(
         r"\b(?:note|tell)\s+to\s+(?:the\s+)?technician(?:\s+on\s+(TKT-\d{8}-\d{4}))?\s*:\s*(.+)",
@@ -362,6 +372,7 @@ def help_text() -> str:
         "• \"summarize TKT-…\" — a short summary of a ticket\n"
         "• \"I need Doom installed on my laptop\" — open a ticket (I judge the priority)\n"
         "• \"pause TKT-… until 8 PM\" / \"resume TKT-…\" — hold or release a ticket\n"
+        "• \"close TKT-…\" / \"close the ticket\" — close a ticket\n"
         "• \"note to technician: …\" — pass a message to the tech on your active ticket"
     )
 
@@ -425,7 +436,9 @@ def _handle_intake(db, bot, msg, sender, text: str) -> ChatMessage:
     except Exception:
         logger.exception("Juniper intake audit failed (non-fatal)")
     _alert_intake(ticket)
-    return reply(db, bot, msg, f"Opened {ticket.ticket_id} ({priority}) — Lily will pick it up.")
+    return reply(db, bot, msg,
+                 f"Opened {ticket.ticket_id} ({priority}) — Lily will pick it up.\n"
+                 f"View {ticket.ticket_id} →")
 
 
 # ── directive handlers ──────────────────────────────────────────────────────
@@ -434,6 +447,8 @@ def _handle_directive(db, bot, msg, sender, directive: dict) -> ChatMessage:
     kind = directive["kind"]
     if kind == "note":
         return _handle_note(db, bot, msg, sender, directive)
+    if kind == "close":
+        return _handle_close(db, bot, msg, sender, directive)
 
     tkt_id = directive["ticket_id"]
     ticket = db.query(Ticket).filter(Ticket.ticket_id == tkt_id).first()
@@ -478,6 +493,45 @@ def _handle_note(db, bot, msg, sender, directive: dict) -> ChatMessage:
     add_note(ticket, "user_message", directive["message"], actor=sender.username)
     db.commit()
     return reply(db, bot, msg, f"Done — I've passed your note to the technician on {ticket.ticket_id}.")
+
+
+def _handle_close(db, bot, msg, sender, directive: dict) -> ChatMessage:
+    """Close a ticket on the customer's word — same authorization as
+    pause/resume (owner/operator/admin only; a tenant can close their own).
+    "close the ticket" without an id resolves to the most recent active
+    ticket. Mirrors the API PATCH close (status + resolved_at + who closed
+    it) and writes an audit event."""
+    tkt_id = directive.get("ticket_id")
+    if tkt_id:
+        ticket = db.query(Ticket).filter(Ticket.ticket_id == tkt_id).first()
+        if not ticket:
+            return reply(db, bot, msg, f"I can't find {tkt_id}.")
+    else:
+        ticket = _most_recent_active_ticket(db, sender)
+        if not ticket:
+            return reply(db, bot, msg,
+                         "I don't see an active ticket to close — mention the ticket id "
+                         "(e.g. \"close TKT-…\").")
+        tkt_id = ticket.ticket_id
+
+    if not can_direct(ticket, sender):
+        return reply(db, bot, msg,
+                     f"I can't close {tkt_id} — only the ticket owner or an operator can close that ticket.")
+    if ticket.status == "closed":
+        return reply(db, bot, msg, f"{tkt_id} is already closed.")
+
+    ticket.status = "closed"
+    ticket.resolved_at = datetime.datetime.utcnow()
+    ticket.assigned_to = sender.username  # record who closed it (mirrors the API PATCH)
+    add_note(ticket, "closed", f"Closed by {sender.username}", actor="juniper")
+    db.commit()
+    try:
+        log_event(db, "ticket_closed", "juniper", {
+            "ticket_id": tkt_id, "by": sender.username, "via": "juniper-close",
+        }, tkt_id)
+    except Exception:
+        logger.exception("Juniper close audit failed (non-fatal)")
+    return reply(db, bot, msg, f"Done — {tkt_id} is closed.")
 
 
 def _handle_summary(db, bot, msg, sender, tkt_id: str) -> ChatMessage:

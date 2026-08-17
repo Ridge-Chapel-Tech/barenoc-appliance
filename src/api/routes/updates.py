@@ -25,7 +25,6 @@ from routes.settings import _read_env_file
 router = APIRouter(prefix="/api/v1/updates", tags=["updates"])
 
 STATUS_DIR = "/opt/barenoc/volumes/update_status"
-STATUS_FILE = os.path.join(STATUS_DIR, "status.json")
 UPDATE_REQ = os.path.join(STATUS_DIR, "update_request.json")
 ROLLBACK_REQ = os.path.join(STATUS_DIR, "rollback_request.json")
 SCHEDULE_FILE = os.path.join(STATUS_DIR, "update_schedule.conf")
@@ -55,7 +54,7 @@ def _current_version() -> str:
 
 def _read_status() -> dict:
     try:
-        with open(STATUS_FILE) as f:
+        with open(os.path.join(STATUS_DIR, "status.json")) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -70,10 +69,42 @@ def _read_progress() -> dict:
         return {}
 
 
+def _read_update_result() -> dict:
+    """The last in-app update/rollback result (persisted by the host service)."""
+    try:
+        with open(os.path.join(STATUS_DIR, "update_result.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _confirmed_progress(progress: dict) -> dict:
+    """Annotate the host service's progress so the card never re-renders a
+    stale completion banner.
+
+    A terminal 'done' stage is a COMPLETED event: the self-update script writes
+    it only after the health check passes, so the running version has already
+    flipped — the version flip + health check IS the confirmation. Any 'done'
+    (whether the completed version is the running one or a since-superseded
+    older one) should render the steady 'up to date' state, not a permanent
+    'Complete 100%' banner.
+
+    We annotate (add ``confirmed``) rather than delete the file: the scheduler's
+    notify watcher reads the same status and emails each terminal transition
+    ONCE using a persisted key — the raw ``stage`` must stay visible to it so
+    that once-email keeps firing. A terminal 'failed' (still actionable) and
+    in-flight stages are left untouched.
+    """
+    progress = dict(progress or {})
+    if (progress.get("stage") or "") == "done":
+        progress["confirmed"] = True
+    return progress
+
+
 def _write_status(status: dict):
     try:
         os.makedirs(STATUS_DIR, exist_ok=True)
-        with open(STATUS_FILE, "w") as f:
+        with open(os.path.join(STATUS_DIR, "status.json"), "w") as f:
             json.dump(status, f, indent=2)
     except Exception:
         pass
@@ -128,19 +159,27 @@ def _run_check() -> dict:
 @router.get("/status")
 def update_status(user: User = Depends(require_any_role("operator", "admin", "agent"))):
     status = _read_status()
-    # always include the live installed version + schedule even pre-check
-    status.setdefault("current", _current_version())
+    live = _current_version()
+    # The live installed version ALWAYS wins — a stale check result (status.json
+    # was written when an older build was installed) must never be shown as the
+    # current version. Keep the rest of the shape the UI already uses.
+    stored_current = status.get("current", "")
+    status["current"] = live
     status.setdefault("update_access", _update_access(_read_env_file()))
+    # Stable shape before any check has run: the UI (dashboard banner) reads
+    # latest/available and must never see them missing (08-17 gate fix on #26).
+    status.setdefault("latest", "")
+    status.setdefault("available", False)
+    status.setdefault("manifest_error", "")
     status.setdefault("checked_at", "")
+    # Signal when the persisted check predates the running build so the UI can
+    # refresh it on load (checked_at/latest/available would otherwise stay stale
+    # too — the .d auto-check-on-load only ran when checked_at was missing).
+    status["check_stale"] = bool(stored_current != live or not status.get("checked_at"))
     status["schedule"] = _read_schedule()
-    last = {}
-    try:
-        with open(os.path.join(STATUS_DIR, "update_result.json")) as f:
-            last = json.load(f)
-    except Exception:
-        pass
+    last = _read_update_result()
     status["last_update"] = last
-    status["progress"] = _read_progress()
+    status["progress"] = _confirmed_progress(_read_progress())
     return status
 
 

@@ -11,9 +11,11 @@ import subprocess
 import datetime
 import re
 import uuid
+import zlib
 import urllib.request
 import urllib.error
 import ssl
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 # Allow self-signed certs for local API calls
@@ -531,13 +533,124 @@ def _pi_provider_config() -> dict:
     return {"provider": provider, "model": model, "api_key": key}
 
 
+# Chat-tone safety net for live progress notes. A verbose pi session may emit
+# notes full of internals (paths, sudo/perm analysis, package names, API
+# detail). The sysctx asks for friendly one-liners, but this is the backstop:
+# technical-looking notes are replaced with a short friendly generic before they
+# reach the chat. The raw text stays in the pi session transcript (and the
+# runner log) — the customer never sees internals. Final answers are cleaned
+# separately in src/api/tone_filter.py (jobs.py result formatting).
+_FRIENDLY_PROGRESS = [
+    "Working on it…",
+    "Connecting now…",
+    "Installing now…",
+    "Almost done — just verifying…",
+    "Still on it — one moment…",
+]
+
+_TECH_NOTE_PATTERNS = [
+    re.compile(r"`"),                       # backticked command / `code`
+    re.compile(r"~/", re.IGNORECASE),       # home-path shorthand
+    re.compile(r"/(etc|opt|usr|var|home|tmp|sbin|bin)/", re.IGNORECASE),
+    re.compile(r"\\"),                    # Windows path separator
+    re.compile(r"\b(uids?|gids?|pids?|nopasswd|sudoers|passwordless|passwd)\b",
+               re.IGNORECASE),
+    re.compile(r"\b(sudo|ssh|scp|rsync|dnf|apt|apt-get|yum|apk|zypper|curl|wget|"
+               r"systemctl|journalctl|chmod|chown|usermod|nmap|ping|traceroute)\b",
+               re.IGNORECASE),
+    re.compile(r"\b(localhost|127\.0\.0\.1|0\.0\.0\.0)\b", re.IGNORECASE),
+    re.compile(r"(api/|/api/v\d|endpoint|https?://)", re.IGNORECASE),
+    re.compile(r"\.json\b", re.IGNORECASE),
+    re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b"),   # bare IPv4 addresses
+    re.compile(r"\b(TKT-\d|ticket_id|access_token|bearer)\b", re.IGNORECASE),
+]
+
+# A friendly progress note is one short sentence; anything this long is almost
+# certainly several sentences of internal detail.
+_PROGRESS_MAX_FRIENDLY_LEN = 220
+
+
+def _is_technical_note(text: str) -> bool:
+    """True when a live progress note looks like internal/technical detail."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if len(t) > _PROGRESS_MAX_FRIENDLY_LEN:
+        return True
+    if any(p.search(t) for p in _TECH_NOTE_PATTERNS):
+        return True
+    # ">N chars of jargon": snake_case / long / digit-letter tokens.
+    words = re.findall(r"[A-Za-z0-9_]+", t)
+    jargon = 0
+    for w in words:
+        if len(w) > 18 or "_" in w or (
+                re.search(r"\d", w) and re.search(r"[A-Za-z]", w) and len(w) >= 4):
+            jargon += 1
+    return jargon >= 2
+
+
+def _friendly_progress_note(text: str) -> "tuple[str, bool]":
+    """Return (chat_safe_note, was_filtered) for a live progress note.
+
+    User-facing notes pass through untouched; technical-looking notes are
+    replaced with a short friendly generic (deterministic per input)."""
+    if not _is_technical_note(text):
+        return (text or "").strip(), False
+    idx = zlib.crc32((text or "").encode("utf-8")) % len(_FRIENDLY_PROGRESS)
+    return _FRIENDLY_PROGRESS[idx], True
+
+# Progress-note cap: high enough that a real pi answer fits (the 08-17 incident
+# stored a 250-char slice of a dnf check-update answer mid-sentence, no
+# ellipsis), low enough to keep a note from ballooning. MUST MATCH
+# src/api/routes/tickets.py (PROGRESS_NOTE_MAX_CHARS) — the stored note is the
+# smaller of the two layers.
+PROGRESS_NOTE_MAX_CHARS = 2000
+
+
+def _ellipsize(text: str, limit: int = PROGRESS_NOTE_MAX_CHARS) -> str:
+    """Trim `text` to at most `limit` chars. If content was removed, append a
+    Unicode ellipsis (…) so the note reads as a snippet — a truncation is never
+    silent. Cut on a word boundary when possible so a word isn't split mid-run."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+    if boundary > limit // 2:
+        cut = cut[:boundary]
+    return cut.rstrip() + "…"
+
+
+def _assistant_complete_text(msg: dict) -> "str | None":
+    """The concatenated text of an assistant session message, or None when the
+    message is still streaming/incomplete (no terminal stopReason, or the
+    reserved 'pending' value). pi persists only finalized messages, so this is
+    a guard against posting a mid-word fragment as a progress note."""
+    if not isinstance(msg, dict):
+        return None
+    stop = msg.get("stopReason")
+    if stop in (None, "pending"):
+        return None
+    text = "".join(
+        (c.get("text") or "") for c in (msg.get("content") or [])
+        if isinstance(c, dict) and c.get("type") == "text")
+    return text.strip() or None
+
+
 def _post_progress(ticket_id: str, text: str) -> None:
     """Post a brief live progress note to the ticket (agent_progress event)."""
+    raw = text
+    text, was_filtered = _friendly_progress_note(text)
+    if was_filtered:
+        # The technical original lives in the pi session transcript; log it here
+        # too so the runner log (support bundle) keeps the full record.
+        logger.info(f"Ticket {ticket_id}: progress note filtered for chat — "
+                    f"raw kept in session transcript: {raw[:400]}")
     try:
         token = _api_login()
         if not token:
             return
-        payload = json.dumps({"detail": text[:300]}).encode()
+        payload = json.dumps({"detail": _ellipsize(text)}).encode()
         req = urllib.request.Request(
             f"https://localhost/api/v1/tickets/{ticket_id}/progress",
             data=payload, headers={"Content-Type": "application/json",
@@ -592,35 +705,65 @@ def _ensure_pi_models_json(fb: dict) -> str:
     return path
 
 
-def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
-    """Run the Pi Coding Agent headlessly on a ticket task.
+# Per-ticket pi-task dedup: a ticket may have at most ONE pi session running.
+# The failover/retry path historically double-spawned two pi tasks for one
+# ticket (08-17 incident: two 'label=fallback' lines). This set makes the
+# launch idempotent per ticket while MAX_CONCURRENT still gates concurrency
+# across DIFFERENT tickets.
+_ACTIVE_PI_TICKETS = set()
+_ACTIVE_PI_LOCK = threading.Lock()
 
-    Uses `pi -p` (non-interactive): the task + context are passed as system
-    context and the final response is captured on stdout. Runs as the pi-agent
-    user with the provider/model/api-key read live from BareNOC's .env.
-    While the agent works, its session transcript is polled and brief
-    assistant messages are relayed to the ticket as LIVE work notes.
-    """
-    pi_bin = os.getenv("PI_AGENT_BIN", "/home/pi-agent/.local/share/pi-node/current/bin/pi")
-    pi_dir = os.path.dirname(os.path.dirname(pi_bin))
-    workdir = os.getenv("PI_AGENT_WORKDIR", "/opt/barenoc/pi-work")
-    os.makedirs(workdir, exist_ok=True)
-    session_dir = os.path.join(workdir, "sessions", ticket_id)
-    os.makedirs(session_dir, exist_ok=True)
-    cfg = _pi_provider_config()
+
+def _build_sysctx(context: str = "") -> str:
+    """The pi system context: operations guide + hard rules + ticket context.
+    One function so tests can assert the script guidance and the 'not yours'
+    creds line stay intact."""
     sysctx = (
         "You are Lily, the BareNOC network operations assistant, working an autonomous "
         "ticket session with FULL tool access (bash, file reads, the UniFi controller "
         "API, and the bundled UniFi CLI scripts under /opt/barenoc/scripts). "
         "Work autonomously and answer the ticket request directly.\n\n"
+        "DEVICE OPERATIONS — USE THE SANCTIONED SCRIPTS FIRST:\n"
+        "- For ANY device operation (status, updates, logs, reboot, 'the Laptop', or "
+        "any device by name or IP) use the ready-made scripts under "
+        "/opt/barenoc/scripts FIRST. They resolve the device, fetch + decrypt the "
+        "stored SSH credentials, and handle authentication themselves. Do NOT "
+        "reverse-engineer the API auth, do NOT mint an access token, and do NOT "
+        "hand-roll curl/ssh against the appliance API to reach a device.\n"
+        "- Main entry point: bash /opt/barenoc/scripts/device_ssh.sh <ip> <command>\n"
+        "  (find the device's IP in the ticket context / device inventory by its name, "
+        "then pass the IP — device_ssh.sh decrypts its stored SSH key and runs the "
+        "command over SSH for you).\n"
+        "- Other ready-made helpers: ping_check.sh <ip> (reachability), "
+        "collect_logs.sh <ip> (system logs), reboot_device.sh, enroll_device.sh, "
+        "fingerprint.sh, network_info.sh, ticket_status.sh, and the unifi_*.sh "
+        "scripts for UniFi controller actions. Prefer these over ad-hoc commands.\n\n"
+        "AGENT API CREDENTIALS ARE NOT YOURS:\n"
+        "- The agent API service account (/opt/barenoc/agent/credentials, AGENT_TOKEN, "
+        "and the https://localhost/api/v1/auth/* login endpoint) belongs to the "
+        "APPLIANCE's own scripts and the job runner — NOT to you. Do not read that "
+        "credentials file, do not try to log in, and do not curl /api/v1/auth/*. The "
+        "sanctioned scripts already authenticate for you; just run them.\n"
+        "- Reading local files (including /opt/barenoc/scripts) and talking to the "
+        "UniFi controller is fine. Writing to the appliance API is never allowed.\n\n"
+        "TICKETS (TKT-…):\n"
+        "- If the task is about a ticket (TKT-…), answer from the ticket and its work "
+        "notes directly — do not go hunting devices.\n\n"
         "RULES:\n"
-        "- Keep a LIVE work log: after each meaningful step, write a brief 1-3 line "
-        "progress update (e.g. 'Checking what is at 192.168.10.141…', 'Found device 46 — "
-        "fetching its control credentials', 'Running dnf check-update…'). These are "
-        "relayed to the ticket as live work notes, so write them as status updates a "
-        "human reads.\n"
-        "- Your FINAL message is the complete customer answer: concise, with concrete "
-        "findings (values, names, IPs), and it is posted to the ticket when you finish. "
+        "- Keep a LIVE work log: after each meaningful step, write ONE short, plain, "
+        "customer-facing progress sentence in a human voice — e.g. 'Let me find your "
+        "laptop…', 'Connecting now…', 'Working on it…', 'Installing now…', 'Almost done "
+        "— just verifying…'. These are relayed to the ticket chat as live updates, so "
+        "the customer reads them directly. NEVER put internal reasoning, usernames/uids, "
+        "sudo or permissions analysis, file paths, package or command names, "
+        "API/endpoint details, or error internals in a progress note — keep those in the "
+        "work notes instead.\n"
+        "- Your FINAL message is the customer's answer, posted to the ticket when you "
+        "finish. Answer directly — no meta-narration ('Here's my final answer to the "
+        "customer', 'I have completed…', 'Lily finished:'). Structure it as: what was "
+        "done (one line) + how to use it ('It's all set — launch it with: …'). Include "
+        "technical specifics (versions, packages, commands, credentials) ONLY if the "
+        "customer needs them to use the result; otherwise keep them in the work notes. "
         "Do not end with 'let me compile a summary'.\n"
         "- NEVER write to the BareNOC web API yourself: no curl / POST / PUT / DELETE "
         "against https://localhost/api/v1 (no /jobs/result, no ticket or note updates, "
@@ -641,6 +784,45 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
     )
     if context:
         sysctx += "\n\nTicket context:\n" + context[:6000]
+    return sysctx
+
+
+def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
+    """Run the Pi Coding Agent headlessly on a ticket task.
+
+    Idempotent per ticket: if a pi session for this ticket is already running,
+    the duplicate launch is merged (skipped) instead of spawning a second one.
+    """
+    with _ACTIVE_PI_LOCK:
+        if ticket_id in _ACTIVE_PI_TICKETS:
+            logger.warning(f"Ticket {ticket_id}: pi session already running — merging duplicate launch")
+            return {"success": True, "merged": True,
+                    "output": {"response": "",
+                               "note": "A pi session for this ticket is already running; "
+                                       "this duplicate launch was merged (no second session spawned)."}}
+        _ACTIVE_PI_TICKETS.add(ticket_id)
+    try:
+        return _run_pi_task_impl(task, context, ticket_id, timeout)
+    finally:
+        with _ACTIVE_PI_LOCK:
+            _ACTIVE_PI_TICKETS.discard(ticket_id)
+
+
+def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
+    """Implementation: uses `pi -p` (non-interactive) — task + context passed as
+    system context, final response captured on stdout. Runs as pi-agent with the
+    provider/model/api-key read live from BareNOC's .env. While the agent works,
+    its session transcript is polled and brief assistant messages are relayed to
+    the ticket as LIVE work notes."""
+    pi_bin = os.getenv("PI_AGENT_BIN", "/home/pi-agent/.local/share/pi-node/current/bin/pi")
+    pi_dir = os.path.dirname(os.path.dirname(pi_bin))
+    workdir = os.getenv("PI_AGENT_WORKDIR", "/opt/barenoc/pi-work")
+    os.makedirs(workdir, exist_ok=True)
+    session_dir = os.path.join(workdir, "sessions", ticket_id)
+    os.makedirs(session_dir, exist_ok=True)
+    cfg = _pi_provider_config()
+    sysctx = _build_sysctx(context)
+
     def run_once(provider, model, api_key, session_subdir, label):
         sdir = os.path.join(workdir, "sessions", session_subdir)
         os.makedirs(sdir, exist_ok=True)
@@ -685,14 +867,12 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
                             mid = m.get("id")
                             if mid in posted or any(p[0] == mid for p in pending):
                                 continue
-                            text = "".join(
-                                (c.get("text") or "") for c in (msg.get("content") or [])
-                                if isinstance(c, dict) and c.get("type") == "text")
-                            text = text.strip()
-                            if not text:
-                                continue
-                            lines = [l.strip() for l in text.splitlines() if l.strip()]
-                            snippet = "\n".join(lines[:3])[:250]
+                            # Only post COMPLETE messages (terminal stopReason);
+                            # a still-streaming message must never appear as a
+                            # mid-word fragment. The full text is kept flat (all
+                            # lines) and capped at PROGRESS_NOTE_MAX_CHARS with
+                            # an ellipsis when truncated.
+                            snippet = _ellipsize(_assistant_complete_text(msg) or "")
                             if snippet:
                                 pending.append((mid, snippet))
                 # Post at most one note per poll cycle, min 8s apart.
@@ -727,8 +907,7 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
         return result
     logger.warning(f"Ticket {ticket_id}: primary pi provider {cfg['provider']} failed "
                    f"({result.get('error', '')[:120]}) — failing over to {fb['provider']}/{fb['model']}")
-    _post_progress(ticket_id,
-                   f"⚠️ Primary LLM unavailable — answering via the on-LAN fallback ({fb['provider']}/{fb['model']})")
+    _post_progress(ticket_id, "Hang tight — switching to a backup helper, one moment…")
     _ensure_pi_models_json(fb)
     fb_result = run_once(fb["provider"], fb["model"], fb.get("api_key", "ollama"),
                          f"{ticket_id}-fb", "fallback")
@@ -748,7 +927,12 @@ def _run_job_thread(filename: str, job: dict) -> None:
     blocks verify/claim/discover)."""
     try:
         result = execute_job(job)
-        write_result(job, result)
+        if result.get("merged"):
+            # A pi session for this ticket was already running — this job is a
+            # duplicate; drop it silently (the active run owns the result).
+            logger.info(f"Job {filename} merged with an active pi session — no result posted")
+        else:
+            write_result(job, result)
         try:
             os.remove(os.path.join(JOBS_RUNNING, filename))
         except OSError:
@@ -1074,6 +1258,17 @@ def run():
                     write_result(job, result)
                     os.remove(src)
                     continue
+
+                # Per-ticket pi-task dedup: never start a second pi session for
+                # a ticket that already has one running (the 08-17 double-spawn
+                # lesson). Drop the duplicate — the active run owns the ticket.
+                if job.get("action") == "pi_task":
+                    tid = job.get("ticket_id", "")
+                    with _ACTIVE_PI_LOCK:
+                        if tid in _ACTIVE_PI_TICKETS:
+                            logger.warning(f"Job {filename}: pi session for ticket {tid} already active — merging (skipping)")
+                            os.remove(src)
+                            continue
 
                 # Move to running
                 dst = os.path.join(JOBS_RUNNING, filename)

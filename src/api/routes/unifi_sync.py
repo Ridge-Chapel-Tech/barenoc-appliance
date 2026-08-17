@@ -307,9 +307,14 @@ def create_network(body: dict = None, db: Session = Depends(get_db),
 
 @router.get("/topology")
 def topology(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Graph for the Devices page topology view — ONLY adopted (claimed +
+    """Graph for the Devices page topology view — adopted (claimed +
     UniFi-managed) devices, with their device-to-device uplink links.
-    Endpoint clients are not part of the topology (they live in the list)."""
+    Endpoint clients are not part of the topology (they live in the list).
+
+    Offline adopted gear (e.g. a U6 Mesh AP that has dropped off the
+    controller) is still relevant and must appear, marked offline — even when
+    the controller's live stat/device omits it.
+    """
     cfg = _get_unifi_config()
     if not _auth_ready(cfg):
         raise HTTPException(status_code=400, detail="UniFi authentication not configured")
@@ -323,11 +328,34 @@ def topology(db: Session = Depends(get_db), user: User = Depends(get_current_use
         Device.unifi_managed.is_(True),
         Device.claimed.is_(True),
     ).all()
-    adopted_macs = {d.mac_address for d in rows}
     vendor_by_mac = {d.mac_address: d.vendor for d in rows if d.vendor}
-    adopted = [d for d in devices if d.get("mac") in adopted_macs]
-    for d in adopted:
-        d["vendor"] = vendor_by_mac.get(d["mac"]) or "Ubiquiti"
+    by_mac = {d.get("mac"): d for d in devices}
+    adopted = []
+    for row in rows:
+        ctrl = by_mac.get(row.mac_address)
+        if ctrl is not None:
+            rec = dict(ctrl)
+            rec["vendor"] = vendor_by_mac.get(row.mac_address) or "Ubiquiti"
+            adopted.append(rec)
+        else:
+            # Adopted in BareNOC but absent from the controller's live device
+            # list — offline gear the controller dropped. Keep it visible.
+            adopted.append({
+                "name": row.name,
+                "ip": row.ip_address or "",
+                "mac": row.mac_address,
+                "model": row.model or "",
+                "type": row.device_type or "unknown",
+                "status": "offline",
+                "version": "",
+                "uptime": 0,
+                "site": None,
+                "uplink_mac": "",
+                "uplink_device_name": "",
+                "uplink_remote_port": None,
+                "vendor": row.vendor or "Ubiquiti",
+                "offline": True,
+            })
     adopted_set = {d["mac"] for d in adopted}
     links = []
     for d in adopted:

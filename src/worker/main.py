@@ -87,6 +87,7 @@ def load_managed_devices(db) -> dict:
             "ip": dev.ip_address,
             "type": dev.device_type,
             "hostname": dev.hostname,
+            "channels": dev.channels or [],
         }
         if dev.hostname:
             MANAGED_DEVICES[dev.hostname] = MANAGED_DEVICES[dev.name]
@@ -870,9 +871,68 @@ def _pi_task_context(db, ticket, ticket_text) -> str:
     return "\n\n".join(parts)
 
 
+# The auto_execute note _dispatch_pi writes. Its presence (with no terminal
+# result after it) marks an active pi session; the re-dispatch guard keys off it.
+_PI_DISPATCH_DETAIL = "Dispatched to Lily (autonomous pi session)"
+
+
+def _is_pi_dispatch(note: dict) -> bool:
+    """Is this work note the pi-dispatch marker? Accepts the current text and
+    the pre-2026-08-17 text ('Dispatched to Lily (autonomous)') so tickets
+    dispatched before this change deploys are still guarded."""
+    if note.get("event") != "auto_execute":
+        return False
+    detail = (note.get("detail") or "").strip().lower()
+    return detail in ("dispatched to lily (autonomous pi session)",
+                      "dispatched to lily (autonomous)")
+
+
+def _pi_run_active(ticket) -> bool:
+    """True when a pi session for this ticket is already queued or running.
+    Two signals, either suffices:
+      1. an incoming/ or running/ job file with action == pi_task, or
+      2. a pi-dispatch note with no terminal result (agent_completed /
+         agent_failed / escalated) after it.
+    The 60 s same-run dedup is not enough — a new user reply re-enters
+    process_ticket and would otherwise re-dispatch a parallel session
+    (08-13 re-queue lesson + the 08-17 double-session incident)."""
+    for d in (JOBS_INCOMING, JOBS_RUNNING):
+        path = os.path.join(d, f"{ticket.ticket_id}.json")
+        try:
+            with open(path) as f:
+                if json.load(f).get("action") == "pi_task":
+                    return True
+        except (OSError, json.JSONDecodeError):
+            continue
+    notes = _notes_list(ticket)
+    dispatch_idx = None
+    for i, n in enumerate(notes):
+        if _is_pi_dispatch(n):
+            dispatch_idx = i
+    if dispatch_idx is None:
+        return False
+    for n in notes[dispatch_idx + 1:]:
+        if n.get("event") in ("agent_completed", "agent_failed", "escalated"):
+            return False
+    return True
+
+
 def _dispatch_pi(db, ticket, ticket_text) -> bool:
     """Dispatch the ticket to the Pi Coding Agent (autonomous, no gates): write
-    a pi_task job the agent runner executes headlessly. Returns True if handled."""
+    a pi_task job the agent runner executes headlessly. Returns True if handled.
+
+    Re-dispatch guard: a ticket may have at most ONE active pi session. A new
+    user reply during an active run must not spawn a second session (the 08-17
+    incident) — post a short note and skip. The watchdog path is untouched, so
+    a genuinely-stuck run still escalates.
+    """
+    if _pi_run_active(ticket):
+        logger.info(f"Ticket {ticket.ticket_id}: pi session already active — not re-dispatching")
+        add_note(ticket, "agent_progress",
+                 f"{_assistant_name()} is already working on this — I'll update you when it finishes.",
+                 actor=_assistant_name())
+        db.commit()
+        return True
     context = _pi_task_context(db, ticket, ticket_text)
     job = {
         "ticket_id": ticket.ticket_id,
@@ -890,7 +950,7 @@ def _dispatch_pi(db, ticket, ticket_text) -> bool:
     ticket.action = "pi_task"
     ticket.status = "in_progress"
     ticket.assigned_to = "pi-agent"
-    add_note(ticket, "auto_execute", "Dispatched to Lily (autonomous)")
+    add_note(ticket, "auto_execute", _PI_DISPATCH_DETAIL)
     db.commit()
     log_event(db, "job_created", "system", {
         "ticket_id": ticket.ticket_id, "action": "pi_task",
@@ -1033,6 +1093,45 @@ def _alert_llm_outage(t) -> None:
     _threading.Thread(target=_send, daemon=True).start()
 
 
+def _escalate_stuck_jobs(db) -> int:
+    """Watchdog: an auto-executed job that never produced a result (runner
+    down / result POST lost) leaves the ticket silently in_progress forever.
+    Escalate tickets whose auto-executed job has no terminal note and whose
+    last update is >10 min old. Independent of the pi re-dispatch guard — a
+    genuinely-stuck run is escalated, and the guard's 'already working' note
+    does not block it. Returns how many tickets were escalated."""
+    stuck_cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
+    stuck = (
+        db.query(Ticket)
+        .filter(Ticket.status == "in_progress",
+                Ticket.updated_at <= stuck_cutoff)
+        .limit(10)
+        .all()
+    )
+    escalated = 0
+    for t in stuck:
+        if is_paused(t):
+            logger.info(f"Ticket {t.ticket_id}: paused — watchdog exempt")
+            continue
+        evs = [str(n.get("event") or "") for n in _notes_list(t)]
+        if ("auto_execute" in evs
+                and "agent_completed" not in evs
+                and "agent_failed" not in evs
+                and "escalated" not in evs):
+            logger.warning(
+                f"Ticket {t.ticket_id}: auto-executed job never reported back "
+                f"— escalating (runner may be down)")
+            add_note(t, "escalated",
+                     "The dispatched job never reported back — the agent runner "
+                     "may be down. Routed to human review.")
+            t.status = "escalated"
+            t.assigned_to = "human-tech"
+            escalated += 1
+    if escalated:
+        db.commit()
+    return escalated
+
+
 # ticket_id -> last seen user-comment count (drives re-processing on replies)
 _USER_COMMENT_COUNT = {}
 
@@ -1156,37 +1255,10 @@ def poll_for_tickets():
                     logger.info(f"Ticket {ticket.ticket_id}: failed run {_count_failed_notes(ticket)}/{budget} — feeding error back to the AI")
                     tickets.append(ticket)
 
-            # Stuck-job watchdog: an auto-executed job that never produced a
-            # result (runner down, result POST lost) leaves the ticket
-            # silently in_progress with "Working…" forever. Escalate so it's
-            # visible in the thread and the failure-feedback loop re-engages
-            # the AI with the error (bounded by the attempt budget).
-            stuck_cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
-            stuck = (
-                db.query(Ticket)
-                .filter(Ticket.status == "in_progress",
-                        Ticket.updated_at <= stuck_cutoff)
-                .limit(10)
-                .all()
-            )
-            for t in stuck:
-                if is_paused(t):
-                    logger.info(f"Ticket {t.ticket_id}: paused — watchdog exempt")
-                    continue
-                evs = [str(n.get("event") or "") for n in _notes_list(t)]
-                if ("auto_execute" in evs
-                        and "agent_completed" not in evs
-                        and "agent_failed" not in evs
-                        and "escalated" not in evs):
-                    logger.warning(
-                        f"Ticket {t.ticket_id}: auto-executed job never reported back "
-                        f"— escalating (runner may be down)")
-                    add_note(t, "escalated",
-                             "The dispatched job never reported back — the agent runner "
-                             "may be down. Routed to human review.")
-                    t.status = "escalated"
-                    t.assigned_to = "human-tech"
-            db.commit()
+            # Stuck-job watchdog: escalate auto-executed jobs that never
+            # reported back (runner down / result POST lost). Independent of
+            # the pi re-dispatch guard — a genuinely-stuck run still escalates.
+            _escalate_stuck_jobs(db)
 
             # The same ticket can surface from several paths in one poll (e.g.
             # reopened to 'open' AND carrying a new user comment): process it

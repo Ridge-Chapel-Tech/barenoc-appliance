@@ -32,7 +32,12 @@ class Device(Base):
     name = Column(String(128), index=True, nullable=False)
     hostname = Column(String(256), nullable=True)
     ip_address = Column(String(45), nullable=False)
-    device_type = Column(String(32), default="unknown")  # gateway | switch | ap | server | workstation
+    device_type = Column(String(32), default="unknown")  # server | switch | ap | router | camera | iot | other (+ legacy gateway|workstation|printer|nas)
+    # Explicit control-channel declarations (device_adoption_model.md §5/§8).
+    # Auto-derived channels (ssh/snmp/unifi/agent/monitor) come from the
+    # credential/adoption columns; this JSON holds channels with no dedicated
+    # column (vendor_api) or explicit overrides (e.g. ["monitor"]).
+    channels = Column(JSON, default=list)
     vendor = Column(String(64), nullable=True)
     model = Column(String(64), nullable=True)
     mac_address = Column(String(17), nullable=True)

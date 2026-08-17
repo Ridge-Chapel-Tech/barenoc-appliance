@@ -32,6 +32,25 @@ class ProgressNote(BaseModel):
     detail: str
 
 
+# Hard cap for agent_progress notes. MUST MATCH src/agent/runner.py
+# (PROGRESS_NOTE_MAX_CHARS) — the stored note is the smaller of the two layers.
+PROGRESS_NOTE_MAX_CHARS = 2000
+
+
+def _ellipsize(text: str, limit: int = PROGRESS_NOTE_MAX_CHARS) -> str:
+    """Trim `text` to at most `limit` chars. If content was removed, append a
+    Unicode ellipsis (…) so the note reads as a snippet — a truncation is never
+    silent. Cut on a word boundary when possible so a word isn't split mid-run."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+    if boundary > limit // 2:
+        cut = cut[:boundary]
+    return cut.rstrip() + "…"
+
+
 def _tenant_scope(q, user):
     """Tenants see only their own tickets (submitter == self)."""
     if user.role == "tenant":
@@ -271,7 +290,7 @@ def add_progress_note(
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    detail = note.detail.strip()[:300]
+    detail = _ellipsize(note.detail)
     if not detail:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     add_note(ticket, "agent_progress", detail, actor=_assistant_name())

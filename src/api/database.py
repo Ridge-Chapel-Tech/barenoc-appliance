@@ -144,3 +144,13 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: channels (explicit control-channel declarations, JSON) —
+    # device_adoption_model.md §8. Idempotent like the rest: create_all won't
+    # add a column to an existing devices table.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN channels JSON"
+            ))
+    except OperationalError:
+        pass  # Column already exists

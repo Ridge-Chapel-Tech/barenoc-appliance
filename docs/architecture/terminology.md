@@ -1,5 +1,9 @@
 # BareNOC Terminology
 
+> See also `docs/device_adoption_model.md` — the unified model for adding and
+> controlling devices of any type (servers, switches/APs/routers incl.
+> Juniper/Cisco/HP, cameras, IoT).
+
 **Adopt** means *added to BareNOC's monitored inventory* — its own record, with
 a lifecycle (enrolled → linked → revoked). Adoption is **BareNOC's act**, never
 a controller's. UniFi "adoption" is only a *discovery source* whose gear
@@ -9,7 +13,7 @@ BareNOC auto-adopts.
 |------|-----------|--------------------|
 | **Discover** | Active scanning to find what's on the network | nmap / ping-sweep / **SNMP sweep** / UniFi sync / DHCP leases / manual add |
 | **Adopt** | Add to BareNOC's monitored inventory (its record + lifecycle + revocation) | **certificate** (step-ca, preferred), **SSH** (claimed with creds), **UniFi-managed**, **manual** (monitoring-only) |
-| **Manage** | Control a device — run actions on it | **SSH** (reboot / collect logs / patch / enroll), UniFi API for UniFi gear, SNMP for polling |
+| **Manage** | Control a device — run actions on it | **agent** (NOC_Agent mTLS poll), **SSH** (reboot / collect logs / patch / enroll), **vendor_api** (NETCONF/RESTCONF/ONVIF/HTTP), **SNMP** (v3 poll/SET), UniFi API for UniFi gear |
 
 ## How they compose
 
@@ -26,7 +30,10 @@ Discover ──► Adopt ──► Manage
 ## The adoption badge (Devices page)
 
 - 🔐 **cert** — holds a short-lived cert from the internal CA (mTLS identity).
+- **agent** — NOC_Agent daemon (mTLS poll loop; the preferred channel).
 - **SSH** — BareNOC has its SSH creds (control).
+- **vendor API** — managed via a vendor adapter (NETCONF/RESTCONF/HTTP).
+- **SNMP** — poll/GET/SET (v3 auth+priv preferred; v2c warned).
 - **UniFi** — managed via the controller (status + API control).
 - **(no badge)** — manual / monitoring-only.
 

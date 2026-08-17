@@ -22,12 +22,33 @@
     </script>
     <style>
         html, body { height: 100%; margin: 0; background: #f9fafb; }
+        /* The desktop shell sidebar is only meaningful once signed in —
+           keep it off the public login/register screen. */
+        #chat-sidebar.unauth { display: none !important; }
     </style>
 </head>
-<body>
-<!-- Mobile chat front door: home users & tenants talk to the Queue Manager.
-     First login creates the admin; self-registered accounts are tenants. -->
-<div id="app" style="height:100dvh; display:flex; flex-direction:column;" class="bg-gray-50">
+<body class="bg-gray-50">
+
+<!-- ══ Desktop app-shell sidebar (reuses the shared nav partial; hidden on
+     mobile where the chat stays a full-screen standalone page) ══ -->
+<aside id="chat-sidebar" class="hidden md:flex fixed inset-y-0 left-0 z-40 w-60 flex-col border-r border-barenoc-700/50 bg-barenoc-800"
+       aria-label="Primary navigation">
+    <div class="flex h-16 items-center gap-2 px-5">
+        <div class="text-white font-bold text-xl">BareNOC</div>
+        <span id="barenooc-version" class="text-xs text-gray-400 border border-gray-600 rounded px-1.5 py-0.5"></span>
+    </div>
+    {% include "_sidebar_nav.html" %}
+    <div class="border-t border-barenoc-700 px-4 py-4">
+        <div class="flex items-center justify-between gap-3">
+            <span id="user-display" class="min-w-0 truncate text-sm text-gray-300"></span>
+            <button onclick="logout()" class="shrink-0 text-sm text-gray-300 hover:text-white">Logout</button>
+        </div>
+    </div>
+</aside>
+
+<!-- Chat app: standalone full-screen on mobile; content pane beside the
+     sidebar on desktop (md:pl-60 aligns with the fixed w-60 sidebar). -->
+<div id="app" style="height:100dvh; display:flex; flex-direction:column;" class="bg-gray-50 md:pl-60">
 
   <!-- ══ Header ══ -->
   <header class="bg-barenoc-700 text-white px-4 py-3 flex items-center gap-2 shrink-0"
@@ -77,18 +98,48 @@
     </div>
   </div>
 
-  <!-- ══ Chat list screen ══ -->
+  <!-- ══ Home screen: ONE list — Front desk (Juniper) on top, Your tickets below.
+       The front desk DM and each ticket thread are separate conversations, but the
+       list presents them as two clearly-labeled sections of one history so a
+       reply always lands in the right place. ══ -->
   <div id="screen-list" class="hidden flex-1 flex flex-col overflow-hidden" style="display:none">
-    <div class="p-3 pb-0 shrink-0">
-      <div class="flex gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-2">
-        <input id="new-msg" class="flex-1 text-sm px-2 outline-none" placeholder="Ask about your internet, wifi, devices…" enterkeyhint="send">
-        <button onclick="sendNew()" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white">Send</button>
+    <div class="flex-1 overflow-y-auto">
+      <div class="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500">Front desk — Juniper</div>
+      <div class="px-3">
+        <div onclick="openJuniper()" class="bg-white rounded-xl shadow-sm border border-gray-200 p-3 flex items-center gap-3 cursor-pointer active:bg-gray-50">
+          <div class="w-10 h-10 rounded-full bg-barenoc-100 text-barenoc-700 flex items-center justify-center text-lg shrink-0">💬</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-semibold">Juniper</div>
+            <div class="text-xs text-gray-400 truncate">Your front desk — ask about the queue, a ticket, or open a new one</div>
+          </div>
+          <svg class="w-4 h-4 text-gray-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+        </div>
+      </div>
+
+      <div class="px-3 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500">Your tickets</div>
+      <div class="px-3 pb-1">
+        <div class="flex gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-2">
+          <input id="new-msg" class="flex-1 text-sm px-2 outline-none" placeholder="Ask about your internet, wifi, devices…" enterkeyhint="send">
+          <button onclick="sendNew()" class="rounded-lg bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white">Send</button>
+        </div>
+      </div>
+      <div id="ticket-list" class="px-3 py-2 space-y-2"></div>
+      <div id="list-empty" class="hidden flex-col items-center justify-center text-gray-400 p-6">
+        <div class="text-4xl mb-2">💬</div>
+        <div class="text-sm text-center">No tickets yet.<br>Ask Juniper to open one, or start one here.</div>
       </div>
     </div>
-    <div id="ticket-list" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
-    <div id="list-empty" class="hidden flex-1 flex flex-col items-center justify-center text-gray-400 p-6">
-      <div class="text-4xl mb-2">💬</div>
-      <div class="text-sm text-center">No conversations yet.<br>Ask anything — a technician will pick it up.</div>
+  </div>
+
+  <!-- ══ Front desk (Juniper) conversation ══ -->
+  <div id="screen-juniper" class="hidden flex-1 flex flex-col overflow-hidden" style="display:none">
+    <div id="juniper-body" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    <div class="shrink-0 p-3 border-t border-gray-200 bg-white"
+         style="padding-bottom:max(0.75rem, env(safe-area-inset-bottom))">
+      <div class="flex gap-2">
+        <input id="juniper-msg" class="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm outline-none" placeholder="Message Juniper…" enterkeyhint="send">
+        <button onclick="sendJuniper()" class="rounded-xl bg-barenoc-600 px-4 text-sm font-semibold text-white">Send</button>
+      </div>
     </div>
   </div>
 
@@ -117,7 +168,8 @@
 const TOKEN_KEY = 'access_token';
 const $ = (id) => document.getElementById(id);
 let curTicket = null;
-let listTimer = null, threadTimer = null;
+let listTimer = null, threadTimer = null, juniperTimer = null;
+let JUNIPER = null;
 
 function token() { return localStorage.getItem(TOKEN_KEY); }
 function setToken(t) { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); }
@@ -132,23 +184,58 @@ async function api(path, opts) {
   return body;
 }
 
+// ── shell layout: desktop (sidebar) vs mobile (standalone full-screen) ──
+// The visual layout is driven by the `md:` Tailwind media query (min-width
+// 768px — same breakpoint as base.html); the JS below keeps a state class in
+// sync for any width-sensitive JS + makes the auto-detect explicit/resizable.
+function applyShellLayout() {
+  const desktop = window.matchMedia('(min-width: 768px)').matches;
+  document.body.classList.toggle('chat-desktop', desktop);
+  document.body.classList.toggle('chat-mobile', !desktop);
+}
+
 function showAuth() { stopPolling(); curTicket = null;
+  $('chat-sidebar').classList.add('unauth');
   $('screen-auth').style.display = 'block';
-  $('screen-list').style.display = 'none'; $('screen-thread').style.display = 'none';
+  $('screen-list').style.display = 'none'; $('screen-juniper').style.display = 'none'; $('screen-thread').style.display = 'none';
   $('btn-logout').style.display = 'none'; $('btn-back').style.display = 'none'; $('btn-dash').style.display = 'none';
 }
-function showList() { curTicket = null; if (!token()) return showAuth();
-  $('screen-list').style.display = 'flex'; $('screen-thread').style.display = 'none';
+
+// The home screen is ONE list with two labeled sections — "Front desk — Juniper"
+// (the DM conversation with the Queue Manager bot) and "Your tickets" (each
+// ticket = its own thread). Choosing an entry opens exactly that conversation.
+function showHome(tab) { curTicket = null; if (!token()) return showAuth();
+  $('chat-sidebar').classList.remove('unauth');
+  $('screen-list').style.display = 'flex';
+  $('screen-juniper').style.display = 'none'; $('screen-thread').style.display = 'none';
   $('screen-auth').style.display = 'none'; $('btn-logout').style.display = 'block';
   $('btn-dash').style.display = 'block'; $('btn-back').style.display = 'none';
-  loadList(); listTimer = setInterval(loadList, 10000);
+  clearInterval(juniperTimer); juniperTimer = null;
+  loadList();
+  if (!listTimer) listTimer = setInterval(loadList, 10000);
 }
+function showList() { showHome(); }
+
+function openJuniper() { if (!token()) return showAuth();
+  $('chat-sidebar').classList.remove('unauth');
+  clearInterval(listTimer); listTimer = null;
+  $('screen-juniper').style.display = 'flex';
+  $('screen-list').style.display = 'none'; $('screen-thread').style.display = 'none';
+  $('screen-auth').style.display = 'none'; $('btn-logout').style.display = 'block';
+  $('btn-dash').style.display = 'block'; $('btn-back').style.display = 'block';
+  loadJuniper();
+  if (!juniperTimer) juniperTimer = setInterval(loadJuniper, 4000);
+}
+
 function showThread(id) { curTicket = id;
-  $('screen-thread').style.display = 'flex'; $('screen-list').style.display = 'none';
+  $('chat-sidebar').classList.remove('unauth');
+  stopPolling();
+  $('screen-thread').style.display = 'flex';
+  $('screen-list').style.display = 'none'; $('screen-juniper').style.display = 'none';
   $('screen-auth').style.display = 'none'; $('btn-back').style.display = 'block'; $('btn-dash').style.display = 'block';
   loadThread(); threadTimer = setInterval(loadThread, 4000);
 }
-function stopPolling() { clearInterval(listTimer); clearInterval(threadTimer); listTimer = threadTimer = null; }
+function stopPolling() { clearInterval(listTimer); clearInterval(threadTimer); clearInterval(juniperTimer); listTimer = threadTimer = juniperTimer = null; }
 
 function authTab(t) {
   const sign = t === 'signin';
@@ -167,7 +254,7 @@ async function doLogin() {
     const b = await d.json().catch(() => ({}));
     if (!d.ok) throw new Error(b.detail || 'login failed');
     if (b.password_change_required) { authErr('Please set a new password on the desktop site first (Settings → your account).'); return; }
-    setToken(b.access_token); $('in-pass').value = ''; showList();
+    setToken(b.access_token); $('in-pass').value = ''; fillUserDisplay(); showHome('juniper');
   } catch (e) { authErr(e.message); }
 }
 
@@ -177,11 +264,80 @@ async function doRegister() {
       body: JSON.stringify({ username: $('rg-user').value.trim(), password: $('rg-pass').value, email: $('rg-email').value.trim() || null }) });
     const b = await d.json().catch(() => ({}));
     if (!d.ok) throw new Error(b.detail || 'registration failed');
-    setToken(b.access_token); $('rg-pass').value = ''; showList();
+    setToken(b.access_token); $('rg-pass').value = ''; fillUserDisplay(); showHome('juniper');
   } catch (e) { authErr(e.message); }
 }
 
 function logout() { setToken(null); showAuth(); }
+
+// ── Juniper front-desk conversation (default) ──
+function juniperName() { return JUNIPER || 'Juniper'; }
+
+async function initJuniper() {
+  try {
+    const d = await api('/api/v1/chat/users');
+    // The default chat target is the Queue Manager bot (Juniper), resolved
+    // from the API's configured bot name — never a hard-coded technician.
+    JUNIPER = (d.names && d.names.queue_manager) || 'Juniper';
+  } catch (e) {
+    JUNIPER = 'Juniper';
+  }
+}
+
+function juniperGreeting() {
+  return "Hi! 👋 I'm Juniper, your front desk.\n\nHere's what I can do:\n" +
+    "• \"what's happening?\" — the queue + your tickets\n" +
+    "• \"summarize TKT-…\" — a short summary of a ticket\n" +
+    "• \"I need …\" / \"can you fix …\" — open a ticket (I judge the priority)\n" +
+    "• \"pause TKT-… until 8 PM\" / \"resume TKT-…\" — hold or release a ticket\n" +
+    "• \"close TKT-…\" / \"close the ticket\" — close a ticket\n" +
+    "• \"note to technician: …\" — pass a message to the tech";
+}
+
+async function loadJuniper() {
+  if (!JUNIPER) await initJuniper();
+  const box = $('juniper-body');
+  try {
+    const d = await api('/api/v1/chat/messages?with_username=' + encodeURIComponent(juniperName()));
+    // Scroll handling (desktop + mobile share this path): the poll rebuilds
+    // the conversation every 4 s — only stick to the bottom when the user is
+    // already near it, otherwise preserve their reading position.
+    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const fromBottom = box.scrollHeight - box.scrollTop;
+    box.innerHTML = '';
+    const msgs = d.messages || [];
+    if (msgs.length === 0) {
+      // First-time chat (no history): open with Juniper's greeting + help,
+      // never Lily's technician greeting.
+      box.appendChild(bubble('agent', juniperGreeting(), '', null));
+    } else {
+      msgs.forEach(m => {
+        const mine = (m.from_username || '').toLowerCase() !== juniperName().toLowerCase();
+        // Juniper's replies may name a ticket (intake "View TKT-… →", a
+        // summary, a close) — render those ids as links that jump straight to
+        // the ticket thread so the DM feels connected to Lily's work.
+        const body = mine ? m.body : linkifyTickets(m.body);
+        box.appendChild(bubble(mine ? 'user' : 'agent', body, fmtTime(m.created_at), null, !mine));
+      });
+    }
+    if (stick) box.scrollTop = box.scrollHeight;
+    else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
+  } catch (e) {
+    // Offline/disabled chat: still show the front-desk greeting rather than a
+    // blank pane.
+    if (!box.children.length) box.appendChild(bubble('agent', juniperGreeting(), '', null));
+  }
+}
+
+async function sendJuniper() {
+  const msg = $('juniper-msg').value.trim(); if (!msg) return;
+  $('juniper-msg').value = '';
+  try {
+    await api('/api/v1/chat/messages', { method: 'POST',
+      body: JSON.stringify({ to_username: juniperName(), body: msg }) });
+    loadJuniper();
+  } catch (e) { alert(e.message); }
+}
 
 // ── status helpers ──
 const STATUS = {
@@ -197,7 +353,7 @@ const STATUS = {
 function statusChip(s) { const c = STATUS[s] || [s, 'bg-gray-100 text-gray-700']; return '<span class="text-xs font-semibold px-2 py-0.5 rounded-full ' + c[1] + '">' + c[0] + '</span>'; }
 function fmtTime(iso) { if (!iso) return ''; const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z'); if (isNaN(d)) return ''; return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
 
-// ── list ──
+// ── list (Your tickets) ──
 async function loadList() {
   try {
     const d = await api('/api/v1/tickets?limit=50');
@@ -258,7 +414,7 @@ async function loadThread() {
       if (ev === 'user_message') box.appendChild(bubble('user', n.detail, fmtTime(n.timestamp), null));
       else if (ev === 'agent_completed' || ev === 'ai_tech_feedback' || ev === 'agent_progress')
         box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
-      else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'autoclosed')
+      else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'closed' || ev === 'autoclosed')
         box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
       else if (ev === 'pause_until' || ev === 'pause_cleared')
         box.appendChild(systemLine(ev, pauseDetail(ev, n.detail), fmtTime(n.timestamp)));
@@ -281,12 +437,21 @@ async function loadThread() {
   } catch (e) { /* silent */ }
 }
 
-function bubble(who, text, time, extra) {
+function linkifyTickets(text) {
+  // Turn ticket ids in Juniper's replies into links that jump to the ticket
+  // thread (intake "View TKT-… →", summaries, closes).
+  return esc(text).replace(/TKT-\d{8}-\d{4}/g, function (id) {
+    return '<button type="button" class="font-medium underline text-barenoc-700 hover:text-barenoc-800" onclick="event.stopPropagation();showThread(\'' + id + '\')">' + id + '</button>';
+  });
+}
+
+function bubble(who, text, time, extra, html) {
   const mine = who === 'user';
+  const content = html ? text : esc(text);
   return el('div', 'flex ' + (mine ? 'justify-end' : 'justify-start'),
     el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm ' + (mine ? 'bg-barenoc-600 text-white rounded-br-sm' : 'bg-white border border-gray-200 rounded-bl-sm'),
       extra ? '<div class="text-xs text-gray-400 whitespace-pre-wrap">' + esc(extra) + '</div>' : '',
-      '<div class="whitespace-pre-wrap break-words">' + esc(text) + '</div>',
+      '<div class="whitespace-pre-wrap break-words">' + content + '</div>',
       '<div class="text-[10px] mt-0.5 ' + (mine ? 'text-white/60' : 'text-gray-400') + '">' + time + '</div>'));
 }
 function systemLine(ev, detail, time) {
@@ -296,7 +461,7 @@ function systemLine(ev, detail, time) {
 function symbol(ev) {
   return { processing: '⏳ ', auto_execute: '🤖 ', awaiting_approval: '🕓 ', escalated: '🔀 ',
            checkin_request: '⏰ ', agent_retry: '🔁 ', priority_change: '🏷️ ',
-           autoclosed: '🗄️ ', agent_failed: '❌ ', completed: '✅ ',
+           autoclosed: '🗄️ ', agent_failed: '❌ ', completed: '✅ ', closed: '🔒 ',
            pause_until: '⏸ ', pause_cleared: '▶️ ' }[ev] || '';
 }
 function pauseDetail(ev, detail) {
@@ -344,19 +509,39 @@ async function closeTicket() {
   catch (e) { alert(e.message); }
 }
 
+function fillUserDisplay() {
+  const el = $('user-display'); if (!el) return;
+  const t = token(); if (!t) return;
+  try { const p = JSON.parse(atob(t.split('.')[1])); el.textContent = p.sub || ''; } catch (e) {}
+}
+function fillVersion() {
+  fetch('/api/v1/health').then(r => r.json()).then(d => {
+    const el = $('barenooc-version'); if (el) el.textContent = 'v' + (d.version || '');
+  }).catch(() => {});
+}
+
 // keyboard: Enter to send
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag !== 'input' && tag !== 'textarea') return;
   if (e.target.id === 'new-msg') sendNew();
+  else if (e.target.id === 'juniper-msg') sendJuniper();
   else if (e.target.id === 'reply-msg') sendReply();
   else if (e.target.id === 'in-pass') doLogin();
   else if (e.target.id === 'rg-pass') doRegister();
 });
 
 // boot
-(function () { authTab('signin'); token() ? showList() : showAuth(); })();
+(function () {
+  authTab('signin');
+  applyShellLayout();
+  fillVersion();
+  const mq = window.matchMedia('(min-width: 768px)');
+  if (mq.addEventListener) mq.addEventListener('change', applyShellLayout);
+  window.addEventListener('resize', applyShellLayout);
+  if (token()) { fillUserDisplay(); showHome('juniper'); } else { showAuth(); }
+})();
 </script>
 </body>
 </html>

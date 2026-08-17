@@ -75,9 +75,16 @@ fi
 
 # ── 2. app tarball (embedded in the ISO, extracted on first boot) ──────────
 APP_TARBALL="$WORK/barenoc-app.tar.gz"
+# FLAT layout matching deploy.sh's /opt/barenoc (docker-compose.yml + service
+# dirs at top level, NO src/ nesting): the first-boot unit and the provision
+# script reference /opt/barenoc/{docker-compose.yml,scripts/...} exactly like
+# a deploy-installed box (found 08-17: the tarball previously nested
+# everything under src/, so first-boot's `docker compose up` had no compose
+# file and `scripts/…` didn't exist).
 tar czf "$APP_TARBALL" -C "$REPO" \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='client/build' --exclude='client/dist' \
-  --exclude='.git' src client deploy.sh
+  --exclude='.git' client deploy.sh \
+  -C "$REPO/src" agent api worker scheduler nginx scripts docker-compose.yml
 APP_TARBALL_B64="$(base64 -w0 "$APP_TARBALL")"
 
 # The tarball is ~1MB base64 — a single `echo '<b64>'` shell arg exceeds the
@@ -194,19 +201,14 @@ $SSH_LINE
     # embedded application tarball → /opt/barenoc (deploy.sh contents),
     # in 60KB base64 chunks (single-arg embedding hit ARG_MAX/E2BIG)
 ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf /tmp/barenoc-app.tar.gz -C /opt/barenoc && rm -f /tmp/barenoc-app.tar.gz"
-    # Bootable under OVMF: the installer chroot has no efivarfs, so grub cannot
-    # write an NVRAM boot entry — and OVMF refuses to boot a fixed disk without
-    # one (found 08-14: installs completed but every reboot fell back to the
-    # ISO; the disk was bootable, the firmware just had no entry). Bind-mount
-    # the live env's efivars into the target and re-run grub-install so the
-    # 'ubuntu' entry is registered in the VM's NVRAM; --removable also leaves
-    # EFI/BOOT/BOOTX64.EFI on the ESP as a firmware fallback.
-    #
-    # 2026-08-17: this re-install is now CONDITIONAL — curtin's own
-    # install-grub hook succeeds on current builds (grub-efi-amd64-signed +
-    # shim-signed + NVRAM entries registered) and the unconditional re-run was
-    # failing with exit 3 (grub-install error), killing the install. Fall back
-    # to the 08-14 re-install only when the 'ubuntu' NVRAM entry is missing.
+    # Bootable under OVMF — REMOVED 08-17: curtin's own install-grub hook now
+    # registers a working 'ubuntu' NVRAM entry (Boot0002 -> \EFI\ubuntu\shimx64.efi)
+    # and the disk boots from virtio-scsi; the seed's re-run was REDUNDANT and
+    # FATAL. Inside `curtin in-target` the /target/sys sysfs mount shadows the
+    # bind-mounted efivars, so efibootmgr reports "EFI variables are not
+    # supported" and grub-install exits 3, aborting the remaining
+    # late-commands (incl. the first-boot unit). Kept in git history for the
+    # 08-14 LSI-controller case, which does not apply to virtio-scsi-pci.
     - mkdir -p /target/sys/firmware/efi/efivars && mount --bind /sys/firmware/efi/efivars /target/sys/firmware/efi/efivars
     - curtin in-target -- bash -c "if ! efibootmgr 2>/dev/null | grep -qi ubuntu; then grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --removable && grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu && update-grub; fi"
     # first-boot unit: run provisioning + app deploy once (needs network)
@@ -226,7 +228,7 @@ ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf
       [Service]
       Type=oneshot
       RemainAfterExit=yes
-      ExecStart=/bin/bash -c 'test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; cd /opt/barenoc && docker compose up --build -d && bash scripts/setup_agent_credentials.sh && systemctl enable --now pi-agent-runner && install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now barenoc-self-update.path'
+      ExecStart=/bin/bash -c 'test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; cd /opt/barenoc && docker compose up --build -d && bash scripts/setup_agent_credentials.sh && mkdir -p /opt/barenoc/volumes/logs/agent && install -m 0644 /opt/barenoc/agent/pi-agent-runner.service /etc/systemd/system/pi-agent-runner.service && systemctl daemon-reload && systemctl enable --now pi-agent-runner && install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now barenoc-self-update.path'
 
       [Install]
       WantedBy=multi-user.target

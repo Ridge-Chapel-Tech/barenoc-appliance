@@ -5,6 +5,38 @@
   <h1 class="text-2xl font-semibold text-gray-900">System Dashboard</h1>
   <p class="mt-1 text-sm text-gray-500">BareNOC's own resources and health. Auto-refreshes every 15s.</p>
 
+  <!-- Updates (Schedule / Rollback / progress) — moved from the dashboard -->
+  <div id="updates" class="mt-6 bg-white shadow rounded-lg p-6">
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <h2 class="text-lg font-medium text-gray-900">Updates</h2>
+      <div class="flex gap-2 text-xs">
+        <button onclick="updNow()" id="upd-now-btn" class="rounded-md bg-barenoc-600 text-white px-3 py-1.5 hover:bg-barenoc-700" disabled>Update now</button>
+        <button onclick="updToggleSchedule()" class="rounded-md bg-gray-100 px-3 py-1.5 hover:bg-gray-200">Schedule</button>
+        <button onclick="updRollback()" class="rounded-md bg-red-50 text-red-700 px-3 py-1.5 hover:bg-red-100">Rollback</button>
+      </div>
+    </div>
+    <div id="upd-body" class="mt-3 text-sm text-gray-600"></div>
+    <div id="upd-progress" class="mt-3 hidden">
+      <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+        <span id="upd-prog-stage">…</span><span id="upd-prog-pct">0%</span>
+      </div>
+      <div class="h-2 w-full rounded bg-gray-200 overflow-hidden">
+        <div id="upd-prog-bar" class="h-full bg-barenoc-600 transition-all" style="width:0%"></div>
+      </div>
+      <div id="upd-prog-msg" class="mt-1 text-xs text-gray-500"></div>
+    </div>
+    <div id="upd-schedule" class="mt-3 hidden border-t pt-3 text-xs text-gray-500">
+      <label><input type="checkbox" id="upd-sched-enable" class="mr-1"> enable scheduled update</label>
+      <select id="upd-sched-day" class="ml-2 rounded border px-1 py-0.5">
+        <option value="daily">daily</option><option value="0">Sun</option><option value="1">Mon</option>
+        <option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option>
+        <option value="5">Fri</option><option value="6">Sat</option>
+      </select>
+      <input type="number" id="upd-sched-hour" min="0" max="23" value="2" class="ml-1 w-14 rounded border px-1 py-0.5"> :00
+      <button onclick="updSaveSchedule()" class="ml-2 rounded-md bg-gray-100 px-2 py-1 hover:bg-gray-200">Save schedule</button>
+    </div>
+  </div>
+
   <!-- Host Resource Cards -->
   <div id="host-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
   <div id="unifi-firmware" class="mt-4 bg-white shadow rounded-lg p-5 hidden"></div>
@@ -48,6 +80,105 @@
 <script>
 function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ── Updates (Schedule / Rollback) — moved from the dashboard ──
+async function updFetch(path, opts) {
+  const r = await fetch('/api/v1/updates' + path, Object.assign({
+    headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' }
+  }, opts || {}));
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + r.status)); }
+  return r.json();
+}
+function updKind(k) { return k === 'major' ? '🟥 major' : k === 'minor' ? '🟧 minor' : k === 'patch' ? '🟨 patch' : ''; }
+function fmtTz(ts) {
+  if (!ts) return ts || '';
+  var s = String(ts).trim().replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z';
+  var d = new Date(s);
+  return isNaN(d) ? ts : d.toLocaleString();
+}
+var _updPollTimer = null;
+function renderUpdateProgress(prog) {
+  var box = document.getElementById('upd-progress');
+  var stage = prog && prog.stage;
+  if (!stage || stage === '' || (prog && prog.confirmed)) {
+    box.classList.add('hidden');
+    if (_updPollTimer) { clearInterval(_updPollTimer); _updPollTimer = null; }
+    return;
+  }
+  box.classList.remove('hidden');
+  var pct = Math.min(100, Math.max(0, Math.round(prog.pct || 0)));
+  var isTerminal = stage === 'done' || stage === 'failed';
+  var ok = stage === 'done';
+  document.getElementById('upd-prog-bar').style.width = pct + '%';
+  document.getElementById('upd-prog-bar').className = 'h-full transition-all ' + (isTerminal ? (ok ? 'bg-green-500' : 'bg-red-500') : 'bg-barenoc-600');
+  document.getElementById('upd-prog-pct').textContent = pct + '%';
+  document.getElementById('upd-prog-stage').textContent = (isTerminal ? (ok ? '✅ Complete' : '❌ Failed') : '⏳ ' + (stage || 'updating'));
+  document.getElementById('upd-prog-msg').textContent = prog.message || '';
+  var btn = document.getElementById('upd-now-btn');
+  if (btn && !isTerminal) btn.disabled = true;   // never start a second update mid-flight
+  if (!isTerminal && !_updPollTimer) {
+    _updPollTimer = setInterval(function () { updLoad(); }, 3000);  // poll while in flight
+  } else if (isTerminal && _updPollTimer) {
+    clearInterval(_updPollTimer); _updPollTimer = null;
+  }
+  if (isTerminal && !window._updClearTimer) {
+    window._updClearTimer = true;
+    setTimeout(function () {
+      box.classList.add('hidden');
+      updLoad();
+      fetch('/api/v1/health').then(r => r.json()).then(d => {
+        var el = document.getElementById('barenooc-version');
+        if (el) el.textContent = 'v' + (d.version || '');
+      }).catch(function () {});
+    }, 12000);
+  }
+}
+var _updAutoCheck = false;
+async function updLoad() {
+  try {
+    const s = await updFetch('/status');
+    if ((!s.checked_at || s.check_stale) && !_updAutoCheck) {
+      _updAutoCheck = true;
+      try { await updFetch('/check', { method: 'POST' }); } catch (e) { /* retry next load */ }
+      updLoad();
+      return;
+    }
+    const acc = s.update_access || {};
+    const el = document.getElementById('upd-body');
+    const avail = s.available
+      ? ' &nbsp;→&nbsp; <b>' + esc(s.latest) + '</b> <span class="text-xs">' + updKind(s.kind) + '</span>'
+        + (s.changelog ? ' <a class="text-barenoc-600 underline" href="' + esc(s.changelog) + '" target="_blank">notes</a>' : '')
+      : '';
+    const accTxt = acc.open
+      ? '🟢 free &amp; open (beta) — updates enabled'
+      : '✅ update access active';
+    el.innerHTML = '<div>Version: <b>' + esc(s.current || '?') + '</b>' + avail + '</div>'
+      + '<div class="mt-1">' + accTxt + '</div>'
+      + (s.last_update && s.last_update.at ? '<div class="mt-1 text-xs text-gray-400">Last in-app update: ' + (s.last_update.ok ? '✅ ' : '❌ ') + esc((s.last_update.version || '') + (s.last_update.error ? ' — ' + s.last_update.error : '')) + '</div>' : '')
+      + (s.checked_at ? '<div class="mt-1 text-xs text-gray-400">Checked ' + esc(fmtTz(s.checked_at)) + '</div>' : '');
+    var ub = document.getElementById('upd-now-btn');
+    if (ub) { ub.style.display = s.available ? '' : 'none'; ub.disabled = false; }
+    renderUpdateProgress(s.progress);
+    const sc = s.schedule || {};
+    document.getElementById('upd-sched-enable').checked = !!sc.enabled;
+    document.getElementById('upd-sched-day').value = sc.day || 'daily';
+    document.getElementById('upd-sched-hour').value = sc.hour != null ? sc.hour : 2;
+  } catch (e) { console.error('updates:', e); }
+}
+async function updNow() { if (!confirm('Apply the pending update now? The appliance restarts briefly.')) return; try { const r = await updFetch('/now', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
+async function updRollback() { if (!confirm('Roll back to the previous release?')) return; try { const r = await updFetch('/rollback', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
+async function updSaveSchedule() {
+  try {
+    await updFetch('/schedule', { method: 'POST', body: JSON.stringify({
+      enabled: document.getElementById('upd-sched-enable').checked,
+      day: document.getElementById('upd-sched-day').value,
+      hour: parseInt(document.getElementById('upd-sched-hour').value)
+    })});
+    alert('schedule saved'); updLoad();
+  } catch (e) { alert(e.message); }
+}
+function updToggleSchedule() { document.getElementById('upd-schedule').classList.toggle('hidden'); }
 
 function cpuColor(p) {
   if (p < 50) return 'bg-green-500';
@@ -191,6 +322,7 @@ async function loadSystem() {
 
 document.addEventListener('DOMContentLoaded', function() {
   loadSystem();
+  updLoad();
   setInterval(loadSystem, 15000);
 });
 

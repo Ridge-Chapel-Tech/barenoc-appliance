@@ -15,6 +15,169 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.17.b] — 2026-08-17
+
+### Added
+- **Juniper closes tickets** — a new `close` directive ("close TKT-…" /
+  "close the ticket", resolving to the most recent active ticket when no id
+  is given) closes the ticket with the same owner/operator/admin gate as
+  pause/resume (a tenant closes their own), writes a `closed` work note +
+  `ticket_closed` audit event, and replies "Done — TKT-… is closed."
+  Juniper's intake reply now ends with "View TKT-… →" so the opened ticket is
+  one tap away.
+- **Chat lives inside the app shell on desktop + Juniper fronts the chat** —
+  `/chat` now renders inside the app shell (sidebar/nav intact) on wide screens
+  and stays the standalone full-screen page on mobile, auto-detected by screen
+  width (media query + resize listener). The sidebar reuses a new shared
+  `_sidebar_nav.html` partial so `base.html` and the chat share one source of
+  truth for the nav. A new chat opens at **Juniper, the Queue Manager** — her
+  greeting + help, and her responder (queue/status, summarize TKT-…, intake →
+  judged ticket, pause/resume/note directives) — instead of Lily; Lily remains
+  the technician inside ticket threads. Existing ticket threads + the #16
+  ticket-status and #17 Dashboard-button fixes stay reachable via a
+  "Your tickets" tab.
+- **Unified device-add model (design + scaffold)** — one coherent model for
+  adding and controlling devices of ANY type: a device record now carries a
+  `device_type` taxonomy (`server`/`switch`/`ap`/`router`/`camera`/`iot`/`other`)
+  plus a `channels` capability list (`agent`/`vendor_api`/`ssh`/`unifi`/`snmp`/
+  `monitor`). `docs/device_adoption_model.md` is the contract: fingerprint →
+  suggested type + **security-first channel recommendation** (agent(mTLS) >
+  vendor_api(TLS) > ssh key-only > unifi > snmpv3 > monitor-only; plaintext
+  SNMPv2c/HTTP = explicit warning), one job relay with per-channel executors,
+  and three unified add paths (SSH / agent / API).
+- **Capability validator** — `action_validator` now declares per-action
+  required channels (`reboot_device` needs `ssh|agent|snmp|vendor_api`,
+  `collect_logs`/`apply_patch` need `ssh|agent`, `snmp_poll` needs `snmp`, …);
+  `validate_job` enforces them when the target device has known channels.
+  `ping`/`status`/`fingerprint` stay channel-less (monitor-only cameras keep
+  them).
+- **SNMP + vendor_api executor skeletons** — `scripts/snmp_executor.py`
+  (GET/SET, v2c + v3) and `scripts/vendor_api.py` (adapter registry; Juniper/
+  Cisco/HP-ONVIF/IoT stubs). Concrete vendor adapters are follow-up work.
+
+### Changed
+- **Chat home screen reads as one history, not "multiple sessions"** — the
+  `/chat` list now shows two clearly-labeled sections — **Front desk —
+  Juniper** (the DM conversation) at the top and **Your tickets** (each
+  ticket = one thread) below — instead of two tabbed sessions. TKT-… ids in
+  Juniper's replies render as links that jump straight to the ticket thread,
+  so a reply about a ticket connects to the right conversation.
+- **Devices page relabel (08-17)** — top actions are now **+ Add a device
+  record** · **🔐 Enroll a device — run the script on it** · **Register via
+  API**; card actions are **Take ownership** (claim) vs **Enable control**
+  (adopt), with one-line tooltips. Sections re-worded around "claimed (owned)"
+  vs "controlled (channel connected)" vs "monitored (owned, no channel)".
+  Fingerprint cards show the ranked channel recommendation + warnings.
+- `GET /api/v1/devices` responses now include the device's effective `channels`.
+- **Devices page two-state layout (08-17)** — the page now shows exactly two
+  states: **Unclaimed** (a compact list — name/IP/vendor/type + inline
+  Take ownership / Enable control / Identify / Fingerprint) and **Onboarded**
+  (the main grid of EVERY claimed device, control channels or not). The
+  "Monitoring Only" limbo section is gone. Onboarded cards show channel badges
+  (#24 model) + control actions per channel + a **🔔 monitor toggle** that
+  flips `notify_state_changes` (the alerting engine's existing opt-in) so a
+  device participates in down/recovery alerts + outage management; a
+  monitor-only camera/IoT device is Onboarded with just the toggle + ping/status.
+  A **Monitored** filter chip lists only toggled-ON devices — a filter within
+  the two-state model, not a third bucket.
+
+### Changed
+- **Updates management moved to the System tab; the Dashboard shows a release
+  banner** — the full Updates controls (Update now / Schedule / Rollback /
+  current version / last in-app update / live progress bar) moved
+  from the Dashboard into a prominent **Updates** section on the System page
+  (`/system#updates`). The Dashboard card is removed and replaced by a slim
+  banner that appears only when a release is available ("📦 v… is available —
+  Update", linking to the System section). Check Now is gone entirely — the
+  auto-check-on-load still drives the banner; `POST /api/v1/updates/check`
+  remains for tests/integrations.
+- **Pi sessions now point at the sanctioned device scripts + no double-dispatch**
+  — the pi system context (agent runner) now tells the agent to use the
+  ready-made scripts under `/opt/barenoc/scripts` (`device_ssh.sh`,
+  `ping_check.sh`, `collect_logs.sh`, …) for ANY device operation and states
+  plainly that the agent API service account (`/opt/barenoc/agent/credentials`,
+  `AGENT_TOKEN`, `/api/v1/auth/*`) is for the appliance's own scripts, NOT the
+  pi agent — stopping the 08-17 incident where a session burned its whole run
+  reverse-engineering API auth (~40 repeating notes). Ticket tasks (TKT-…)
+  are answered from the ticket + work notes directly.
+- **One pi session per ticket** — the worker skips a second dispatch when a
+  ticket already has an active pi run (a `running/TKT-….json` job file, or an
+  `auto_execute` pi-dispatch note with no terminal result after it) and posts
+  “already working on this — I'll update you when it finishes”; the runner
+  additionally merges duplicate pi-task launches per ticket so failover/retry
+  can't double-spawn. The stalled-job watchdog still escalates a genuinely-stuck
+  run, and MAX_CONCURRENT semantics for different tickets are unchanged.
+- **Friendly, customer-facing chat tone** — the chat now shows short, plain,
+  human progress updates instead of pi internals. The pi system context asks
+  for one-sentence, customer-facing progress notes ("Let me find your
+  laptop…", "Connecting now…", "Installing now…") and a direct final answer
+  (what was done + how to use it) with no meta-narration. A safety net in the
+  agent runner (`_post_progress`) replaces technical-looking progress notes
+  (paths, `sudo`/`uid`/`NOPASSWD`/`dnf`/`apt`/`curl`, `api/`, `localhost`,
+  `*.json`, backticked commands, IPs, long jargon) with a friendly generic
+  before they reach the chat — the technical original stays in the pi session
+  transcript and runner log. Final answers are cleaned of meta-narration
+  prefixes ("Lily finished:", "Here's my final answer to the customer",
+  "Here's what I found:", trailing `---` fences) before posting to the ticket
+  (`src/api/tone_filter.py`).
+
+### Fixed
+- **Reports KPIs are now days-windowed + honest (08-17)** — the **Est.
+  manned-NOC cost** now scales with the Last-*days dropdown (support tickets
+  — manual/chat, not system `auto` tickets — created in the window × the
+  configured rate/hours-per-ticket, instead of a resolved count that froze
+  when every resolution landed in one week). **AI support spend** reports the
+  real tracked catalog-path LLM cost at full precision (sub-cent values stay
+  visible) and is labeled **"AI support spend only counts catalog-path LLM
+  usage; pi/Lily sessions aren't metered yet"** — the runner still doesn't
+  report pi token usage (follow-up open item, not fabricated). **Avg
+  resolution time** is now the average of support tickets *closed in the
+  period* (system auto-tickets and backdated/negative resolutions excluded);
+  **time to first response** counts only a real customer-facing reply
+  (ai_tech_feedback / agent_progress / agent_completed / customer_input /
+  escalated / completed / closed) — the customer's own messages, internal
+  pipeline notes and auto-closes no longer fabricate a response time.
+  Definitions are shown in the KPI card tooltips + every export.
+- **Chat scroll regression restored** — the Juniper front-desk conversation
+  now preserves the reading position on its 4s poll exactly like ticket
+  threads (stick to bottom only when already within 80px, otherwise restore
+  the previous distance-from-bottom); the 08-13 fix applies to both the
+  desktop (embedded shell) and mobile paths.
+- **Pi progress notes no longer cut at 250 chars mid-sentence** — the agent
+  runner's live-progress relay sliced every streamed pi message to the first
+  three lines capped at 250 chars (and `_post_progress`/`add_progress_note`
+  sliced again at 300), so a real answer (e.g. a `dnf check-update` result) was
+  stored as a mystery fragment with no ellipsis. The cap is now 2000 chars in
+  BOTH layers (`src/agent/runner.py` + `src/api/routes/tickets.py`, which must
+  agree), any truncation appends a Unicode ellipsis (…) on a word boundary, and
+  the runner only posts COMPLETE streamed messages (terminal `stopReason` — a
+  still-streaming `pending` message is skipped, never posted mid-word). The
+  final answer path (`out[:20000]`) is untouched.
+- **Dashboard Updates card showed a stale version + a permanent "Complete"
+  banner** — `/api/v1/updates/status` now always reports the LIVE installed
+  version (a stale `status.json` check result can no longer win), and a
+  terminal `progress.json` `done` stage is annotated `confirmed` so the card
+  renders the steady "up to date" state instead of re-showing the
+  "✅ Complete / 100%" banner on every load. The scheduler's once-per-transition
+  completion email is unaffected (the raw progress stage stays visible to the
+  watcher). The Dashboard card also auto-refreshes a stale persisted check on
+  load and relabels the persisted result as "Last in-app update".
+- **Performance & Reporting tz bug** — `_hours()` in
+  `src/api/routes/dashboard.py` normalized every datetime to naive UTC before
+  subtracting, fixing the `TypeError: can't subtract offset-naive and
+  offset-aware datetimes` that 500'd the reports + performance widgets whenever
+  a ticket had a `resolved_at` (mixed naive/aware rows).
+- **Topology shows offline adopted UniFi gear** — an adopted device (e.g. a U6
+  Mesh AP) that has dropped off the controller's live `stat/device` list still
+  appears in the Devices topology, marked offline (red dashed styling) instead
+  of disappearing.
+- **Action gating on the Devices page** — "Enable control" / "Connect channel"
+  are hidden when the device already has a control channel (ssh/agent/unifi/
+  snmp/vendor_api), and Fingerprint is no longer offered on Onboarded devices
+  (it is a discovery action for Unclaimed only). `monitor` is always present,
+  so a control channel = anything beyond `monitor`
+  (`device_adoption_model.md` §8).
+
 ## [2026.08.17.a] — 2026-08-17
 
 ### Added

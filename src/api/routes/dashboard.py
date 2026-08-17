@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
 
 from sqlalchemy import func, or_, and_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json as _json
 
 
@@ -27,9 +27,21 @@ def _branding() -> tuple[str, bool]:
 # ── reporting (dashboard Performance & Reporting section) ───────────────────
 
 
+def _naive_utc(dt):
+    """Normalize a datetime to naive UTC (works for naive + tz-aware)."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def _hours(a, b):
     if not a or not b:
         return None
+    # created_at is naive UTC; resolved_at/note timestamps can be tz-aware —
+    # normalize both before subtracting (08-17: TypeError otherwise).
+    a, b = _naive_utc(a), _naive_utc(b)
     return round((b - a).total_seconds() / 3600, 1)
 
 
@@ -61,25 +73,53 @@ def _notes_events(t) -> list:
         return []
 
 
-# Notes that are internal machinery, not a response to the customer/AI output.
-_INTERNAL_NOTE_EVENTS = {"processing", "auto_execute", "agent_retry", "checkin_request"}
+# Work-note events that ARE a customer-facing reply (the AI/team talking to the
+# customer). Everything else — internal machinery (processing / auto_execute /
+# agent_retry / checkin_request / agent_response / priority_change /
+# intake_priority), the customer's OWN messages (user_message), and system
+# closes (autoclosed, pause directives) — is NOT a response and must never
+# count as "time to first response".
+_CUSTOMER_FACING_EVENTS = {
+    "ai_tech_feedback",   # Lily's conversational reply (greeting / clarification)
+    "agent_progress",     # live progress update shown in the thread
+    "agent_completed",    # Lily's final answer
+    "customer_input",     # the team asks the customer for more info
+    "escalated",          # needs-a-human notice
+    "completed",          # closing note
+    "closed",             # close note
+}
 
 
 def _first_response_min(t) -> "float | None":
-    """Minutes from creation to the first CUSTOMER-FACING response (the first
-    work note that isn't internal machinery — e.g. agent_completed, agent_response,
-    customer_input, escalated). Computed in minutes directly (no hour-rounding
-    that would flatten sub-3-minute responses to 0)."""
+    """Minutes from creation to the first customer-facing reply.
+
+    Only work notes in _CUSTOMER_FACING_EVENTS count. The customer's own
+    user_message, internal pipeline notes, check-ins, priority changes and
+    auto-closes are all excluded so a ticket that only ever received a
+    follow-up (or was auto-closed without a reply) doesn't fabricate a
+    response time.
+    """
     notes = [n for n in _notes_events(t)
              if isinstance(n, dict) and n.get("timestamp")
-             and n.get("event") not in _INTERNAL_NOTE_EVENTS]
+             and n.get("event") in _CUSTOMER_FACING_EVENTS]
     if not notes or not t.created_at:
         return None
     try:
-        first = min(datetime.fromisoformat(str(n["timestamp"]).replace("Z", "")) for n in notes)
+        first = min(_naive_utc(datetime.fromisoformat(str(n["timestamp"]).replace("Z", ""))) for n in notes)
     except ValueError:
         return None
-    return round((first - t.created_at).total_seconds() / 60, 1)
+    return round((_naive_utc(first) - _naive_utc(t.created_at)).total_seconds() / 60, 1)
+
+
+def _is_support_ticket(t) -> bool:
+    """A ticket a human/AI support team actually works.
+
+    source == "auto" tickets are system-generated (internet-outage monitor,
+    LLM-outage ticket, seeded demo rows) and open/close on their own — they are
+    NOT support work, and their long idle gaps must not skew the support
+    resolution / first-response / cost KPIs.
+    """
+    return getattr(t, "source", None) != "auto"
 
 
 def _report_stats(db, days: int = 30) -> dict:
@@ -93,17 +133,31 @@ def _report_stats(db, days: int = 30) -> dict:
         Ticket.resolved_at.isnot(None), Ticket.resolved_at >= since).all()
     closed_rows = [t for t in created_rows if t.status in ("closed", "completed")]
 
+    # Support KPIs (resolution / first-response / cost) are computed over
+    # SUPPORT tickets only (source != "auto"). Auto tickets are system-generated
+    # (internet-outage monitor, LLM-outage ticket, seeded demo rows) and open /
+    # close on their own; their long idle gaps must not skew the support
+    # averages or the manned-NOC cost estimate. Negative resolutions
+    # (resolved_at before created_at — e.g. a backdated seed row) are dropped.
+    support_created = [t for t in created_rows if _is_support_ticket(t)]
+    support_resolved = [
+        t for t in resolved_rows
+        if _is_support_ticket(t)
+        and t.created_at is not None
+        and _naive_utc(t.resolved_at) >= _naive_utc(t.created_at)
+    ]
+
     def _avg(vals):
         vals = [v for v in vals if v is not None]
         return round(sum(vals) / len(vals), 1) if vals else None
 
-    res_times = [_hours(t.created_at, t.resolved_at) for t in resolved_rows]
-    first_actions = [_first_response_min(t) for t in created_rows]
+    res_times = [_hours(t.created_at, t.resolved_at) for t in support_resolved]
+    first_actions = [_first_response_min(t) for t in support_created]
     res_by_priority = {}
-    for t in resolved_rows:
+    for t in support_resolved:
         res_by_priority.setdefault(t.priority, []).append(_hours(t.created_at, t.resolved_at))
     first_by_priority = {}
-    for t in created_rows:
+    for t in support_created:
         first_by_priority.setdefault(t.priority, []).append(_first_response_min(t))
 
     open_dur = [(_hours(t.created_at, t.resolved_at or t.updated_at)) for t in closed_rows]
@@ -114,29 +168,32 @@ def _report_stats(db, days: int = 30) -> dict:
         AuditLog.event_type == "escalation", AuditLog.timestamp >= since).all()
     esc_ticket_ids = {a.ticket_id for a in esc_audits if a.ticket_id}
     escalated_tickets = len(esc_ticket_ids)
-    # Rate = tickets created in the period that were escalated at least once ÷
-    # tickets created in the period. Bounded 0..1 by construction. (Escalations
-    # of older tickets still count in the raw events/distinct numbers.)
-    created_ids = {t.ticket_id for t in created_rows}
-    escalated_created = len(esc_ticket_ids & created_ids)
+    # Rate = support tickets created in the period that were escalated at least
+    # once ÷ support tickets created in the period. Bounded 0..1 by construction.
+    # (Escalations of older tickets still count in the raw events/distinct numbers.)
+    support_created_ids = {t.ticket_id for t in support_created}
+    escalated_support = len(esc_ticket_ids & support_created_ids)
     autoclosed = db.query(AuditLog).filter(
         AuditLog.event_type == "ticket_autoclosed", AuditLog.timestamp >= since).count()
     checkins = db.query(AuditLog).filter(
         AuditLog.event_type == "ticket_checkin", AuditLog.timestamp >= since).count()
     llm_rows = db.query(AuditLog).filter(
         AuditLog.event_type == "llm_request", AuditLog.timestamp >= since).all()
-    llm_cost = round(sum(float((a.data or {}).get("cost_usd") or 0) for a in llm_rows), 4)
+    llm_cost = round(sum(float((a.data or {}).get("cost_usd") or 0) for a in llm_rows), 6)
 
-    # Support cost: direct AI spend (hard number) vs estimated manned-NOC labor
-    # (configurable rate/hours-per-ticket — an estimate, labeled as such).
+    # Support cost: direct AI spend (the real tracked catalog-path LLM cost —
+    # see llm_metering_note; pi/Lily sessions aren't metered yet) vs estimated
+    # manned-NOC labor. The manned estimate = support tickets CREATED in the
+    # window (the workload that arrived) × configurable rate/hours-per-ticket,
+    # so it scales with the days dropdown exactly like the "created" KPIs.
     labor_rate = _report_env_float("SUPPORT_LABOR_RATE_USD", 45.0)
     hours_per_ticket = _report_env_float("SUPPORT_HOURS_PER_TICKET", 1.0)
-    est_manned_noc_cost = round(len(resolved_rows) * hours_per_ticket * labor_rate, 2)
+    est_manned_noc_cost = round(len(support_created) * hours_per_ticket * labor_rate, 2)
     savings_usd = round(max(0.0, est_manned_noc_cost - llm_cost), 2)
 
-    # Reopens: a ticket whose notes contain ≥2 terminal (closed/completed) events
+    # Reopens: a support ticket whose notes contain ≥2 terminal (closed/completed) events
     reopens = 0
-    for t in created_rows:
+    for t in support_created:
         terminals = [n for n in _notes_events(t)
                      if isinstance(n, dict) and n.get("event") in ("closed", "completed")]
         if len(terminals) >= 2:
@@ -176,6 +233,8 @@ def _report_stats(db, days: int = 30) -> dict:
         "created": created,
         "resolved": len(resolved_rows),
         "closed": len(closed_rows),
+        "support_created": len(support_created),
+        "support_resolved": len(support_resolved),
         "avg_resolution_hours": _avg(res_times),
         "avg_first_response_min": _avg(first_actions),
         "avg_open_hours": _avg(open_dur),
@@ -183,12 +242,14 @@ def _report_stats(db, days: int = 30) -> dict:
         "first_by_priority_min": first_by_priority_avg,
         "escalations": esc_rows,
         "escalated_tickets": escalated_tickets,
-        "escalation_rate": round(escalated_created / created, 3) if created else 0,
+        "escalation_rate": round(escalated_support / len(support_created), 3) if support_created else 0,
         "autoclosed": autoclosed,
         "checkins": checkins,
         "reopens": reopens,
         "llm_cost_usd": llm_cost,
         "llm_calls": len(llm_rows),
+        "llm_metering_note": ("AI support spend only counts catalog-path LLM usage; "
+                              "pi/Lily sessions aren't metered yet"),
         "support_cost_usd": llm_cost,
         "est_manned_noc_cost_usd": est_manned_noc_cost,
         "savings_usd": savings_usd,
@@ -271,16 +332,20 @@ def _report_tables(stats: dict, tickets: list) -> list:
     Returns [(sheet_name, [[row...]...])] with the header row first."""
     summary = [
         ["Metric", "Value"],
-        ["Tickets created", stats["created"]], ["Tickets resolved", stats["resolved"]],
+        ["Tickets created", stats["created"]],
+        ["Support tickets created", stats["support_created"]],
+        ["Tickets resolved", stats["resolved"]],
+        ["Support tickets resolved", stats["support_resolved"]],
         ["Tickets closed", stats["closed"]],
-        ["Avg resolution time (h)", stats["avg_resolution_hours"] or "—"],
-        ["Avg time to first response (min)", stats["avg_first_response_min"] or "—"],
+        ["Avg resolution time (h, support tickets)", stats["avg_resolution_hours"] or "—"],
+        ["Avg time to first response (min, support tickets)", stats["avg_first_response_min"] or "—"],
         ["Escalation events", stats["escalations"]],
         ["Tickets escalated (at least once)", stats["escalated_tickets"]],
-        ["Escalation rate (% of created)", stats["escalation_rate"]],
+        ["Escalation rate (% of support tickets created)", stats["escalation_rate"]],
         ["Auto-closed", stats["autoclosed"]], ["Check-ins sent", stats["checkins"]],
         ["Reopened / follow-ups", stats["reopens"]],
-        ["AI support spend (USD, LLM)", stats["support_cost_usd"]],
+        ["AI support spend (USD, tracked LLM)", stats["support_cost_usd"]],
+        ["AI metering note", stats["llm_metering_note"]],
         ["Est. manned-NOC cost (USD)", stats["est_manned_noc_cost_usd"]],
         ["Estimated savings (USD)", stats["savings_usd"]], ["LLM calls", stats["llm_calls"]],
     ]
@@ -406,19 +471,23 @@ def export_report(db: Session = Depends(get_db),
                   styles["Normal"]),
         Spacer(1, 12),
         Paragraph("<b>Headline metrics</b>", styles["Heading2"]),
-        Table([["Tickets created", stats["created"]], ["Tickets resolved", stats["resolved"]],
-               ["Avg resolution time (h)", stats["avg_resolution_hours"] or "—"],
-               ["Avg time to first response (min)", stats["avg_first_response_min"] or "—"],
+        Table([["Tickets created", stats["created"]],
+               ["Support tickets created", stats["support_created"]],
+               ["Tickets resolved", stats["resolved"]],
+               ["Support tickets resolved", stats["support_resolved"]],
+               ["Avg resolution time (h, support tickets)", stats["avg_resolution_hours"] or "—"],
+               ["Avg time to first response (min, support tickets)", stats["avg_first_response_min"] or "—"],
                ["Tickets escalated (at least once)", stats["escalated_tickets"]],
                ["Escalation events", stats["escalations"]],
                ["Tickets closed", stats["closed"]],
                ["Auto-closed", stats["autoclosed"]], ["Check-ins sent", stats["checkins"]],
-               ["Escalation rate (% of created)", stats["escalation_rate"]],
+               ["Escalation rate (% of support tickets created)", stats["escalation_rate"]],
                ["Reopened / follow-ups", stats["reopens"]],
-               ["AI support spend (USD)", stats["support_cost_usd"]],
+               ["AI support spend (USD, tracked LLM)", stats["support_cost_usd"]],
                ["Est. manned-NOC cost (USD)", stats["est_manned_noc_cost_usd"]],
                ["Estimated savings (USD)", stats["savings_usd"]], ["LLM calls", stats["llm_calls"]]],
                colWidths=[3.2 * inch, 2.2 * inch]),
+        Paragraph(stats["llm_metering_note"], styles["Normal"]),
         Spacer(1, 12),
         Paragraph("<b>Daily trend (created vs resolved)</b>", styles["Heading2"]),
         Table([["Date", "Created", "Resolved"]]

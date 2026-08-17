@@ -191,6 +191,41 @@ class AutoAdoptTest(unittest.TestCase):
         self.assertEqual(len(result["links"]), 2)      # 01->02, 02->03 only
         self.assertFalse(any(l["to"] == "aa:bb:cc:00:00:04" for l in result["links"]))
 
+    def test_topology_includes_offline_adopted(self):
+        """An adopted AP the controller's live list omits (offline) must still
+        appear in the topology, marked offline."""
+        init_db()
+        db = SessionLocal()
+        db.query(Device).delete()
+        db.commit()
+        for name, ip, mac, _up, typ, claimed, status in (
+            ("GW", "10.0.0.1", "aa:bb:cc:00:00:01", "", "gateway", True, "online"),
+            ("SW", "10.0.0.2", "aa:bb:cc:00:00:02", "aa:bb:cc:00:00:01", "switch", True, "online"),
+            ("AP-OFF", "10.0.0.5", "aa:bb:cc:00:00:05", "aa:bb:cc:00:00:02", "ap", True, "offline"),
+        ):
+            db.add(Device(name=name, ip_address=ip, device_type=typ, status=status,
+                          claimed=claimed, unifi_managed=True, device_group="default",
+                          mac_address=mac))
+        db.commit()
+        # The controller's stat/device drops the offline AP entirely.
+        devs = [
+            {"name": "GW", "ip": "10.0.0.1", "mac": "aa:bb:cc:00:00:01", "type": "gateway",
+             "model": "x", "status": "online", "uplink_mac": ""},
+            {"name": "SW", "ip": "10.0.0.2", "mac": "aa:bb:cc:00:00:02", "type": "switch",
+             "model": "x", "status": "online", "uplink_mac": "aa:bb:cc:00:00:01"},
+        ]
+        fake = FakeClient(devs, [])
+        with patch.object(unifi_sync, "_auth_ready", return_value=True), \
+             patch.object(unifi_sync, "_get_unifi_config",
+                          return_value={"url": "x", "username": "u", "password": "p", "api_key": ""}), \
+             patch.object(unifi_sync, "_unifi_client", return_value=fake):
+            result = unifi_sync.topology(db=db, user=SimpleNamespace(username="tester"))
+        db.close()
+        by_mac = {d["mac"]: d for d in result["devices"]}
+        self.assertIn("aa:bb:cc:00:00:05", by_mac)
+        self.assertEqual(by_mac["aa:bb:cc:00:00:05"]["status"], "offline")
+        self.assertTrue(by_mac["aa:bb:cc:00:00:05"]["offline"])
+
     def test_ensure_wireless_uplinks_compute(self):
         """dry_run computes the right tagged VLANs without writing; preserves
         other ports + exclusions."""

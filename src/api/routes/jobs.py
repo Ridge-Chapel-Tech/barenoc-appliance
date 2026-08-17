@@ -11,6 +11,7 @@ from models import Ticket, User
 from auth import require_any_role, require_role
 from schemas import TicketResponse
 from worknotes import add_note
+from tone_filter import strip_meta_narration
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +177,8 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
                 lines.append(f"  ✓ {c.get('ap')} -> {c.get('switch')} port {c.get('port')}: now tagged "
                              f"{c.get('tagged_vlan')} (vlan {c.get('vlan')})")
     elif action == "pi_task":
-        response = (out.get("response") or "").strip()
-        lines.append("Lily finished:" if response else "Lily finished (no output).")
-        lines.append(response[:4000])
+        response = strip_meta_narration(out.get("response") or "")
+        lines.append(response or "Lily finished (no output).")
     elif action == "unifi_set_ssid_password":
         lines.append(f"SSID '{out.get('ssid')}' passphrase updated (security: {out.get('security', 'wpapsk')}).")
     if not lines:
@@ -257,7 +257,7 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
             # assistant answered an info request — put the answer in the thread
             info_answer = formatted
             add_note(ticket, "agent_completed",
-                     f"Here's what I found:\n{info_answer}\n\n"
+                     f"{info_answer}\n\n"
                      f"Does this answer your question? Reply to confirm, or tell me what's still missing.")
             ticket.resolution = "Answered by " + _assistant_name() + " — awaiting customer confirmation"
         else:

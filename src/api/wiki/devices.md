@@ -17,16 +17,18 @@ flowchart LR
 
 ## Unclaimed devices
 
-The Devices page groups unclaimed devices into three sections:
+The Devices page shows unclaimed devices as a compact list (grouped, so they
+take less space than the old card grid):
 
 | Section | Source | What to do |
 |---------|--------|------------|
-| **Network Infrastructure** | UniFi-managed gateways/switches/APs | Claim them |
-| **Endpoints (UniFi clients)** | Computers, servers, phones, IoT seen by UniFi | Fingerprint the unknowns, claim |
+| **Network Infrastructure** | UniFi-managed gateways/switches/APs | Take ownership |
+| **Endpoints (UniFi clients)** | Computers, servers, phones, IoT seen by UniFi | Identify the unknowns, take ownership |
 | **Discovered — unexamined** | Ping-scan finds (non-UniFi sites) | Fingerprint for identity |
 
-Each card shows the IP, vendor, type, tags, and fingerprint result (OS guess +
-open ports). Buttons: **Fingerprint**, **Claim**, **Dismiss**.
+Each row shows the name, IP, vendor, type, and tags. Inline actions:
+**Fingerprint**, **Identify** (shows the fingerprint + recommended control
+channel), **Take ownership**, **Enable control**, **Dismiss**.
 
 > With a UniFi controller active, **Scan Network** is hidden — UniFi is the
 > authoritative source. It reappears on deployments without UniFi.
@@ -71,22 +73,23 @@ API's device endpoints require a client cert signed by that CA root. Devices
 without step-cli can still be claimed with SSH (fallback) or adopted via the
 UniFi controller — cert adoption is the preferred, revocable path.
 
-Click **Claim** — give it a name, type (gateway/switch/ap/server/workstation/
-printer), vendor/model, and optionally SNMP/SSH credentials. Claimed devices
-become managed: they're monitored (ping/SNMP), appear in dashboards, and are
-targets for AI Technician actions.
+Click **Take ownership** — give it a name, type (gateway/switch/ap/server/
+workstation/printer), vendor/model, and optionally SNMP/SSH credentials.
+Claimed devices become **onboarded**: they're monitored (ping/status), appear
+in dashboards, and are targets for AI Technician actions.
 
 **Claim with control**: paste the device's SSH private key (and SSH user) in
 the credentials section — the device is stored encrypted at rest and becomes
 **SSH-controlled**: the AI Tech's SSH actions (patch check, collect logs,
 reboot, install the chat client) automatically use the stored credentials for
-that device. Without SSH, a claimed device is monitoring-only (ping/SNMP).
+that device. Without a control channel, a claimed device is monitor-only
+(ping/status) — still onboarded, with the 🔔 monitor toggle for alerts.
 
-**Add control later**: any claimed device that isn't controlled yet (the
-*Monitoring Only* section) has an **Add SSH/SNMP** button — or use **Creds**
-on any Onboarded card — to attach SNMP/SSH credentials and move it into the
-managed fleet (this also works for UniFi gear that has no controller access,
-e.g. a NAS you want patched).
+**Add control later**: any onboarded device has a **Connect channel** button —
+attach SNMP/SSH credentials to add the `snmp`/`ssh` channels (this also works
+for UniFi gear that has no controller access, e.g. a NAS you want patched).
+A monitor-only camera/IoT device stays onboarded with just the 🔔 monitor
+toggle + ping/status.
 
 **UniFi gear auto-adopts**: once the controller connection works, UniFi-managed
 gateways/switches/APs are claimed automatically (Settings → UniFi →
@@ -96,13 +99,15 @@ auto-adopted.
 
 ## Devices page views
 
-- **Onboarded list** — devices BareNOC can control (SSH **or** UniFi). Click the
-  **🔔 / 🔕 bell** on a card to opt that device into email alerts when it goes
-  down and when it recovers (default: off — you pick which devices page you).
-  **Creds** on a card opens the credentials editor (add/replace SSH or SNMP).
-- **Monitoring Only** — claimed devices with **no** SSH credentials and **no**
-  UniFi management: they're ping/SNMP monitored but BareNOC can't run actions
-  on them. Use **Add SSH/SNMP** to give the AI Tech control.
+- **Onboarded grid** — every claimed device, regardless of control channels.
+  Each card shows its channels (agent · vendor API · SSH · UniFi · SNMP ·
+  monitor), the control actions they enable, and a **🔔 / 🔕 monitor toggle**
+  to opt the device into email alerts when it goes down and recovers (default:
+  off — you pick which devices page you). **Connect channel** on a card opens
+  the credentials editor (add/replace SSH or SNMP).
+- **Monitored** — a filter chip (🔔 Monitored) in the Onboarded section shows
+  only the devices with the monitor toggle ON. It is a view within Onboarded,
+  not a separate status: a monitor-only camera/IoT device is Onboarded too.
 - **Topology** — the **Topology** button (next to List) renders your adopted
   UniFi gear as a live graph: gateway → switches → APs, with online wired/
   wireless clients attached to their parent device and port numbers on the

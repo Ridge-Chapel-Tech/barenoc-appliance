@@ -73,6 +73,218 @@ ACTION_SCRIPTS = {
 # DEVICES dict is populated by the worker before validation
 MANAGED_DEVICES: dict = {}
 
+
+# ── Control-channel capability model (device_adoption_model.md §3-§5) ──
+# Capability = config (the device's channels); authority = code (this catalog).
+# Channels are ranked security-first; the recommendation tier in §4 of the doc.
+CHANNEL_AGENT = "agent"
+CHANNEL_VENDOR_API = "vendor_api"
+CHANNEL_SSH = "ssh"
+CHANNEL_UNIFI = "unifi"
+CHANNEL_SNMP = "snmp"
+CHANNEL_MONITOR = "monitor"
+
+# Canonical order = security tier (highest first) — used for deterministic
+# channel lists and the recommendation ranking.
+CHANNELS = (
+    CHANNEL_AGENT, CHANNEL_VENDOR_API, CHANNEL_SSH, CHANNEL_UNIFI,
+    CHANNEL_SNMP, CHANNEL_MONITOR,
+)
+
+DEVICE_TYPES = ("server", "switch", "ap", "router", "camera", "iot", "other")
+
+# Legacy device_type spellings (kept working; display/suggestion map to canon).
+LEGACY_DEVICE_TYPES = {
+    "gateway": "router", "workstation": "server", "printer": "iot", "nas": "iot",
+}
+
+# Security tier: lower = prefer. snmpv2c / plaintext HTTP are last-resort and
+# are never auto-recommended (they surface as warnings instead).
+CHANNEL_SECURITY_RANK = {
+    CHANNEL_AGENT: 0,
+    CHANNEL_VENDOR_API: 1,
+    CHANNEL_SSH: 2,
+    CHANNEL_UNIFI: 3,
+    CHANNEL_SNMP: 4,
+    CHANNEL_MONITOR: 5,
+}
+
+CHANNEL_WHY = {
+    CHANNEL_AGENT: "mTLS cert, poll-only (no exposed service), least-privilege",
+    CHANNEL_VENDOR_API: "vendor RESTCONF/NETCONF/HTTP over TLS (token/cert auth)",
+    CHANNEL_SSH: "SSH key-only + scoped sudo",
+    CHANNEL_UNIFI: "delegated controller trust (no per-device creds)",
+    CHANNEL_SNMP: "SNMPv3 auth+priv (v2c plaintext is last-resort only)",
+    CHANNEL_MONITOR: "ping/status only — recommended over weak control",
+}
+
+
+def canonical_device_type(device_type: str) -> str:
+    """Map legacy spellings to the canonical taxonomy (idempotent)."""
+    return LEGACY_DEVICE_TYPES.get((device_type or "").lower(), (device_type or "other"))
+
+
+def effective_channels(ssh_configured: bool = False, snmp_configured: bool = False,
+                       unifi_managed: bool = False, agent_connected: bool = False,
+                       explicit=None) -> list:
+    """The device's effective control-channel set = auto-derived (from
+    credential/adoption columns) ∪ explicit declarations (vendor_api, monitor,
+    future channels). 'monitor' is always present. Deterministic order (by
+    security tier). device_adoption_model.md §8."""
+    ch = {CHANNEL_MONITOR}
+    if ssh_configured:
+        ch.add(CHANNEL_SSH)
+    if snmp_configured:
+        ch.add(CHANNEL_SNMP)
+    if unifi_managed:
+        ch.add(CHANNEL_UNIFI)
+    if agent_connected:
+        ch.add(CHANNEL_AGENT)
+    for c in (explicit or []):
+        if c in CHANNELS:
+            ch.add(c)
+    return [c for c in CHANNELS if c in ch]
+
+
+# Actions that require a control channel on the TARGET device. An action not
+# listed here is channel-agnostic (appliance-side, controller-side, or logical)
+# and keeps today's behavior. device_adoption_model.md §5.
+ACTION_REQUIRED_CHANNELS = {
+    AllowedAction.REBOOT_DEVICE: {CHANNEL_SSH, CHANNEL_AGENT, CHANNEL_SNMP, CHANNEL_VENDOR_API},
+    AllowedAction.COLLECT_LOGS: {CHANNEL_SSH, CHANNEL_AGENT},
+    AllowedAction.APPLY_PATCH: {CHANNEL_SSH, CHANNEL_AGENT},
+    AllowedAction.INSTALL_CHAT_CLIENT: {CHANNEL_SSH, CHANNEL_AGENT},
+    AllowedAction.ENROLL_DEVICE: {CHANNEL_SSH},
+    AllowedAction.SNMP_POLL: {CHANNEL_SNMP},
+}
+
+
+def validate_channels(action, device_type: str = None, channels=None) -> tuple[bool, str]:
+    """Capability gate: an action whose catalog entry declares required
+    channels must intersect the device's channels. Channel-less actions and
+    unknown channels (None) pass through — the agent-level gate stays the
+    fallback. device_adoption_model.md §5."""
+    try:
+        action = AllowedAction(action)
+    except ValueError:
+        return True, ""  # unknown action is caught by validate_action
+    required = ACTION_REQUIRED_CHANNELS.get(action)
+    if not required:
+        return True, ""
+    if channels is None:
+        return True, ""  # channel info unknown — don't block
+    have = set(channels or [])
+    if have & required:
+        return True, ""
+    return False, (
+        f"Action '{action.value}' requires one of these control channels: "
+        f"{', '.join(sorted(required))}; the device has "
+        f"{', '.join(sorted(have)) if have else 'none'}"
+    )
+
+
+def _camera_vendor(vendor: str) -> bool:
+    v = (vendor or "").lower()
+    return any(k in v for k in ("hikvision", "dahua", "onvif", "axis", "amcrest",
+                                "reolink", "uniview", "camera"))
+
+
+def suggest_from_fingerprint(fp: dict) -> dict:
+    """Map a fingerprint.sh JSON result to a suggested type + candidate
+    channels + a SECURITY-FIRST recommendation. Pure function — no DB.
+    device_adoption_model.md §2 and §4.
+
+    Returns {"device_type", "candidate_channels" (ranked), "recommendation"
+             (one channel), "why" (one line, security), "warnings": [...]}.
+    """
+    fp = fp or {}
+    ports = {p.get("port") for p in (fp.get("open_ports") or [])}
+    vendor = str(fp.get("vendor") or "").lower()
+    os_ = str(fp.get("os") or "").lower()
+    ssh_banner = str(fp.get("ssh_banner") or "").lower()
+    sysdescr = str(fp.get("sysdescr") or "").lower()
+
+    warnings = []
+    candidate = []
+    device_type = "other"
+    insecure = set()  # channels flagged as plaintext/weak for THIS device
+
+    has_ssh = 22 in ports
+    has_snmp = 161 in ports or "snmp" in sysdescr
+    has_http = 80 in ports or 443 in ports
+    has_rtsp = 554 in ports
+    net_gear = any(k in sysdescr or k in vendor for k in
+                   ("cisco", "juniper", "hp", "aruba", "mikrotik", "huawei",
+                    "switch", "router", "fortinet", "brocade", "zyxel"))
+    camera = _camera_vendor(vendor) or has_rtsp or ("onvif" in sysdescr)
+
+    if net_gear and ("switch" in sysdescr or "router" in sysdescr or
+                     "gateway" in sysdescr or "ios" in sysdescr or
+                     "junos" in sysdescr or has_snmp):
+        device_type = "router" if ("router" in sysdescr or "gateway" in sysdescr
+                                   or "junos" in sysdescr) else "switch"
+        candidate = [CHANNEL_SNMP, CHANNEL_VENDOR_API]
+        if has_ssh:
+            candidate.insert(0, CHANNEL_SSH)
+        if not has_ssh and has_http and not has_snmp:
+            warnings.append("plaintext HTTP management — prefer vendor API over TLS")
+            insecure.add(CHANNEL_VENDOR_API)
+    elif camera:
+        device_type = "camera"
+        candidate = [CHANNEL_MONITOR, CHANNEL_VENDOR_API]
+        if has_http and has_rtsp:
+            warnings.append("camera exposes plaintext HTTP/RTSP — monitor-only recommended")
+            insecure.add(CHANNEL_VENDOR_API)
+        if has_snmp:
+            candidate.append(CHANNEL_SNMP)
+    elif has_ssh:
+        device_type = "server"
+        candidate = [CHANNEL_AGENT, CHANNEL_SSH]
+        if "windows" in os_ or "windows" in ssh_banner:
+            warnings.append("Windows endpoint — agent channel ships in a later milestone; SSH key-only for now")
+        if has_snmp:
+            candidate.append(CHANNEL_SNMP)
+    elif 445 in ports or 139 in ports:
+        device_type = "server"
+        candidate = [CHANNEL_MONITOR]
+        warnings.append("SMB ports open, no SSH — no secure control channel; monitor-only")
+    elif 9100 in ports:
+        device_type = "iot"
+        candidate = [CHANNEL_MONITOR, CHANNEL_SNMP]
+    elif has_http:
+        device_type = "iot"
+        candidate = [CHANNEL_MONITOR, CHANNEL_VENDOR_API]
+        if 443 not in ports:
+            warnings.append("HTTP (not HTTPS) only — plaintext; monitor-only recommended")
+            insecure.add(CHANNEL_VENDOR_API)
+    else:
+        device_type = "other"
+        candidate = [CHANNEL_MONITOR]
+
+    if CHANNEL_MONITOR not in candidate:
+        candidate.append(CHANNEL_MONITOR)
+    # Default-credential warning (can't be proven from a passive scan — flag
+    # the class of risk when a weak channel is the only control option).
+    snmp_v3 = bool(str(fp.get("snmp_version") or "").lower().startswith("3")) \
+        or bool((fp.get("snmp") or {}).get("v3"))
+    if CHANNEL_SNMP in candidate and not snmp_v3:
+        warnings.append("SNMP likely v2c plaintext community — use v3 auth+priv or monitor-only")
+        insecure.add(CHANNEL_SNMP)
+
+    # Security-first recommendation (device_adoption_model.md §4): the
+    # highest-ranked candidate that is secure for THIS device; 'monitor' is
+    # the recommendation when every control channel is weak/plaintext.
+    ranked = sorted(set(candidate), key=lambda c: CHANNEL_SECURITY_RANK.get(c, 99))
+    secure = [c for c in ranked if c not in insecure and c != CHANNEL_MONITOR]
+    recommendation = secure[0] if secure else CHANNEL_MONITOR
+    return {
+        "device_type": device_type,
+        "candidate_channels": ranked,
+        "recommendation": recommendation,
+        "why": CHANNEL_WHY.get(recommendation, ""),
+        "warnings": warnings,
+    }
+
 # Patch allowlist — only patches on this list can be applied.
 # Per-deployment override via PATCH_ALLOWLIST env (comma-separated; "*" = any
 # patch id allowed, e.g. home deployments). Defaults below when unset.
@@ -287,5 +499,17 @@ def validate_job(job: dict) -> tuple[bool, str]:
     valid, msg = validate_params(job["action"], params)
     if not valid:
         return False, msg
+
+    # 5. Channel capability check (device_adoption_model.md §5): when the
+    # target resolves to a managed device with known channels, the action's
+    # required channels must intersect the device's channels. Unknown targets
+    # or devices without channel info pass through (agent-level fallback).
+    target = job.get("target") or ""
+    if target and target in MANAGED_DEVICES:
+        dev = MANAGED_DEVICES[target]
+        if isinstance(dev, dict) and dev.get("channels") is not None:
+            valid, msg = validate_channels(job["action"], dev.get("type"), dev["channels"])
+            if not valid:
+                return False, msg
 
     return True, ""

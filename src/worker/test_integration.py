@@ -11,6 +11,8 @@ touching the live DB or job queue.
 import os
 import sys
 import json
+import shutil
+import datetime
 import tempfile
 from unittest.mock import patch
 
@@ -592,6 +594,58 @@ def main():
     ok("outage: flag cleared", worker._LLM_OUTAGE is False)
     db.query(Ticket).filter(Ticket.title == worker.OUTAGE_TITLE).delete()
     db.commit()
+    db.close()
+
+    # 21. PI RE-DISPATCH GUARD: a user reply during an active pi session must
+    # NOT spawn a second session — a short note is posted and no second job
+    # file is written (the 08-17 double-dispatch incident).
+    t = make_ticket("can you run updates on my Laptop?", "P3")
+    db = SessionLocal()
+    tt = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("pi dispatch: first dispatch handled",
+       worker._dispatch_pi(db, tt, "can you run updates on my Laptop?") is True)
+    db.commit()
+    # simulate the runner picking the job up (incoming -> running)
+    src_job = os.path.join(worker.JOBS_INCOMING, f"{tt.ticket_id}.json")
+    os.makedirs(worker.JOBS_RUNNING, exist_ok=True)
+    shutil.move(src_job, os.path.join(worker.JOBS_RUNNING, f"{tt.ticket_id}.json"))
+    ok("pi guard: active run detected", worker._pi_run_active(tt) is True)
+    # user replies mid-run -> re-dispatch attempt
+    ok("pi re-dispatch guard: second dispatch skipped",
+       worker._dispatch_pi(db, tt, "update?") is True)
+    notes = worker._notes_list(tt)
+    ok("pi re-dispatch guard: 'already working' note posted",
+       any("already working" in (n.get("detail") or "") for n in notes),
+       str([n.get("detail") for n in notes[-3:]]))
+    ok("pi re-dispatch guard: no second job file",
+       not os.path.exists(os.path.join(worker.JOBS_INCOMING, f"{tt.ticket_id}.json")))
+    db.close()
+
+    # 22. WATCHDOG: a genuinely-stuck pi run still escalates — the re-dispatch
+    # guard blocks a second session but never blocks the escalation path.
+    t = make_ticket("reboot the AP and tell me when done", "P3")
+    db = SessionLocal()
+    tt = db.query(Ticket).filter(Ticket.id == t.id).first()
+    worker._dispatch_pi(db, tt, "reboot the AP and tell me when done")
+    db.commit()
+    # simulate a stuck run: the runner finished and removed its job file, but
+    # the result POST was lost — no terminal note, last update >10 min ago.
+    src_job = os.path.join(worker.JOBS_INCOMING, f"{tt.ticket_id}.json")
+    if os.path.exists(src_job):
+        os.remove(src_job)
+    tt.updated_at = datetime.datetime.utcnow() - datetime.timedelta(minutes=11)
+    tt.status = "in_progress"
+    db.commit()
+    ok("watchdog: stuck pi run still active (notes-based guard)",
+       worker._pi_run_active(tt) is True)
+    n_esc = worker._escalate_stuck_jobs(db)
+    tt = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("watchdog: stuck pi run escalated", tt.status == "escalated", tt.status)
+    ok("watchdog: human-tech assigned", tt.assigned_to == "human-tech",
+       tt.assigned_to or "")
+    ok("watchdog: escalated exactly once", n_esc == 1, str(n_esc))
+    ok("watchdog: escalation clears the active run (re-dispatch now allowed)",
+       worker._pi_run_active(tt) is False)
     db.close()
 
     print(f"\nALL {PASS} INTEGRATION CHECKS PASSED (scratch DB: {_TMP})")

@@ -11,12 +11,43 @@ from models import Device, User
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
+from action_validator import (
+    effective_channels, suggest_from_fingerprint,
+    CHANNELS,
+)
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
 logger = logging.getLogger("devices")
 
 DEFAULT_GROUP = "default"
+
+
+def _device_channels(device: Device) -> list:
+    """The device's effective control channels (derived ∪ explicit).
+    device_adoption_model.md §8."""
+    agent_connected = (device.adoption_method == "agent"
+                       or bool(getattr(device, "agent_version", None)))
+    return effective_channels(
+        ssh_configured=bool(device.ssh_key_fingerprint),
+        snmp_configured=bool(device.snmp_community),
+        unifi_managed=bool(device.unifi_managed),
+        agent_connected=agent_connected,
+        explicit=device.channels,
+    )
+
+
+def _normalize_channels(value) -> list:
+    """Validate + canonicalize an explicit channel list (empty -> [])."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    out = []
+    for c in (value or []):
+        if c in CHANNELS and c not in out:
+            out.append(c)
+    return out
 
 
 def device_groups() -> list:
@@ -145,11 +176,15 @@ def list_devices(
     # device: via SSH credentials, OR via the UniFi controller for adopted
     # UniFi-managed gear (unifi_managed + claimed), OR via certificate
     # adoption (adoption_status == 'linked' — the device holds a valid
-    # short-lived cert from the internal CA and reports over mTLS).
+    # short-lived cert from the internal CA and reports over mTLS), OR via the
+    # NOC_Agent channel (adoption_method == 'agent'). vendor_api-only devices
+    # are folded into the filter when the channels column ships SQL membership
+    # (follow-up); they still surface 'channels' in the response.
     _controlled_cond = or_(
         Device.ssh_key_fingerprint.isnot(None),
         and_(Device.unifi_managed.is_(True), Device.claimed.is_(True)),
         and_(Device.adoption_status == "linked", Device.claimed.is_(True)),
+        and_(Device.adoption_method == "agent", Device.claimed.is_(True)),
     )
     if controlled is True:
         q = q.filter(_controlled_cond)
@@ -186,6 +221,7 @@ def list_devices(
         r["snmp_configured"] = bool(d.snmp_community)
         r["ssh_configured"] = bool(d.ssh_key_fingerprint)
         r["unifi_managed"] = bool(d.unifi_managed)
+        r["channels"] = _device_channels(d)
         result_devices.append(r)
     return {
         "devices": result_devices,
@@ -201,6 +237,7 @@ def get_device(device_id: int, db: Session = Depends(get_db), ctx: dict = Depend
     resp = DeviceResponse.model_validate(device).model_dump()
     resp["snmp_configured"] = bool(device.snmp_community)
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
+    resp["channels"] = _device_channels(device)
     return resp
 
 
@@ -245,6 +282,7 @@ def create_device(
         model=device_data.model,
         mac_address=device_data.mac_address,
         tags=device_data.tags,
+        channels=_normalize_channels(device_data.channels),
         status="pending",
         claimed=device_data.claimed if device_data.claimed is not None else True,
         device_group=group,
@@ -264,6 +302,7 @@ def create_device(
     resp = DeviceResponse.model_validate(device).model_dump()
     resp["snmp_configured"] = bool(device.snmp_community)
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
+    resp["channels"] = _device_channels(device)
     return resp
 
 
@@ -290,6 +329,8 @@ def claim_device(
     device.claimed = True
     device.status = "pending"
     device.device_group = group
+    if config.channels:
+        device.channels = _normalize_channels(config.channels)
     if ctx["user"].role == "tenant":
         # Tenant adoption: the device belongs to them (their view only).
         device.owner_id = ctx["user"].id
@@ -326,6 +367,7 @@ def claim_device(
     resp = DeviceResponse.model_validate(device).model_dump()
     resp["snmp_configured"] = bool(device.snmp_community)
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
+    resp["channels"] = _device_channels(device)
     return resp
 
 
@@ -468,6 +510,20 @@ def _store_ssh_key(name: str, key_content: str) -> str:
     return f"encrypted:{name}"
 
 
+def _apply_fingerprint_suggestion(device: Device, fp: dict) -> None:
+    """Suggest type + channels from a fingerprint result and persist the
+    recommendation for the UI (device_adoption_model.md §2/§4). Advisory only:
+    fills device_type when unknown and stores the ranked recommendation under
+    fingerprint.suggestion — it never removes channels or creds."""
+    if not fp or fp.get("error"):
+        return
+    sug = suggest_from_fingerprint(fp)
+    if (not device.device_type or device.device_type == "unknown") and sug.get("device_type"):
+        device.device_type = sug["device_type"]
+    device.fingerprint = dict(fp)
+    device.fingerprint["suggestion"] = sug
+
+
 def _queue_fingerprint_job(db: Session, device: Device) -> bool:
     """Write a fingerprint job file for the Pi Agent. Returns True if queued."""
     import json
@@ -551,6 +607,10 @@ def update_device(
             device.ssh_user = value or None
         elif field == "ssh_key" and value:
             device.ssh_key_fingerprint = _store_ssh_key(device.name, value)
+        elif field == "channels":
+            device.channels = _normalize_channels(value)
+        elif field == "fingerprint" and isinstance(value, dict):
+            _apply_fingerprint_suggestion(device, value)
         else:
             setattr(device, field, value)
 
@@ -560,6 +620,7 @@ def update_device(
     resp = DeviceResponse.model_validate(device).model_dump()
     resp["snmp_configured"] = bool(device.snmp_community)
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
+    resp["channels"] = _device_channels(device)
     return resp
 
 

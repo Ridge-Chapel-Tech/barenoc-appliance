@@ -129,6 +129,7 @@ class DeviceCreate(BaseModel):
     snmp_community: Optional[str] = None
     ssh_user: Optional[str] = None
     ssh_key: Optional[str] = None
+    channels: list = []
 
 
 class DeviceUpdate(BaseModel):
@@ -149,6 +150,7 @@ class DeviceUpdate(BaseModel):
     snmp_community: Optional[str] = None
     ssh_user: Optional[str] = None
     ssh_key: Optional[str] = None
+    channels: Optional[list] = None
 
 
 class DeviceResponse(BaseModel):
@@ -171,6 +173,7 @@ class DeviceResponse(BaseModel):
     snmp_configured: bool = False
     ssh_configured: bool = False
     unifi_managed: bool = False
+    channels: Optional[list] = None
     adoption_status: Optional[str] = "none"
     adoption_method: Optional[str] = "none"
     cert_cn: Optional[str] = None

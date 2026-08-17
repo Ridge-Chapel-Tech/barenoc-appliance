@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))            # work
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))  # api/ (queue_status, models…)
 
 from queue_status import is_paused, derive_status  # noqa: E402
+from database import SessionLocal, init_db  # noqa: E402
+from models import User, ChatMessage, Ticket, AuditLog  # noqa: E402
 import juniper  # noqa: E402
 
 
@@ -186,6 +188,137 @@ class DirectiveTest(unittest.TestCase):
 
     def test_not_a_directive(self):
         self.assertIsNone(juniper.parse_directive("what's happening?"))
+
+    def test_close_with_id(self):
+        d = juniper.parse_directive("close TKT-20260816-4509")
+        self.assertEqual(d["kind"], "close")
+        self.assertEqual(d["ticket_id"], "TKT-20260816-4509")
+
+    def test_close_the_ticket_no_id(self):
+        # The 08-17 live report: "verrified. close the ticket." must resolve
+        # to a close directive (context fallback, no id).
+        d = juniper.parse_directive("verrified. close the ticket.")
+        self.assertEqual(d["kind"], "close")
+        self.assertIsNone(d["ticket_id"])
+
+    def test_close_this_ticket_no_id(self):
+        d = juniper.parse_directive("close this ticket")
+        self.assertEqual(d["kind"], "close")
+        self.assertIsNone(d["ticket_id"])
+
+    def test_close_the_ticket_prefers_explicit_id(self):
+        d = juniper.parse_directive("close the ticket TKT-20260816-4509")
+        self.assertEqual(d["kind"], "close")
+        self.assertEqual(d["ticket_id"], "TKT-20260816-4509")
+
+    def test_close_port_is_not_a_ticket_close(self):
+        # "close this port" is an action request, not a ticket directive.
+        self.assertIsNone(juniper.parse_directive("close this port on the switch"))
+
+
+class CloseDirectiveHandlerTest(unittest.TestCase):
+    """DB-backed close directive behavior (owner/operator/admin gated)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(Ticket).delete()
+        db.query(User).delete()
+        db.commit()
+        self.bot = User(username="juniper", display_name="Juniper",
+                        hashed_password="x", role="admin", is_active=True, is_bot=True)
+        self.owner = User(username="owner", display_name="Owner",
+                          hashed_password="x", role="tenant", is_active=True)
+        self.other = User(username="other", display_name="Other",
+                          hashed_password="x", role="tenant", is_active=True)
+        self.op = User(username="op", display_name="Operator",
+                       hashed_password="x", role="operator", is_active=True)
+        db.add_all([self.bot, self.owner, self.other, self.op])
+        db.commit()
+        db.close()
+
+    def _make_ticket(self, submitter_username, ticket_id, status="open"):
+        db = SessionLocal()
+        sub = db.query(User).filter(User.username == submitter_username).first()
+        t = Ticket(ticket_id=ticket_id, title="test ticket", description="d",
+                   priority="P3", status=status, source="chat",
+                   submitter_id=sub.id, work_notes="[]")
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.close()
+        return t
+
+    def _run(self, body, sender_username):
+        db = SessionLocal()
+        sender = db.query(User).filter(User.username == sender_username).first()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        msg = ChatMessage(from_user_id=sender.id, to_user_id=bot.id, body=body)
+        out = juniper.handle_message(db, bot, msg, sender)
+        text = out.body
+        db.close()
+        return text
+
+    def _ticket(self, ticket_id):
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        db.close()
+        return t
+
+    def test_owner_closes_own_ticket(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        text = self._run("close TKT-20260816-0001", "owner")
+        self.assertEqual(text, "Done — TKT-20260816-0001 is closed.")
+        t = self._ticket("TKT-20260816-0001")
+        self.assertEqual(t.status, "closed")
+        self.assertIsNotNone(t.resolved_at)
+        self.assertEqual(t.assigned_to, "owner")  # who closed it
+
+    def test_owner_closes_by_context_no_id(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        self._make_ticket("owner", "TKT-20260816-0002")
+        text = self._run("verrified. close the ticket.", "owner")
+        # most recent active ticket resolves
+        self.assertEqual(text, "Done — TKT-20260816-0002 is closed.")
+        self.assertEqual(self._ticket("TKT-20260816-0002").status, "closed")
+        self.assertEqual(self._ticket("TKT-20260816-0001").status, "open")
+
+    def test_non_owner_denied(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        text = self._run("close TKT-20260816-0001", "other")
+        self.assertIn("only the ticket owner or an operator", text)
+        self.assertEqual(self._ticket("TKT-20260816-0001").status, "open")
+
+    def test_operator_can_close_others_ticket(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        text = self._run("close TKT-20260816-0001", "op")
+        self.assertEqual(text, "Done — TKT-20260816-0001 is closed.")
+        self.assertEqual(self._ticket("TKT-20260816-0001").status, "closed")
+
+    def test_unknown_ticket_honest_reply(self):
+        text = self._run("close TKT-20260816-9999", "owner")
+        self.assertEqual(text, "I can't find TKT-20260816-9999.")
+
+    def test_close_context_without_active_ticket(self):
+        text = self._run("close the ticket", "owner")
+        self.assertIn("I don't see an active ticket to close", text)
+
+    def test_already_closed_reply(self):
+        self._make_ticket("owner", "TKT-20260816-0001", status="closed")
+        text = self._run("close TKT-20260816-0001", "owner")
+        self.assertEqual(text, "TKT-20260816-0001 is already closed.")
+
+    def test_close_writes_audit_event(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        self._run("close TKT-20260816-0001", "owner")
+        db = SessionLocal()
+        ev = db.query(AuditLog).filter(AuditLog.event_type == "ticket_closed",
+                                       AuditLog.ticket_id == "TKT-20260816-0001").first()
+        db.close()
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.actor, "juniper")
 
 
 if __name__ == "__main__":
