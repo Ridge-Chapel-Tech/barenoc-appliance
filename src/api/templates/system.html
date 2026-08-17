@@ -26,14 +26,31 @@
       <div id="upd-prog-msg" class="mt-1 text-xs text-gray-500"></div>
     </div>
     <div id="upd-schedule" class="mt-3 hidden border-t pt-3 text-xs text-gray-500">
+      <div id="upd-sched-summary" class="mb-2 text-gray-600"></div>
       <label><input type="checkbox" id="upd-sched-enable" class="mr-1"> enable scheduled update</label>
-      <select id="upd-sched-day" class="ml-2 rounded border px-1 py-0.5">
-        <option value="daily">daily</option><option value="0">Sun</option><option value="1">Mon</option>
-        <option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option>
-        <option value="5">Fri</option><option value="6">Sat</option>
-      </select>
-      <input type="number" id="upd-sched-hour" min="0" max="23" value="2" class="ml-1 w-14 rounded border px-1 py-0.5"> :00
-      <button onclick="updSaveSchedule()" class="ml-2 rounded-md bg-gray-100 px-2 py-1 hover:bg-gray-200">Save schedule</button>
+      <div class="mt-2 flex items-center gap-2 flex-wrap">
+        <select id="upd-sched-mode" class="rounded border px-1 py-0.5" onchange="updModeChange()">
+          <option value="recurring">Recurring</option>
+          <option value="onetime">One-time</option>
+        </select>
+        <span id="upd-sched-recurring" class="inline-flex items-center gap-1">
+          <select id="upd-sched-day" class="rounded border px-1 py-0.5">
+            <option value="daily">daily</option><option value="0">Sun</option><option value="1">Mon</option>
+            <option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option>
+            <option value="5">Fri</option><option value="6">Sat</option>
+          </select>
+          <input type="number" id="upd-sched-hour" min="0" max="23" value="2" class="w-14 rounded border px-1 py-0.5"> :00
+          <span>local time</span>
+        </span>
+        <span id="upd-sched-onetime" class="hidden inline-flex items-center gap-1">
+          <input type="datetime-local" id="upd-sched-when" class="rounded border px-1 py-0.5">
+          <span>local time</span>
+        </span>
+      </div>
+      <div class="mt-2">
+        <button onclick="updSaveSchedule()" class="rounded-md bg-gray-100 px-2 py-1 hover:bg-gray-200">Save schedule</button>
+        <button onclick="updCancelSchedule()" id="upd-sched-cancel" class="ml-2 hidden rounded-md bg-red-50 text-red-700 px-2 py-1 hover:bg-red-100">Cancel</button>
+      </div>
     </div>
   </div>
 
@@ -162,20 +179,52 @@ async function updLoad() {
     renderUpdateProgress(s.progress);
     const sc = s.schedule || {};
     document.getElementById('upd-sched-enable').checked = !!sc.enabled;
-    document.getElementById('upd-sched-day').value = sc.day || 'daily';
+    document.getElementById('upd-sched-mode').value = sc.mode === 'onetime' ? 'onetime' : 'recurring';
+    document.getElementById('upd-sched-day').value = (sc.day === 'daily' ? 'daily' : String(sc.day)) || 'daily';
     document.getElementById('upd-sched-hour').value = sc.hour != null ? sc.hour : 2;
+    document.getElementById('upd-sched-when').value = (sc.when || '').slice(0, 16);
+    document.getElementById('upd-sched-summary').textContent = updSchedSummary(sc);
+    document.getElementById('upd-sched-cancel').classList.toggle('hidden', !(sc.enabled && sc.mode === 'onetime' && sc.when));
+    updModeChange();
   } catch (e) { console.error('updates:', e); }
+}
+var _UPD_DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function updSchedSummary(sc) {
+  var tz = sc.timezone || 'UTC';
+  if (!sc.enabled) { return 'Scheduling is off.'; }
+  if (sc.mode === 'onetime' && sc.when) {
+    return 'Scheduled for ' + esc(sc.when.replace('T', ' ')) + ' local time (' + esc(tz) + ').';
+  }
+  var d = sc.day;
+  var label = d === 'daily' ? 'every day' : 'every ' + (_UPD_DAYS[parseInt(d) || 0] || d);
+  var hh = (sc.hour != null ? String(sc.hour).padStart(2, '0') : '02');
+  return label + ' at ' + hh + ':00 local time (' + esc(tz) + ').';
+}
+function updModeChange() {
+  var mode = document.getElementById('upd-sched-mode').value;
+  document.getElementById('upd-sched-recurring').classList.toggle('hidden', mode !== 'recurring');
+  document.getElementById('upd-sched-onetime').classList.toggle('hidden', mode !== 'onetime');
 }
 async function updNow() { if (!confirm('Apply the pending update now? The appliance restarts briefly.')) return; try { const r = await updFetch('/now', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
 async function updRollback() { if (!confirm('Roll back to the previous release?')) return; try { const r = await updFetch('/rollback', { method: 'POST' }); alert(r.note || 'queued'); } catch (e) { alert(e.message); } updLoad(); }
 async function updSaveSchedule() {
+  var mode = document.getElementById('upd-sched-mode').value;
+  var body = {
+    enabled: document.getElementById('upd-sched-enable').checked,
+    mode: mode,
+    day: document.getElementById('upd-sched-day').value,
+    hour: parseInt(document.getElementById('upd-sched-hour').value),
+    when: mode === 'onetime' ? document.getElementById('upd-sched-when').value : ''
+  };
   try {
-    await updFetch('/schedule', { method: 'POST', body: JSON.stringify({
-      enabled: document.getElementById('upd-sched-enable').checked,
-      day: document.getElementById('upd-sched-day').value,
-      hour: parseInt(document.getElementById('upd-sched-hour').value)
-    })});
+    await updFetch('/schedule', { method: 'POST', body: JSON.stringify(body) });
     alert('schedule saved'); updLoad();
+  } catch (e) { alert(e.message); }
+}
+async function updCancelSchedule() {
+  try {
+    await updFetch('/schedule/cancel', { method: 'POST' });
+    updLoad();
   } catch (e) { alert(e.message); }
 }
 function updToggleSchedule() { document.getElementById('upd-schedule').classList.toggle('hidden'); }

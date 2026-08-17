@@ -15,6 +15,38 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.17.c] — 2026-08-17
+
+### Added
+- **Updates Schedule v2 — local-time hours + one-time OR recurring schedules** —
+  the schedule hour/day is now interpreted in the appliance's LOCAL timezone
+  (DST-safe, `zoneinfo`); a schedule can be `recurring` (daily/weekday at a
+  local hour) or `onetime` (apply the next available update at a local
+  date+time, fires once then clears). `update_schedule.conf` stays
+  backward-compatible. UI labels everything "local time" + shows the current
+  schedule ("every <weekday> at HH:MM local" / "Scheduled for <local
+  datetime>") with Cancel.
+
+### Changed
+- **Controller URL defaults to the local gateway** — when UNIFI_URL is unset,
+  Settings (and /unifi/config) now default to `https://<default-route
+  gateway>:443` (the router — where the UniFi controller usually lives) and
+  prefill the field.
+
+### Fixed
+- **'Available' required a genuinely NEWER version** — a check that caught the
+  manifest mid-propagation (latest=.a while running .b) flagged an update →
+  the banner showed a downgrade as available. CalVer ordering now gates
+  `available`.
+- **Onboarder no longer hangs on a stale /root/.step** — `step ca bootstrap`
+  now runs with `--force` (an old CA's leftover state used to open an
+  interactive overwrite prompt and wait forever).
+- **ISO seed: first-boot now runs end-to-end** — the fatal grub re-run was
+  removed (curtin registers NVRAM itself), the first-boot unit's
+  `After=cloud-init.target` was dropped (a systemd ordering cycle silently
+  deleted its start job), and the provision script's crontab line no longer
+  aborts under `set -e` on a fresh user.
+
 ## [2026.08.17.b] — 2026-08-17
 
 ### Added
@@ -54,8 +86,20 @@ Categories per release:
 - **SNMP + vendor_api executor skeletons** — `scripts/snmp_executor.py`
   (GET/SET, v2c + v3) and `scripts/vendor_api.py` (adapter registry; Juniper/
   Cisco/HP-ONVIF/IoT stubs). Concrete vendor adapters are follow-up work.
+- **Updates Schedule v2 — local-time hours + one-time OR recurring schedules**
+  — the schedule hour/day is now interpreted in the appliance's LOCAL timezone
+  (TZ from .env, fallback UTC) instead of container UTC, and the schedule gains
+  a `mode`: `recurring` (the existing daily/weekday + hour, now local) or
+  `onetime` (apply the next available update at a local date+time, fire once,
+  then mark `fired` + self-disable — persisted, survives restart, cancelable).
+  `update_schedule.conf` stays backward-compatible (a mode-less file = recurring).
 
 ### Changed
+- **Update schedule runs in local wall-clock time** — `System → Updates →
+  Schedule` labels everything "local time" and shows the current schedule
+  ("every <weekday> at HH:MM local" / "Scheduled for <local datetime>") with a
+  **Cancel** button for a one-time schedule. The recurring UX is otherwise
+  unchanged.
 - **Chat home screen reads as one history, not "multiple sessions"** — the
   `/chat` list now shows two clearly-labeled sections — **Front desk —
   Juniper** (the DM conversation) at the top and **Your tickets** (each
@@ -143,6 +187,11 @@ Categories per release:
   threads (stick to bottom only when already within 80px, otherwise restore
   the previous distance-from-bottom); the 08-13 fix applies to both the
   desktop (embedded shell) and mobile paths.
+- **Scheduled updates fired at the wrong hour (UTC vs local)** — the scheduler
+  compared `datetime.utcnow()` against the configured hour, so a "2 AM" schedule
+  fired at 10 PM EDT. The hour/day and any one-time datetime are now wall-clock
+  in the appliance's TZ (`.env TZ`, fallback UTC); the UTC scheduler converts
+  local → UTC (DST-safe via `zoneinfo`) before comparing.
 - **Pi progress notes no longer cut at 250 chars mid-sentence** — the agent
   runner's live-progress relay sliced every streamed pi message to the first
   three lines capped at 250 chars (and `_post_progress`/`add_progress_note`

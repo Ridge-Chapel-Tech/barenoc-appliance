@@ -133,7 +133,7 @@ curl -sk -o /dev/null -w '  CA health (https://stepca.barenoc.local:8443): HTTP 
 echo "==> Trusting the BareNOC CA + enrolling this device"
 export STEPPATH=/root/.step
 rm -f /etc/barenoc-device.crt /etc/barenoc-device.key
-if step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} </dev/null >/dev/null 2>&1; then
+if step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} --force </dev/null >/dev/null 2>&1; then
   echo "  CA bootstrap OK (root pinned by fingerprint)"
 else
   echo "  !!! CA bootstrap failed — see above"
@@ -223,7 +223,7 @@ STEPURL="$APP/step-cli-darwin_arm64"
 curl -sk -o /tmp/step "$STEPURL" && install -m 0755 /tmp/step /usr/local/bin/step
 export STEPPATH=/root/.step
 rm -f /etc/barenoc-device.crt /etc/barenoc-device.key
-step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} </dev/null >/dev/null 2>&1 || true
+step ca bootstrap --ca-url https://stepca.barenoc.local:8443 --fingerprint {fp} --force </dev/null >/dev/null 2>&1 || true
 step ca certificate "$CN" /etc/barenoc-device.crt /etc/barenoc-device.key --token "$(curl -sk "$APP/onboard/token?cn=$CN" | tr -d '"')" --root /etc/barenoc-ca/root_ca.crt 2>/dev/null || true
 
 cat > /usr/local/bin/barenoc-device-heartbeat.sh <<'HEART'

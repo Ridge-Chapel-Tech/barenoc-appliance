@@ -12,6 +12,7 @@ Auth: operator/admin (UI) and agent (the scheduler's scheduled updates).
 import datetime
 import json
 import os
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -35,6 +36,57 @@ MANIFEST_URL = os.getenv(
 
 def _now() -> str:
     return datetime.datetime.utcnow().isoformat() + "Z"
+
+
+def _appliance_tz() -> str:
+    """The appliance's LOCAL timezone (TZ from .env) — the schedule is
+    wall-clock in THIS timezone, not the container's UTC. Falls back to UTC
+    when TZ is unset or invalid (the same source alerting's _local_now uses)."""
+    try:
+        tz = (_read_env_file().get("TZ") or os.environ.get("TZ") or "").strip()
+    except Exception:
+        tz = ""
+    return tz or "UTC"
+
+
+def _zone(tz_name: str = None):
+    try:
+        return ZoneInfo(tz_name or _appliance_tz())
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _local_now(tz_name: str = None) -> datetime.datetime:
+    """NAIVE wall-clock now in the appliance TZ (safe for hour/day compares)."""
+    return datetime.datetime.now(_zone(tz_name)).replace(tzinfo=None)
+
+
+def _local_to_utc(dt: datetime.datetime, tz_name: str = None) -> datetime.datetime:
+    """Convert a NAIVE local wall-clock datetime to an AWARE UTC datetime.
+    DST-safe: zoneinfo attaches the correct offset for that local instant."""
+    return dt.replace(tzinfo=_zone(tz_name)).astimezone(datetime.timezone.utc)
+
+
+def _utc_to_local(dt: datetime.datetime, tz_name: str = None) -> datetime.datetime:
+    """Convert an aware UTC datetime to NAIVE local wall-clock time."""
+    tz = _zone(tz_name)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(tz).replace(tzinfo=None)
+
+
+def _parse_local_dt(s: str) -> datetime.datetime:
+    """Parse a local wall-clock datetime ('YYYY-MM-DDTHH:MM[:SS]' or
+    'YYYY-MM-DD HH:MM[:SS]'). Returns a NAIVE datetime; raises on bad input."""
+    s = (s or "").strip()
+    if not s:
+        raise ValueError("empty datetime")
+    norm = s.replace(" ", "T")
+    if len(norm) == 16:  # datetime-local input: YYYY-MM-DDTHH:MM
+        dt = datetime.datetime.strptime(norm, "%Y-%m-%dT%H:%M")
+    else:
+        dt = datetime.datetime.fromisoformat(norm)
+    return dt.replace(tzinfo=None)
 
 
 def _fetch_json(url: str, timeout: int = 6) -> dict:
@@ -119,8 +171,26 @@ def _update_access(env: dict) -> dict:
 
 class ScheduleBody(BaseModel):
     enabled: bool
-    day: str            # "daily" or 0-6 (0=Sunday)
-    hour: int           # 0-23
+    mode: str = "recurring"   # "recurring" | "onetime"
+    day: str = "daily"        # recurring only: "daily" or 0-6 (0=Sunday)
+    hour: int = 2             # recurring only: 0-23 (LOCAL time)
+    when: str = ""            # onetime only: local "YYYY-MM-DDTHH:MM"
+
+
+def _version_gt(a: str, b: str) -> bool:
+    """CalVer ordering: 2026.08.17.b > 2026.08.17.a > 2026.08.16.i. True only
+    when a is genuinely NEWER than b — a downgrade or equal is NOT an available
+    update (08-17: a stale manifest briefly showed .a as available while
+    running .b, inverting the Updates banner)."""
+    import re as _re
+    def _parts(v: str):
+        m = _re.match(r"^(\d{4})\.(\d{2})\.(\d{2})(?:\.([a-z]))?$", str(v or "").strip())
+        if not m:
+            return None
+        y, mo, d, s = m.groups()
+        return (int(y), int(mo), int(d), ord(s or "`"))
+    pa, pb = _parts(a), _parts(b)
+    return bool(pa and pb and pa > pb)
 
 
 def _run_check() -> dict:
@@ -148,7 +218,7 @@ def _run_check() -> dict:
             "changelog": m.get("changelog", ""),
             "tarball": (m.get("assets") or {}).get("tarball", ""),
             "checksum": (m.get("assets") or {}).get("checksums", ""),
-            "available": latest != cur,
+            "available": _version_gt(latest, cur),
         })
     except Exception as e:
         status["manifest_error"] = str(e)
@@ -218,9 +288,10 @@ def update_rollback(user: User = Depends(require_any_role("operator", "admin", "
 
 
 def _read_schedule() -> dict:
-    conf = {"enabled": False, "day": "daily", "hour": 2}
+    conf = {"enabled": False, "mode": "recurring", "day": "daily",
+            "hour": 2, "when": "", "fired": "", "timezone": _appliance_tz()}
     try:
-        with open(SCHEDULE_FILE) as f:
+        with open(os.path.join(STATUS_DIR, "update_schedule.conf")) as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -233,7 +304,42 @@ def _read_schedule() -> dict:
         conf["hour"] = int(conf.get("hour", 2))
     except Exception:
         pass
+    # Backward compatible: a conf written by the old enabled/day/hour format has
+    # no `mode` — treat it as recurring (now in LOCAL time).
+    if conf.get("mode") not in ("recurring", "onetime"):
+        conf["mode"] = "recurring"
+    conf["timezone"] = _appliance_tz()
     return conf
+
+
+def _write_schedule(conf: dict):
+    """Persist the canonical schedule conf (mode/enabled/day/hour/when/fired)."""
+    mode = conf.get("mode") or "recurring"
+    enabled = conf.get("enabled")
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() in ("true", "1", "yes")
+    else:
+        enabled = bool(enabled)
+    day = conf.get("day")
+    day = "daily" if day in (None, "") else str(day)
+    try:
+        hour = int(conf.get("hour", 2))
+    except (TypeError, ValueError):
+        hour = 2
+    when = (conf.get("when") or "").strip()
+    fired = (conf.get("fired") or "").strip()
+    try:
+        os.makedirs(STATUS_DIR, exist_ok=True)
+        with open(os.path.join(STATUS_DIR, "update_schedule.conf"), "w") as f:
+            f.write("# BareNOC update schedule (System → Updates; the scheduler applies it)\n")
+            f.write(f"mode={mode}\n")
+            f.write(f"enabled={'true' if enabled else 'false'}\n")
+            f.write(f"day={day}\n")
+            f.write(f"hour={hour}\n")
+            f.write(f"when={when}\n")
+            f.write(f"fired={fired}\n")
+    except Exception as e:
+        raise HTTPException(500, f"could not save the schedule: {e}")
 
 
 @router.post("/notify")
@@ -281,22 +387,63 @@ def get_schedule(user: User = Depends(require_any_role("operator", "admin", "age
 @router.post("/schedule")
 def set_schedule(body: ScheduleBody,
                  user: User = Depends(require_any_role("operator", "admin", "agent"))):
-    if body.hour < 0 or body.hour > 23:
-        raise HTTPException(422, "hour must be 0-23")
-    if body.day != "daily":
+    mode = (body.mode or "recurring").strip().lower()
+    if mode not in ("recurring", "onetime"):
+        raise HTTPException(422, "mode must be 'recurring' or 'onetime'")
+    day = str(body.day or "daily").strip()
+    hour = int(body.hour)
+    when = (body.when or "").strip()
+
+    if mode == "recurring":
+        if hour < 0 or hour > 23:
+            raise HTTPException(422, "hour must be 0-23")
+        if day != "daily":
+            try:
+                day = int(day)
+            except ValueError:
+                raise HTTPException(422, "day must be 'daily' or 0-6")
+            if day < 0 or day > 6:
+                raise HTTPException(422, "day must be 'daily' or 0-6")
+        when = ""
+    else:  # onetime — a LOCAL datetime in the future
         try:
-            day = int(body.day)
-        except ValueError:
-            raise HTTPException(422, "day must be 'daily' or 0-6")
-        if day < 0 or day > 6:
-            raise HTTPException(422, "day must be 'daily' or 0-6")
-    try:
-        os.makedirs(STATUS_DIR, exist_ok=True)
-        with open(SCHEDULE_FILE, "w") as f:
-            f.write("# BareNOC update schedule (Settings → Updates; the scheduler applies it)\n")
-            f.write(f"enabled={'true' if body.enabled else 'false'}\n")
-            f.write(f"day={body.day}\n")
-            f.write(f"hour={body.hour}\n")
-    except Exception as e:
-        raise HTTPException(500, f"could not save the schedule: {e}")
+            when_dt = _parse_local_dt(when)
+        except Exception:
+            raise HTTPException(422, "when must be a local datetime like 'YYYY-MM-DDTHH:MM'")
+        if when_dt <= _local_now():
+            raise HTTPException(422, "when must be in the future (local time)")
+        when = when_dt.strftime("%Y-%m-%dT%H:%M")  # canonical, no seconds
+        day = "daily"
+
+    _write_schedule({
+        "mode": mode,
+        "enabled": bool(body.enabled),
+        "day": day,
+        "hour": hour,
+        "when": when,
+        "fired": "",   # (re)arming clears any previous fire
+    })
+    return {"status": "ok", "schedule": _read_schedule()}
+
+
+@router.post("/schedule/complete")
+def complete_schedule(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+    """Mark a one-time schedule as fired and disable it (persisted — survives
+    restart). Called by the scheduler AFTER it has actually queued the update."""
+    conf = _read_schedule()
+    if conf.get("mode") == "onetime":
+        conf["fired"] = _now()
+        conf["enabled"] = False
+        _write_schedule(conf)
+    return {"status": "ok", "schedule": _read_schedule()}
+
+
+@router.post("/schedule/cancel")
+def cancel_schedule(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+    """Cancel the current schedule: disable it and clear any one-time when/fired."""
+    conf = _read_schedule()
+    conf["enabled"] = False
+    conf["when"] = ""
+    conf["fired"] = ""
+    _write_schedule(conf)
     return {"status": "ok", "schedule": _read_schedule()}

@@ -9,6 +9,7 @@ import logging
 import datetime
 import urllib.request
 import urllib.error
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 logger = logging.getLogger("barenoc-scheduler")
@@ -90,7 +91,8 @@ def _api_patch(path: str, data: dict, token: str):
 
 
 def _api_post(path: str, data: dict, token: str):
-    """Make authenticated POST request to API (accepts non-200 gracefully)."""
+    """Make authenticated POST request to API (raises urllib HTTPError on a
+    non-200 response — callers decide whether that's fatal)."""
     payload = json.dumps(data).encode()
     req = urllib.request.Request(
         f"{API_BASE}{path}",
@@ -102,6 +104,46 @@ def _api_post(path: str, data: dict, token: str):
         method="POST",
     )
     urllib.request.urlopen(req, timeout=10)
+
+
+def _appliance_tz() -> str:
+    """The appliance's LOCAL timezone (TZ from .env) — the schedule runs in
+    wall-clock THIS timezone even though the container clock is UTC. Falls back
+    to UTC when TZ is unset or invalid."""
+    tz = (_read_env().get("TZ") or os.environ.get("TZ") or "").strip()
+    return tz or "UTC"
+
+
+def _zone(tz_name: str = None):
+    try:
+        return ZoneInfo(tz_name or _appliance_tz())
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _local_now(tz_name: str = None) -> datetime.datetime:
+    """NAIVE wall-clock now in the appliance TZ (safe for hour/day compares)."""
+    return datetime.datetime.now(_zone(tz_name)).replace(tzinfo=None)
+
+
+def _local_to_utc(dt: datetime.datetime, tz_name: str = None) -> datetime.datetime:
+    """Convert a NAIVE local wall-clock datetime to an AWARE UTC datetime.
+    DST-safe: zoneinfo attaches the correct offset for that local instant."""
+    return dt.replace(tzinfo=_zone(tz_name)).astimezone(datetime.timezone.utc)
+
+
+def _parse_local_dt(s: str) -> datetime.datetime:
+    """Parse a local wall-clock datetime ('YYYY-MM-DDTHH:MM[:SS]' or
+    'YYYY-MM-DD HH:MM[:SS]'). Returns a NAIVE datetime; raises on bad input."""
+    s = (s or "").strip()
+    if not s:
+        raise ValueError("empty datetime")
+    norm = s.replace(" ", "T")
+    if len(norm) == 16:  # datetime-local input: YYYY-MM-DDTHH:MM
+        dt = datetime.datetime.strptime(norm, "%Y-%m-%dT%H:%M")
+    else:
+        dt = datetime.datetime.fromisoformat(norm)
+    return dt.replace(tzinfo=None)
 
 
 _VERIFY_COOLDOWN = {}   # dev_id -> last queued timestamp (stop the flood)
@@ -210,10 +252,46 @@ def _unifi_autosync_config() -> tuple:
     return enabled, interval
 
 
+def _queue_update(token: str, key: str, last_triggered: dict,
+                  complete: bool, log_label: str):
+    """POST /updates/now once; only mark the guard when a release was actually
+    available (the endpoint 400s otherwise — the 'only fire when an update is
+    available' guarantee). For one-time schedules also mark the schedule fired
+    + disabled so it never re-fires."""
+    try:
+        _api_post("/updates/now", {}, token)
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            logger.info(f"{log_label}: due but no release available — staying armed")
+            return
+        logger.warning(f"{log_label} not queued: {e}")
+        return
+    except Exception as e:
+        logger.warning(f"{log_label} not queued: {e}")
+        return
+    last_triggered["update"] = key
+    logger.info(log_label)
+    if complete:
+        try:
+            _api_post("/updates/schedule/complete", {}, token)
+        except Exception as e:
+            logger.warning(f"update schedule complete failed: {e}")
+
+
 def check_update_schedule(token: str, last_triggered: dict):
-    """Settings → Updates schedule: at the configured day/hour, queue the
-    update (POST /updates/now — the host service applies it). Runs at most
-    once per calendar day."""
+    """Settings → Updates schedule.
+
+    Two modes:
+      - recurring: at the configured LOCAL day/hour, queue the update
+        (POST /updates/now — the host service applies it). At most once per
+        calendar day.
+      - onetime: at (or after) the configured LOCAL datetime, queue the update
+        once; then mark it fired + disable (persisted server-side). If no
+        release is available yet it stays armed until one is.
+
+    The hour/day/when are LOCAL wall-clock (TZ from .env); this container runs
+    UTC so the one-time comparison converts local → UTC (DST-safe via zoneinfo).
+    """
     try:
         sched = _api_get("/updates/schedule", token)
     except Exception as e:
@@ -221,8 +299,32 @@ def check_update_schedule(token: str, last_triggered: dict):
         return
     if not sched.get("enabled"):
         return
-    import datetime as _dt
-    now = _dt.datetime.utcnow()
+
+    mode = str(sched.get("mode") or "recurring").lower()
+    tz = _appliance_tz()
+
+    if mode == "onetime":
+        when = str(sched.get("when") or "").strip()
+        if not when:
+            return
+        if sched.get("fired"):
+            return
+        try:
+            when_utc = _local_to_utc(_parse_local_dt(when), tz)
+        except Exception as e:
+            logger.warning(f"update schedule: bad one-time when '{when}': {e}")
+            return
+        if datetime.datetime.now(datetime.timezone.utc) < when_utc:
+            return  # not yet due
+        key = f"onetime-{when}"
+        if last_triggered.get("update") == key:
+            return
+        _queue_update(token, key, last_triggered, complete=True,
+                      log_label=f"One-time update queued ({when} local)")
+        return
+
+    # recurring — also the backward-compatible default for a mode-less conf.
+    now = _local_now(tz)
     day = str(sched.get("day", "daily"))
     if day != "daily":
         # config 0=Sunday..6=Saturday; python weekday() 0=Monday..6=Sunday
@@ -234,12 +336,8 @@ def check_update_schedule(token: str, last_triggered: dict):
     key = f"{day}-{now.date().isoformat()}"
     if last_triggered.get("update") == key:
         return
-    try:
-        _api_post("/updates/now", {}, token)
-        last_triggered["update"] = key
-        logger.info(f"Scheduled update queued ({key})")
-    except Exception as e:
-        logger.warning(f"Scheduled update not queued: {e}")
+    _queue_update(token, key, last_triggered, complete=False,
+                  log_label=f"Scheduled update queued ({key})")
 
 
 def check_update_progress(token: str, last_notified: dict):

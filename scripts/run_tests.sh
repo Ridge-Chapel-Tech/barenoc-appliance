@@ -16,6 +16,9 @@ echo "==> api tests"
 echo "==> worker tests"
 ( cd src/worker && python3 -m unittest test_judge test_juniper test_integration 2>&1 | tail -3 )
 
+echo "==> scheduler tests"
+( cd src/scheduler && python3 -m unittest test_scheduler 2>&1 | tail -3 )
+
 echo "==> runner tests"
 ( cd src/agent && python3 -m unittest test_runner 2>&1 | tail -3 )
 

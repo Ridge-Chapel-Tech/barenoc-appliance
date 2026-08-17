@@ -7,6 +7,7 @@ mocked; STATUS_DIR is patched to a scratch dir for the progress-merge test.
     docker compose exec api python3 -m unittest test_updates -v
 """
 
+import datetime
 import json
 import os
 import tempfile
@@ -261,5 +262,154 @@ class UpdatesUxTemplateTest(unittest.TestCase):
             self.assertIn(key, st)
 
 
+class TzConversionTest(unittest.TestCase):
+    """Local-time semantics (08-17): the configured hour/day + one-time when
+    are wall-clock in the appliance TZ, converted DST-safe via zoneinfo."""
+
+    def test_local_to_utc_dst_safe(self):
+        winter = updates._local_to_utc(datetime.datetime(2026, 1, 15, 12, 0),
+                                       "America/New_York")
+        self.assertEqual(winter.hour, 17)  # EST = UTC-5
+        self.assertEqual(winter.tzinfo, datetime.timezone.utc)
+        summer = updates._local_to_utc(datetime.datetime(2026, 7, 15, 12, 0),
+                                       "America/New_York")
+        self.assertEqual(summer.hour, 16)  # EDT = UTC-4
+
+    def test_local_to_utc_invalid_tz_falls_back_utc(self):
+        dt = updates._local_to_utc(datetime.datetime(2026, 7, 15, 12, 0), "Not/AZone")
+        self.assertEqual(dt.hour, 12)
+
+    def test_parse_local_dt_accepts_datetime_local(self):
+        self.assertEqual(updates._parse_local_dt("2026-08-17T02:00"),
+                         datetime.datetime(2026, 8, 17, 2, 0))
+        self.assertEqual(updates._parse_local_dt("2026-08-17 02:30:00"),
+                         datetime.datetime(2026, 8, 17, 2, 30))
+
+    def test_appliance_tz_reads_env(self):
+        with patch("routes.updates._read_env_file", return_value={"TZ": "America/New_York"}):
+            self.assertEqual(updates._appliance_tz(), "America/New_York")
+        with patch("routes.updates._read_env_file", return_value={}), \
+             patch.dict(os.environ, {"TZ": "Europe/London"}):
+            self.assertEqual(updates._appliance_tz(), "Europe/London")
+
+
+class ScheduleConfV2Test(unittest.TestCase):
+    """Schedule conf v2: mode/day/hour/when/fired, backward-compatible with
+    the old enabled/day/hour file (no mode = recurring, local time)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="updates-sched-")
+        self._dir = patch.object(updates, "STATUS_DIR", self.tmp)
+        self._dir.start()
+
+    def tearDown(self):
+        self._dir.stop()
+
+    def test_read_schedule_backward_compat_defaults_recurring(self):
+        with open(os.path.join(self.tmp, "update_schedule.conf"), "w") as f:
+            f.write("enabled=true\nday=1\nhour=3\n")
+        sc = updates._read_schedule()
+        self.assertEqual(sc["mode"], "recurring")
+        self.assertEqual(sc["day"], "1")
+        self.assertEqual(sc["hour"], 3)
+        self.assertTrue(sc["enabled"])
+        self.assertEqual(sc["when"], "")
+        self.assertEqual(sc["fired"], "")
+
+    def test_read_schedule_onetime(self):
+        with open(os.path.join(self.tmp, "update_schedule.conf"), "w") as f:
+            f.write("mode=onetime\nenabled=true\nwhen=2026-08-17T02:00\nfired=2026-08-17T02:01:00Z\n")
+        sc = updates._read_schedule()
+        self.assertEqual(sc["mode"], "onetime")
+        self.assertEqual(sc["when"], "2026-08-17T02:00")
+        self.assertEqual(sc["fired"], "2026-08-17T02:01:00Z")
+
+    def test_set_schedule_recurring_writes_canonical(self):
+        body = updates.ScheduleBody(enabled=True, mode="recurring", day="1", hour=3)
+        r = updates.set_schedule(body, SimpleNamespace(username="admin"))
+        self.assertEqual(r["schedule"]["mode"], "recurring")
+        with open(os.path.join(self.tmp, "update_schedule.conf")) as f:
+            content = f.read()
+        self.assertIn("mode=recurring\n", content)
+        self.assertIn("day=1\n", content)
+        self.assertIn("hour=3\n", content)
+        self.assertIn("when=\n", content)
+
+    def test_set_schedule_onetime_requires_future(self):
+        past = (updates._local_now() - datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        with self.assertRaises(Exception):
+            updates.set_schedule(
+                updates.ScheduleBody(enabled=True, mode="onetime", when=past),
+                SimpleNamespace(username="admin"))
+        future = (updates._local_now() + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+        r = updates.set_schedule(
+            updates.ScheduleBody(enabled=True, mode="onetime", when=future),
+            SimpleNamespace(username="admin"))
+        self.assertEqual(r["schedule"]["mode"], "onetime")
+        self.assertEqual(r["schedule"]["when"], future)
+
+    def test_complete_marks_fired_and_disables(self):
+        updates._write_schedule({"mode": "onetime", "enabled": True,
+                                 "day": "daily", "hour": 2,
+                                 "when": "2026-08-17T02:00", "fired": ""})
+        r = updates.complete_schedule(SimpleNamespace(username="admin"))
+        self.assertFalse(r["schedule"]["enabled"])
+        self.assertTrue(r["schedule"]["fired"])
+        with open(os.path.join(self.tmp, "update_schedule.conf")) as f:
+            self.assertIn("enabled=false\n", f.read())
+
+    def test_cancel_disables_and_clears_onetime(self):
+        updates._write_schedule({"mode": "onetime", "enabled": True,
+                                 "day": "daily", "hour": 2,
+                                 "when": "2026-08-17T02:00", "fired": ""})
+        r = updates.cancel_schedule(SimpleNamespace(username="admin"))
+        self.assertFalse(r["schedule"]["enabled"])
+        self.assertEqual(r["schedule"]["when"], "")
+        self.assertEqual(r["schedule"]["fired"], "")
+
+
+class ScheduleUiV2TemplateTest(unittest.TestCase):
+    """System → Updates schedule section gains the mode toggle + one-time
+    picker + current-schedule display + Cancel (static template checks)."""
+
+    @staticmethod
+    def _read(name):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "templates", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_schedule_section_has_mode_toggle_and_onetime(self):
+        html = self._read("system.html")
+        self.assertIn('id="upd-sched-mode"', html)
+        self.assertIn('id="upd-sched-when"', html)
+        self.assertIn('type="datetime-local"', html)
+        self.assertIn('id="upd-sched-cancel"', html)
+        self.assertIn('local time', html)
+
+    def test_schedule_has_cancel_handler(self):
+        html = self._read("system.html")
+        self.assertIn('function updCancelSchedule', html)
+        self.assertIn('/schedule/cancel', html)
+
+    def test_summary_renders_local_and_recurring(self):
+        html = self._read("system.html")
+        self.assertIn('function updSchedSummary', html)
+        self.assertIn('updModeChange', html)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class VersionOrderingTest(unittest.TestCase):
+    """Regression (08-17): 'available' must require a genuinely NEWER version —
+    a stale manifest showing .a while running .b must NOT flag an update."""
+
+    def test_version_gt(self):
+        from routes.updates import _version_gt as g
+        self.assertTrue(g("2026.08.17.b", "2026.08.17.a"))
+        self.assertTrue(g("2026.08.17.a", "2026.08.16.i"))
+        self.assertFalse(g("2026.08.17.a", "2026.08.17.b"))   # downgrade
+        self.assertFalse(g("2026.08.17.b", "2026.08.17.b"))   # equal
+        self.assertFalse(g("junk", "2026.08.17.b"))           # unparseable
+        self.assertFalse(g("", ""))

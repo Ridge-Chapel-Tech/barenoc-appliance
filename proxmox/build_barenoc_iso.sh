@@ -135,7 +135,7 @@ chown -R barenoc:barenoc /opt/barenoc || true
 # needed (that's only for USB/snapshot layers, Settings → Backups).
 mkdir -p /opt/barenoc/backups
 crontab -u barenoc -l 2>/dev/null | grep -q backup_app.sh || \
-  (crontab -u barenoc -l 2>/dev/null; echo '0 */6 * * * /opt/barenoc/scripts/backup_app.sh >> /opt/barenoc/backups/backup.log 2>&1') | crontab -u barenoc -
+  { crontab -u barenoc -l 2>/dev/null || true; echo '0 */6 * * * /opt/barenoc/scripts/backup_app.sh >> /opt/barenoc/backups/backup.log 2>&1'; } | crontab -u barenoc -
 chmod 700 /opt/barenoc/backups
 
 # pi-agent + Pi Coding Agent runtime
@@ -201,20 +201,24 @@ $SSH_LINE
     # embedded application tarball → /opt/barenoc (deploy.sh contents),
     # in 60KB base64 chunks (single-arg embedding hit ARG_MAX/E2BIG)
 ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf /tmp/barenoc-app.tar.gz -C /opt/barenoc && rm -f /tmp/barenoc-app.tar.gz"
-    # Bootable under OVMF — REMOVED 08-17: curtin's own install-grub hook now
-    # registers a working 'ubuntu' NVRAM entry (Boot0002 -> \EFI\ubuntu\shimx64.efi)
-    # and the disk boots from virtio-scsi; the seed's re-run was REDUNDANT and
-    # FATAL. Inside `curtin in-target` the /target/sys sysfs mount shadows the
-    # bind-mounted efivars, so efibootmgr reports "EFI variables are not
-    # supported" and grub-install exits 3, aborting the remaining
-    # late-commands (incl. the first-boot unit). Kept in git history for the
-    # 08-14 LSI-controller case, which does not apply to virtio-scsi-pci.
-    - mkdir -p /target/sys/firmware/efi/efivars && mount --bind /sys/firmware/efi/efivars /target/sys/firmware/efi/efivars
-    - curtin in-target -- bash -c "if ! efibootmgr 2>/dev/null | grep -qi ubuntu; then grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --removable && grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu && update-grub; fi"
+    # Bootable under OVMF — the efivars-bind + grub-install late-commands were
+    # REMOVED 08-17 (round 3): curtin's own install-grub hook registers a working
+    # 'ubuntu' NVRAM entry (Boot0002 -> \EFI\ubuntu\shimx64.efi) and the disk
+    # boots from virtio-scsi; the seed's re-run was REDUNDANT and FATAL. Inside
+    # 'curtin in-target' the /target/sys sysfs mount shadows the bind-mounted
+    # efivars, so efibootmgr reports "EFI variables are not supported" and
+    # grub-install exits 3, aborting the remaining late-commands (incl. the
+    # first-boot unit). Kept in git history for the 08-14 LSI-controller case,
+    # which does not apply to virtio-scsi-pci.
     # first-boot unit: run provisioning + app deploy once (needs network)
-    # NOTE: After=cloud-init.target — the barenoc identity user is created by
-    # cloud-init at first boot, not during install (late-commands found no
-    # such user — 08-14); the provision script's usermod/chown need it.
+    # NOTE: After=cloud-init.target is INTENTIONALLY ABSENT (round 3, 08-17):
+    # cloud-init is disabled on the installed system (subiquity writes
+    # /etc/cloud/cloud-init.disabled), and referencing it created an ordering
+    # cycle — multi-user.target -> barenoc-firstboot (WantedBy) ->
+    # cloud-init.target (After) -> cloud-final.service -> multi-user.target —
+    # so systemd DELETED the start job and first-boot never ran. The barenoc
+    # user is created by subiquity's identity module during install, not by
+    # cloud-init at first boot, so the unit does not need to wait for it.
     # NOTE: YAML literal block (- |) — the unit file contains line breaks;
     # a plain scalar would break YAML (found 08-14: bad seed => subiquity
     # silently fell back to the interactive language screen).
@@ -222,7 +226,7 @@ ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf
       curtin in-target -- bash -c "cat > /etc/systemd/system/barenoc-firstboot.service <<'UNIT'
       [Unit]
       Description=BareNOC first-boot (provision + app deploy)
-      After=network-online.target docker.service cloud-init.target
+      After=network-online.target docker.service
       Wants=network-online.target
 
       [Service]

@@ -43,11 +43,38 @@ def _read_unifi_env() -> dict:
     return env
 
 
+def _local_gateway() -> str:
+    """The appliance's default-route gateway — where the UniFi controller
+    (or another network controller) usually lives. Read from /proc/net/route
+    in the api container (bridge netns mirrors the host's). Empty when
+    unknown (fall back to the placeholder)."""
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "00000000" and parts[2] != "00000000":
+                    gw = parts[2]
+                    return ".".join(str(int(gw[i:i + 2], 16)) for i in (6, 4, 2, 0))
+    except Exception:
+        pass
+    return ""
+
+
 def _get_unifi_config() -> dict:
-    """Read UniFi config from environment."""
+    """Read UniFi config from environment. When UNIFI_URL is unset (or still
+    the RFC-5737 placeholder), default it to the local gateway — BareNOC's
+    controller is usually the router (08-17 user ask)."""
     env = _read_unifi_env()
+    url = (env.get("UNIFI_URL") or "").strip()
+    default_url = ""
+    if not url or url.startswith("https://192.0.2.1"):
+        gw = _local_gateway()
+        if gw:
+            default_url = f"https://{gw}:443"
+            url = default_url
     return {
-        "url": env.get("UNIFI_URL", "https://192.0.2.1:443"),
+        "url": url,
+        "default_url": default_url,
         "username": env.get("UNIFI_USER", "admin"),
         "password": env.get("UNIFI_PASSWORD", ""),
         "api_key": env.get("UNIFI_API_KEY", ""),
