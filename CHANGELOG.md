@@ -15,6 +15,22 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.g] — 2026-08-18
+
+### Added
+- **Telemetry backbone (P0 time-series)** — the missing layer between NetOpt's
+  point-in-time snapshots and continuous capacity/SLA trends. New `metrics`
+  table (device_id, metric, ts, value) with a (device_id, metric, ts) range
+  index; in-process collectors in the API container on modest configurable
+  cadences (UniFi per-device/per-port counters → bandwidth rate over one
+  long-lived controller session, SNMP ifOperStatus/bytes → rate + CPU/RAM/uptime,
+  light capped ping → latency + packet loss); batched writes + disk-aware
+  retention pruning (scheduler-owned, hourly, `TELEMETRY_*` env knobs); and an
+  admin/operator-gated trends API (`GET /api/v1/metrics/trends?device=&metric=
+  &from=&to=&agg=` with min/avg/max bucketing that omits empty buckets). A lean
+  line-chart preview on the Dashboard Reports section proves the pipeline
+  end-to-end; the full analytics UI stays out of scope.
+
 ## [2026.08.18.f] — 2026-08-18
 
 ### Fixed

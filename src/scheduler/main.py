@@ -9,6 +9,7 @@ import logging
 import datetime
 import urllib.request
 import urllib.error
+import sqlite3
 from zoneinfo import ZoneInfo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
@@ -502,6 +503,90 @@ def check_update_progress(token: str, last_notified: dict):
         logger.warning(f"Update notification failed: {e}")
 
 
+def _db_path() -> str:
+    """Filesystem path of the sqlite DB (same volume the api writes to)."""
+    url = (os.getenv("DATABASE_URL")
+           or _read_env().get("DATABASE_URL")
+           or "sqlite:////opt/barenoc/volumes/db/barenoc.db")
+    if url.startswith("sqlite:///"):
+        path = url[len("sqlite:///"):]
+    else:
+        path = url
+    if not path.startswith("/"):
+        path = "/opt/barenoc/volumes/db/barenoc.db"
+    return path
+
+
+def telemetry_retention_config() -> tuple:
+    """(retention_days, disk_min_free_pct) hot-read from .env. The same math
+    as metrics_store.retention_days in the api container — keep in sync."""
+    env = _read_env()
+    try:
+        days = int(env.get("TELEMETRY_RETENTION_DAYS", "30") or 30)
+    except ValueError:
+        days = 30
+    try:
+        min_free = int(env.get("TELEMETRY_DISK_MIN_FREE_PCT", "10") or 10)
+    except ValueError:
+        min_free = 10
+    return max(1, days), max(1, min(min_free, 99))
+
+
+def _effective_retention_days(days: int, min_free_pct: int, free_pct: float) -> int:
+    """Disk-aware retention: under the free-% floor, prune to 7 days."""
+    if free_pct < min_free_pct:
+        return min(days, 7)
+    return days
+
+
+def prune_telemetry(path: str = None, days: int = None,
+                    min_free_pct: int = None) -> dict:
+    """Delete telemetry samples older than the retention window. Uses stdlib
+    sqlite3 directly (no sqlalchemy in this image) — the api owns the schema;
+    the scheduler only ever DELETEs old rows.
+
+    Disk-aware: when the DB volume free % drops below the floor, prune harder
+    (to 7 days) and WAL-checkpoint so space is actually reclaimed. Never
+    raises — a missing table or locked DB is logged and retried next cycle.
+    """
+    path = path or _db_path()
+    if days is None or min_free_pct is None:
+        days, min_free_pct = telemetry_retention_config()
+    free_pct = 100.0
+    try:
+        st = os.statvfs(os.path.dirname(path) or "/")
+        if st.f_blocks > 0:
+            free_pct = round(st.f_bavail / st.f_blocks * 100.0, 1)
+    except Exception:
+        pass
+    eff = _effective_retention_days(days, min_free_pct, free_pct)
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=eff)
+    try:
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='metrics'")
+            if not cur.fetchone():
+                return {"deleted": 0, "retention_days": eff, "free_pct": free_pct}
+            cur.execute("DELETE FROM metrics WHERE ts < ?",
+                        (cutoff.strftime("%Y-%m-%d %H:%M:%S"),))
+            deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            conn.commit()
+            if free_pct < min_free_pct:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+            return {"deleted": deleted, "retention_days": eff, "free_pct": free_pct}
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"telemetry prune failed: {e}")
+        return {"deleted": 0, "retention_days": eff, "free_pct": free_pct}
+
+
 def run():
     """Main scheduler loop."""
     logger.info("BareNOC Scheduler starting...")
@@ -518,6 +603,7 @@ def run():
     last_upd_sched = 0
     last_upd_prog = 0
     last_netopt = 0
+    last_prune = 0
     _last_triggered = {}
 
     while True:
@@ -559,6 +645,16 @@ def run():
             if now - last_netopt >= 60:
                 check_netopt_schedule(token, _last_triggered)
                 last_netopt = now
+
+            # Telemetry retention prune — hourly, disk-aware (the collectors
+            # run in the api container; the scheduler owns the prune).
+            if now - last_prune >= 3600:
+                result = prune_telemetry()
+                if result.get("deleted"):
+                    logger.info(f"Telemetry retention prune: deleted {result['deleted']} "
+                                f"rows (retention {result['retention_days']}d, "
+                                f"{result['free_pct']}% free)")
+                last_prune = now
 
         except Exception as e:
             logger.error(f"Scheduler error: {e}")

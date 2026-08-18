@@ -8,6 +8,9 @@ so it works in CI's python3.12 and on the VM host.
 """
 
 import datetime
+import os
+import sqlite3
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -167,6 +170,63 @@ class StartupGuardTest(unittest.TestCase):
              patch.object(main.time, "sleep") as slp:
             self.assertEqual(main._wait_for_ready(max_wait_seconds=0), "")
         slp.assert_not_called()
+
+
+class TelemetryPruneTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="sched-prune-")
+        self.path = os.path.join(self.tmp, "barenoc.db")
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "CREATE TABLE metrics ("
+            " id INTEGER PRIMARY KEY,"
+            " device_id INTEGER NOT NULL,"
+            " metric VARCHAR(128) NOT NULL,"
+            " ts DATETIME NOT NULL,"
+            " value FLOAT NOT NULL"
+            ")")
+        conn.execute(
+            "CREATE INDEX ix_metrics_device_metric_ts "
+            "ON metrics(device_id, metric, ts)")
+        conn.commit()
+        conn.close()
+
+    def _insert(self, ts_iso):
+        conn = sqlite3.connect(self.path)
+        conn.execute("INSERT INTO metrics (device_id, metric, ts, value) VALUES (?, ?, ?, ?)",
+                     (1, "ping.latency_ms", ts_iso, 1.0))
+        conn.commit()
+        conn.close()
+
+    def test_retention_math_disk_aware(self):
+        # plenty of free space -> full retention window
+        self.assertEqual(main._effective_retention_days(30, 10, 50.0), 30)
+        # disk pressure -> clamp to 7 days
+        self.assertEqual(main._effective_retention_days(30, 10, 5.0), 7)
+        # a configured window shorter than the floor stays short
+        self.assertEqual(main._effective_retention_days(3, 10, 5.0), 3)
+
+    def test_prune_deletes_old_rows_only(self):
+        old = (datetime.datetime.utcnow() - datetime.timedelta(days=40)).strftime(
+            "%Y-%m-%d %H:%M:%S")
+        fresh = (datetime.datetime.utcnow() - datetime.timedelta(hours=1)).strftime(
+            "%Y-%m-%d %H:%M:%S")
+        self._insert(old)
+        self._insert(fresh)
+        result = main.prune_telemetry(self.path, days=30, min_free_pct=10)
+        self.assertEqual(result["deleted"], 1)
+        conn = sqlite3.connect(self.path)
+        n = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+        conn.close()
+        self.assertEqual(n, 1)
+
+    def test_prune_missing_table_is_safe(self):
+        conn = sqlite3.connect(self.path)
+        conn.execute("DROP TABLE metrics")
+        conn.commit()
+        conn.close()
+        result = main.prune_telemetry(self.path, days=30, min_free_pct=10)
+        self.assertEqual(result["deleted"], 0)
 
 
 if __name__ == "__main__":

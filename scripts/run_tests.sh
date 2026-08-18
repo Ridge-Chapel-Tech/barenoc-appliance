@@ -14,7 +14,7 @@ echo "==> scripts tests"
 ( cd scripts && python3 -m unittest test_forum_confirm 2>&1 | tail -3 )
 
 echo "==> api tests"
-( cd src/api && python3 -m unittest test_devices test_device_agent test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_link_monitor test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter test_network_opt test_wiki 2>&1 | tail -3 )
+( cd src/api && python3 -m unittest test_devices test_device_agent test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_link_monitor test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter test_network_opt test_telemetry test_wiki 2>&1 | tail -3 )
 
 echo "==> worker tests"
 ( cd src/worker && python3 -m unittest test_judge test_juniper test_pi_flag test_integration 2>&1 | tail -3 )

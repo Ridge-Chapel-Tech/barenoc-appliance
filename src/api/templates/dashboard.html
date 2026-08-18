@@ -98,6 +98,25 @@
             <div class="text-sm font-medium text-gray-500">Average resolution time by priority (hours)</div>
             <canvas id="restime-chart" height="90"></canvas>
         </div>
+
+        <div class="mt-4 bg-white shadow rounded-lg p-4">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                    <div class="text-sm font-medium text-gray-500">Telemetry (time-series preview)</div>
+                    <p class="text-xs text-gray-400 mt-1">One metric over the selected range — proves the collector pipeline end-to-end. Full analytics UI comes later.</p>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <select id="telemetry-device" onchange="populateTelemetryMetrics()" class="rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+                    <select id="telemetry-metric" onchange="renderTelemetry()" class="rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
+                    <select id="telemetry-range" onchange="renderTelemetry()" class="rounded-md border-gray-300 border px-3 py-2 text-sm">
+                        <option value="24h">Last 24 hours</option>
+                        <option value="7d" selected>Last 7 days</option>
+                        <option value="30d">Last 30 days</option>
+                    </select>
+                </div>
+            </div>
+            <canvas id="telemetry-chart" height="100"></canvas>
+        </div>
     </div>
 
     </div><!-- /overview-pane -->
@@ -409,5 +428,83 @@ async function downloadReport() {
 }
 
 loadReports();
+
+// ── Telemetry (time-series preview, operator/admin) ──
+let _telemetryCatalog = [];
+let _telemetryChart = null;
+async function loadTelemetryCatalog() {
+  try {
+    var r = await fetch('/api/v1/metrics/catalog', {
+      headers: { 'Authorization': 'Bearer ' + TOKEN() }
+    });
+    if (!r.ok) return;
+    var d = await r.json();
+    _telemetryCatalog = d.metrics || [];
+    var byDev = {};
+    _telemetryCatalog.forEach(function(m) {
+      (byDev[m.device_id] = byDev[m.device_id] || []).push(m);
+    });
+    document.getElementById('telemetry-device').innerHTML = Object.keys(byDev).map(function(id) {
+      var label = (byDev[id][0] && byDev[id][0].device_name) || ('device ' + id);
+      return '<option value="' + id + '">' + esc(label) + '</option>';
+    }).join('');
+    populateTelemetryMetrics();
+  } catch (e) { console.error('telemetry catalog:', e); }
+}
+function populateTelemetryMetrics() {
+  var devId = Number(document.getElementById('telemetry-device').value);
+  var metrics = _telemetryCatalog.filter(function(m) { return m.device_id === devId; })
+                                 .map(function(m) { return m.metric; }).sort();
+  var metSel = document.getElementById('telemetry-metric');
+  metSel.innerHTML = metrics.map(function(m) {
+    return '<option value="' + esc(m) + '">' + esc(m) + '</option>';
+  }).join('');
+  if (!metrics.length) metSel.innerHTML = '<option value="">(no metrics yet)</option>';
+  renderTelemetry();
+}
+function telemetryRangeHours() {
+  var v = document.getElementById('telemetry-range').value;
+  return v === '24h' ? 24 : v === '7d' ? 168 : 720;
+}
+async function renderTelemetry() {
+  var devId = document.getElementById('telemetry-device').value;
+  var metric = document.getElementById('telemetry-metric').value;
+  if (!devId || !metric) return;
+  var hours = telemetryRangeHours();
+  var to = new Date().toISOString();
+  var from = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  var url = '/api/v1/metrics/trends?device=' + encodeURIComponent(devId)
+    + '&metric=' + encodeURIComponent(metric)
+    + '&from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to) + '&agg=avg';
+  try {
+    var r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + TOKEN() } });
+    if (!r.ok) return;
+    var d = await r.json();
+    if (!window.Chart) {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+      s.onload = function() { drawTelemetry(d); };
+      document.head.appendChild(s);
+    } else {
+      drawTelemetry(d);
+    }
+  } catch (e) { console.error('telemetry trends:', e); }
+}
+function drawTelemetry(d) {
+  if (_telemetryChart) { _telemetryChart.destroy(); _telemetryChart = null; }
+  var labels = (d.points || []).map(function(p) { return p.ts.slice(5, 16).replace('T', ' '); });
+  var data = (d.points || []).map(function(p) { return p.value; });
+  _telemetryChart = new Chart(document.getElementById('telemetry-chart'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{ label: d.metric, data: data, borderColor: '#1c7ed6',
+                   backgroundColor: 'rgba(28,126,214,0.1)', fill: true, tension: 0.2 }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } },
+               scales: { x: { ticks: { maxTicksLimit: 8 } } } }
+  });
+}
+loadTelemetryCatalog();
 </script>
 {% endblock %}

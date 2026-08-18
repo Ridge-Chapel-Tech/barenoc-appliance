@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -203,6 +203,32 @@ class ScanRun(Base):
     schema_version = Column(Integer, default=1)
     triggered_by = Column(String(16), default="manual")  # manual | schedule
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class Metric(Base):
+    """One time-series sample (telemetry backbone, P0).
+
+    A single (device, metric, timestamp) -> value row. Values are always
+    NUMERIC (a rate, a percentage, a latency, a 0/1 status). Bandwidth is
+    stored as a RATE (bytes/sec) computed by the collector from consecutive
+    counter reads — the store never needs to know the channel's raw units.
+
+    Write-friendly by design: collectors batch-insert rows and the table is
+    indexed for the range queries the trends API performs
+    (device_id, metric, ts). Retention pruning deletes whole rows by ts — no
+    per-metric bookkeeping.
+    """
+
+    __tablename__ = "metrics"
+    __table_args__ = (
+        Index("ix_metrics_device_metric_ts", "device_id", "metric", "ts"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True, nullable=False)
+    metric = Column(String(128), index=True, nullable=False)   # e.g. "ping.latency_ms"
+    ts = Column(DateTime, index=True, nullable=False)          # naive UTC sample time
+    value = Column(Float, nullable=False)
 
 
 class Finding(Base):

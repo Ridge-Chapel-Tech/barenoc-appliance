@@ -228,3 +228,23 @@ def init_db():
             ))
     except OperationalError:
         pass  # Tables/indexes already exist
+    # Migration: metrics (telemetry backbone, P0). NEW table — create_all above
+    # already creates it; the guarded CREATEs are idempotent belt-and-suspenders
+    # no-ops. KEEP IN SYNC with models.Metric.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS metrics ("
+                " id INTEGER PRIMARY KEY,"
+                " device_id INTEGER NOT NULL,"
+                " metric VARCHAR(128) NOT NULL,"
+                " ts DATETIME NOT NULL,"
+                " value FLOAT NOT NULL"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_metrics_device_metric_ts "
+                "ON metrics(device_id, metric, ts)"
+            ))
+    except OperationalError:
+        pass  # Table/index already exists
