@@ -15,6 +15,16 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.e] — 2026-08-18
+
+### Fixed
+- **Updates: stable builds never re-checked for new releases (08-18).** The auto-check
+  only fired when the installed build changed (`check_stale` = persisted current != live)
+  — a box running a stable version could sit forever without discovering a release, and
+  there was no manual control. Now: a **"Check now" button** on System → Updates, and
+  `check_stale` also triggers when the last check is older than the staleness window
+  (default 6 h, `UPDATES_CHECK_STALE_HOURS`), so a stable build still finds new releases.
+
 ## [2026.08.18.d] — 2026-08-18
 
 ### Fixed

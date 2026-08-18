@@ -177,6 +177,26 @@ class ScheduleBody(BaseModel):
     when: str = ""            # onetime only: local "YYYY-MM-DDTHH:MM"
 
 
+def _check_is_stale(checked_at, hours=None):
+    """True when the last check is older than the staleness window (default
+    UPDATES_CHECK_STALE_HOURS, 6 h). Never errors on a bad/missing timestamp —
+    a missing timestamp is handled by the caller as stale anyway."""
+    if not checked_at:
+        return True
+    try:
+        h = hours if hours is not None else int(
+            (_read_env_file().get("UPDATES_CHECK_STALE_HOURS") or "6"))
+        if h <= 0:
+            return False
+        ts = datetime.datetime.fromisoformat(str(checked_at))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
+        age = datetime.datetime.now(datetime.timezone.utc) - ts
+        return age.total_seconds() > h * 3600
+    except Exception:
+        return True
+
+
 def _version_gt(a: str, b: str) -> bool:
     """CalVer ordering: 2026.08.17.b > 2026.08.17.a > 2026.08.16.i. True only
     when a is genuinely NEWER than b — a downgrade or equal is NOT an available
@@ -242,10 +262,16 @@ def update_status(user: User = Depends(require_any_role("operator", "admin", "ag
     status.setdefault("available", False)
     status.setdefault("manifest_error", "")
     status.setdefault("checked_at", "")
-    # Signal when the persisted check predates the running build so the UI can
-    # refresh it on load (checked_at/latest/available would otherwise stay stale
-    # too — the .d auto-check-on-load only ran when checked_at was missing).
-    status["check_stale"] = bool(stored_current != live or not status.get("checked_at"))
+    # Signal when the persisted check is stale so the UI refreshes it on load:
+    # (a) the persisted check predates the running build (fresh deploy), or
+    # (b) the check is simply OLD — a stable build on the same version must
+    # still discover new releases within a few hours (08-18: a box on .b
+    # stopped ever re-checking because stored_current == live forever).
+    status["check_stale"] = bool(
+        stored_current != live
+        or not status.get("checked_at")
+        or _check_is_stale(status.get("checked_at"))
+    )
     status["schedule"] = _read_schedule()
     last = _read_update_result()
     status["last_update"] = last

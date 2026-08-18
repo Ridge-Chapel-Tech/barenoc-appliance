@@ -81,9 +81,11 @@ class DevicesPolishTemplateTest(unittest.TestCase):
 
     def test_check_now_button_removed(self):
         html = self._read("system.html")
-        self.assertNotIn('>Check now<', html)          # the manual button is gone
-        self.assertNotIn('function updCheck', html)    # its handler is gone too
-        # …but the auto-check on load still drives the card (the only flow).
+        # The dashboard card is gone, but the System Updates view has a manual
+        # Check-now button again (08-18 fix: a stable build must be able to
+        # force a re-check — the auto-check only fired when the build changed).
+        self.assertIn('>Check now<', html)
+        self.assertIn('function updCheckNow', html)
         self.assertIn("updFetch('/check'", html)
         self.assertIn('updLoad();', html)
 

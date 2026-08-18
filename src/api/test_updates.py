@@ -193,7 +193,7 @@ class ProgressConfirmationTest(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="updates-fresh-")
         with open(os.path.join(tmp, "status.json"), "w") as f:
             json.dump({"current": "2026.08.17.a",
-                       "checked_at": "2026-08-17T00:00:00Z"}, f)
+                       "checked_at": "2026-08-18T22:11:50.282275+00:00"}, f)
         with patch.object(updates, "STATUS_DIR", tmp), \
              patch.object(updates, "_current_version", return_value="2026.08.17.a"):
             st = updates.update_status(SimpleNamespace(username="admin"))
@@ -218,8 +218,9 @@ class UpdatesUxTemplateTest(unittest.TestCase):
         self.assertIn('/system#updates', html)
         # The full management card is gone from the dashboard…
         self.assertNotIn('id="updates-card"', html)
-        # …and so are its handlers (Check now / Update now / Rollback / Schedule).
-        self.assertNotIn('function updCheck', html)
+        # …and so are its handlers (Update now / Rollback / Schedule). The
+        # Check-now button is System-only (dashboard shows the banner).
+        self.assertNotIn('function updCheckNow', html)
         self.assertNotIn('function updNow', html)
         self.assertNotIn('function updRollback', html)
         self.assertNotIn('function updSaveSchedule', html)
@@ -234,10 +235,10 @@ class UpdatesUxTemplateTest(unittest.TestCase):
     def test_system_has_updates_section(self):
         html = self._read("system.html")
         self.assertIn('id="updates"', html)
-        # Check Now is GONE (auto-check on load + release banner is the only flow);
-        # the POST /api/v1/updates/check endpoint stays intact for tests/integrations.
-        self.assertNotIn('function updCheck', html)
-        self.assertNotIn('>Check now<', html)
+        # Check Now button (08-18 fix: a stable build must be able to force a
+        # re-check — the auto-check only fired when the build changed).
+        self.assertIn('function updCheckNow', html)
+        self.assertIn('>Check now<', html)
         self.assertIn('function updNow', html)
         self.assertIn('function updRollback', html)
         self.assertIn('id="upd-progress"', html)
@@ -413,3 +414,25 @@ class VersionOrderingTest(unittest.TestCase):
         self.assertFalse(g("2026.08.17.b", "2026.08.17.b"))   # equal
         self.assertFalse(g("junk", "2026.08.17.b"))           # unparseable
         self.assertFalse(g("", ""))
+
+class UpdatesCheckStaleTest(unittest.TestCase):
+    """_check_is_stale: stable builds must still discover new releases."""
+
+    def test_fresh_check_not_stale(self):
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.assertFalse(updates._check_is_stale(ts, hours=6))
+
+    def test_old_check_stale(self):
+        ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).isoformat()
+        self.assertTrue(updates._check_is_stale(ts, hours=6))
+
+    def test_bad_timestamp_stale(self):
+        self.assertTrue(updates._check_is_stale("not-a-date", hours=6))
+
+    def test_missing_timestamp_stale(self):
+        self.assertTrue(updates._check_is_stale(None, hours=6))
+
+    def test_disabled_window_never_stale(self):
+        ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)).isoformat()
+        self.assertFalse(updates._check_is_stale(ts, hours=0))
+

@@ -10,6 +10,7 @@
     <div class="flex items-center justify-between flex-wrap gap-3">
       <h2 class="text-lg font-medium text-gray-900">Updates</h2>
       <div class="flex gap-2 text-xs">
+        <button onclick="updCheckNow()" id="upd-check-btn" class="rounded-md bg-barenoc-50 text-barenoc-700 px-3 py-1.5 hover:bg-barenoc-100">Check now</button>
         <button onclick="updNow()" id="upd-now-btn" class="rounded-md bg-barenoc-600 text-white px-3 py-1.5 hover:bg-barenoc-700" disabled>Update now</button>
         <button onclick="updToggleSchedule()" class="rounded-md bg-gray-100 px-3 py-1.5 hover:bg-gray-200">Schedule</button>
         <button onclick="updRollback()" class="rounded-md bg-red-50 text-red-700 px-3 py-1.5 hover:bg-red-100">Rollback</button>
@@ -152,6 +153,13 @@ function renderUpdateProgress(prog) {
   }
 }
 var _updAutoCheck = false;
+async function updCheckNow() {
+  const b = document.getElementById('upd-check-btn');
+  if (b) { b.disabled = true; b.textContent = 'Checking…'; }
+  try { await updFetch('/check', { method: 'POST' }); } catch (e) { alert(e.message); }
+  if (b) { b.disabled = false; b.textContent = 'Check now'; }
+  updLoad();
+}
 async function updLoad() {
   try {
     const s = await updFetch('/status');
