@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -147,3 +147,33 @@ class ChatMessage(Base):
 
     sender = relationship("User", foreign_keys=[from_user_id])
     recipient = relationship("User", foreign_keys=[to_user_id])
+
+
+class LinkEpisode(Base):
+    """In-flight link-stability episode — one row per (device_id, interface).
+
+    The ticket is the user-facing record; this table is the link monitor's
+    state-machine memory (state, flap count/timestamps, outage timer, current
+    ticket) so a container restart resumes an open episode instead of losing
+    it. Rows are deleted when the episode auto-closes.
+    """
+
+    __tablename__ = "link_episodes"
+    __table_args__ = (
+        UniqueConstraint("device_id", "interface", name="uq_link_episodes_dev_iface"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True, nullable=False)
+    interface = Column(String(128), nullable=False)  # "wan" | port name | SNMP ifDescr | "status"
+    state = Column(String(16), default="flapping")   # flapping | outage
+    flap_count = Column(Integer, default=0)          # total down->up recoveries
+    flap_timestamps = Column(JSON, default=list)     # ISO timestamps of each recovery
+    window_start = Column(DateTime, default=datetime.datetime.utcnow)
+    down_since = Column(DateTime, nullable=True)     # when the current down began
+    last_event_at = Column(DateTime, default=datetime.datetime.utcnow)
+    escalated = Column(String(4), default="P2")      # current ticket priority
+    escalation_reason = Column(String(32), nullable=True)  # recurrence | outage | wan_probe
+    ticket_id = Column(String(32), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

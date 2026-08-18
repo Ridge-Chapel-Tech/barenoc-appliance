@@ -154,3 +154,32 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: link_episodes (link-stability monitor state machine). A NEW
+    # table — create_all above already creates it, so this guarded CREATE is an
+    # idempotent belt-and-suspenders no-op. KEEP IN SYNC with models.LinkEpisode.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS link_episodes ("
+                " id INTEGER PRIMARY KEY,"
+                " device_id INTEGER NOT NULL,"
+                " interface VARCHAR(128) NOT NULL,"
+                " state VARCHAR(16) DEFAULT 'flapping',"
+                " flap_count INTEGER DEFAULT 0,"
+                " flap_timestamps JSON,"
+                " window_start DATETIME,"
+                " down_since DATETIME,"
+                " last_event_at DATETIME,"
+                " escalated VARCHAR(4) DEFAULT 'P2',"
+                " escalation_reason VARCHAR(32),"
+                " ticket_id VARCHAR(32),"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_link_episodes_dev_iface "
+                "ON link_episodes(device_id, interface)"
+            ))
+    except OperationalError:
+        pass  # Table/index already exists

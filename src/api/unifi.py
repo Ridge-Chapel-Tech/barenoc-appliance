@@ -162,6 +162,34 @@ class UniFiClient:
             return devices
         return []
 
+    def get_raw_devices(self) -> Optional[list]:
+        """Raw stat/device list (includes per-device port_table with up/media/
+        name) or None when the controller is unreachable / the call failed.
+        The link monitor uses this as its per-port data channel."""
+        rd = self._request("GET", f"/proxy/network/api/s/{self.site}/stat/device")
+        if rd is None or "data" not in rd:
+            return None
+        return rd.get("data") or []
+
+    def get_wan_health(self, mac: str) -> Optional[dict]:
+        """WAN subsystem health for a gateway (stat/health). Returns
+        {'status': ..., 'wan_ip': ...} or None when unavailable. UniFi OS
+        serves it per-device at stat/health/{mac}; some builds return the
+        whole health map under stat/health keyed by MAC."""
+        result = self._stat(f"stat/health/{mac}")
+        subsystems = (result or {}).get("data")
+        if not isinstance(subsystems, list):
+            result = self._stat("stat/health")
+            data = (result or {}).get("data")
+            if isinstance(data, dict):
+                subsystems = data.get(mac) or data.get((mac or "").lower()) or []
+            else:
+                subsystems = data if isinstance(data, list) else []
+        for s in (subsystems or []):
+            if isinstance(s, dict) and s.get("subsystem") == "wan":
+                return {"status": str(s.get("status") or ""), "wan_ip": s.get("wan_ip", "")}
+        return None
+
     def get_clients(self) -> list:
         """All known clients (rest/user, incl. offline) merged with active
         sessions (stat/sta) so each entry has a usable IP + online status.

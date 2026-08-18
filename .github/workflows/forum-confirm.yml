@@ -1,0 +1,50 @@
+name: forum-confirm
+
+# Reverse half of the forum <-> GitHub loop: when a `customer-bug` issue is
+# closed, post "Bug confirmed. Patched in vX — please verify." to the forum
+# thread the issue came from.
+#
+# CONVENTION (see scripts/forum_confirm.py + the BUILD_LIST handoff):
+#   The closer (gate) comments  `Fixed in v<version>`  on the issue when
+#   closing it. The workflow parses the MOST RECENT such comment for the
+#   version and the forum thread id from the issue body's
+#   `https://forum.barenoc.com/thread/<id>` link, then calls the
+#   `forum-confirm` Supabase edge function. Idempotency lives in the edge
+#   function (it never double-posts).
+#
+# Requires repo secrets:
+#   FORUM_CONFIRM_URL    = https://<ref>.supabase.co/functions/v1/forum-confirm
+#   FORUM_CONFIRM_TOKEN  = shared secret (also set in Supabase function secrets)
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  confirm:
+    if: contains(github.event.issue.labels.*.name, 'customer-bug')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch issue + comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/issues/${{ github.event.issue.number }}" > /tmp/issue.json
+          gh api "repos/$GITHUB_REPOSITORY/issues/${{ github.event.issue.number }}/comments" > /tmp/comments.json
+
+      - name: Run parser tests
+        run: |
+          ( cd scripts && python3 -m unittest test_forum_confirm )
+
+      - name: Post confirm note to forum thread
+        env:
+          FORUM_CONFIRM_URL: ${{ secrets.FORUM_CONFIRM_URL }}
+          FORUM_CONFIRM_TOKEN: ${{ secrets.FORUM_CONFIRM_TOKEN }}
+        run: |
+          python3 scripts/forum_confirm.py --issue /tmp/issue.json --comments /tmp/comments.json

@@ -167,7 +167,11 @@ def _adapter_openai(provider: dict, model: str, messages: list,
     resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
-    text = data["choices"][0]["message"]["content"]
+    msg = data["choices"][0]["message"]
+    # DeepSeek reasoning models put the answer in `reasoning_content` when
+    # `content` comes back empty under a long system prompt (found 08-17 —
+    # every chat/ticket request escalated as a "non-JSON (empty response)").
+    text = msg.get("content") or msg.get("reasoning_content") or ""
     usage = data.get("usage", {})
     return text, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
 

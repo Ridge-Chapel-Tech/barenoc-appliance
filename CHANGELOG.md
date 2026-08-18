@@ -15,6 +15,45 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.a] — 2026-08-18
+
+### Added
+- **Forum confirm note (GitHub → forum loop)** — when a `customer-bug` issue is
+  closed, the new `.github/workflows/forum-confirm.yml` parses the version from
+  the closer's `Fixed in v<version>` comment and the thread id from the issue
+  body's forum link, then calls the new `forum-confirm` Supabase edge function
+  (BareNOC-Forum) to post "✅ Bug confirmed. Patched in vX — please verify." to
+  the forum thread. Idempotent — the edge function never double-posts.
+- **Link-stability monitor (link-flap detection with graduated severity)** — a
+  per-link state machine that watches monitored interfaces and turns state
+  changes into a single graduated ticket: first down/up transition opens a P2
+  "Link flap" ticket (30-min episode window); ≥3 flaps escalate it to P1
+  "Recurring link flap"; a down that persists >10 min escalates it to P1
+  "Link outage"; 30 min with no further events auto-closes it with a summary.
+  Data channels: UniFi gateway WAN (stat/health) + gateway/switch port tables
+  (one long-lived controller session, port tables cached ≤60s), SNMP
+  ifOperStatus (snmp_configured devices), and the Device.status field as the
+  fallback. The gateway WAN is always monitored; other links opt in via the
+  existing `notify_state_changes` toggle. The WAN flap ticket IS the WAN
+  outage ticket — the InternetMonitor probe promotes an open WAN flap ticket
+  to P1 instead of opening a duplicate "Internet connectivity down" ticket.
+  In-flight episodes persist in a new `link_episodes` table so a container
+  restart resumes them. Env knobs: `LINK_MONITOR_ENABLED` (default true),
+  `LINK_FLAP_WINDOW_MIN=30`, `LINK_FLAP_ESCALATE_COUNT=3`,
+  `LINK_PERSIST_DOWN_MIN=10`, `LINK_STABLE_CLOSE_MIN=30`.
+### Fixed
+- **Devices topology render cascade (forum #50)** — the topology diagram could
+  fail with "No diagram type detected … for text: #topo-…{font-family:…}" on
+  refresh. `renderMermaid()` now renders from a stored source string (never the
+  element's `textContent`, which holds the previous SVG/CSS after a render) and
+  truncates error text, so a failure can never be re-parsed as a diagram; the
+  mermaid CDN loader queues callbacks on a single `<script>` tag so a second
+  `loadTopology()` mid-download can't double-render. Node labels also escape
+  backslash + quote, and edge-port labels are digits-only (mermaid's `|…|`
+  grammar rejects `|`, `"`, `(` and `)`).
+
+
+
 ## [2026.08.17.d] — 2026-08-17
 
 ### Added

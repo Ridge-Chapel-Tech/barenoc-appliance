@@ -25,6 +25,7 @@ from database import SessionLocal
 from models import Device, Ticket, AuditLog
 from emailer import send_email, get_recipients, smtp_configured, alert_html
 from audit import log_event
+from link_monitor import LinkMonitor, find_open_wan_episode, promote_wan_ticket
 
 logger = logging.getLogger("barenoc-alerts")
 
@@ -218,13 +219,27 @@ class InternetMonitor:
                        body_text=f"P1: Internet down ({label}).")
         s = SessionLocal()
         try:
+            from schemas import generate_ticket_id
+            from audit import log_event
+            # WAN single-ticket lifecycle: the WAN flap ticket IS the WAN
+            # outage ticket. If an open WAN link-flap ticket exists on the
+            # gateway, promote IT to P1 instead of opening a duplicate
+            # 'Internet connectivity down' ticket.
+            ep = find_open_wan_episode(s)
+            if ep and promote_wan_ticket(s, ep):
+                s.commit()
+                log_event(s, "internet_outage", "system", {
+                    "ticket_id": ep.ticket_id, "status": status,
+                    "gateway": cfg["gateway"], "host": cfg["host"],
+                    "promoted_wan_flap": True,
+                }, ep.ticket_id)
+                logger.error(f"Internet outage: promoted WAN flap ticket {ep.ticket_id} to P1 ({status})")
+                return
             existing = s.query(Ticket).filter(
                 Ticket.title == INTERNET_OUTAGE_TITLE,
                 Ticket.status.in_(("open", "in_progress"))).first()
             if existing:
                 return
-            from schemas import generate_ticket_id
-            from audit import log_event
             t = Ticket(ticket_id=generate_ticket_id(), title=INTERNET_OUTAGE_TITLE,
                        description=f"Internet connectivity down — {label}.",
                        priority="P1", status="open", source="auto", assigned_to="system")
@@ -252,18 +267,35 @@ class InternetMonitor:
         s = SessionLocal()
         try:
             from audit import log_event
+            from worknotes import add_note
             t = s.query(Ticket).filter(
                 Ticket.title == INTERNET_OUTAGE_TITLE,
                 Ticket.status.in_(("open", "in_progress"))).first()
-            if not t:
-                return
-            t.status = "closed"
-            t.resolution = "Internet connectivity restored"
-            t.resolved_at = datetime.datetime.utcnow()
+            if t:
+                t.status = "closed"
+                t.resolution = "Internet connectivity restored"
+                t.resolved_at = datetime.datetime.utcnow()
+                log_event(s, "internet_recovered", "system", {
+                    "ticket_id": t.ticket_id, "gateway": cfg["gateway"], "host": cfg["host"],
+                }, t.ticket_id)
+            # WAN single-ticket lifecycle: if the outage was tracked as a
+            # probe-promoted WAN flap ticket, close THAT ticket + episode on
+            # confirmed recovery (the link monitor skips wan_probe episodes —
+            # the probe owns their lifecycle end-to-end).
+            ep = find_open_wan_episode(s)
+            if ep and ep.escalation_reason == "wan_probe" and ep.ticket_id:
+                wt = s.query(Ticket).filter(Ticket.ticket_id == ep.ticket_id).first()
+                if wt and wt.status in ("open", "in_progress"):
+                    add_note(wt, "wan_recovered", "Internet probe confirmed recovery.")
+                    wt.status = "closed"
+                    wt.resolution = "Internet connectivity restored (probe confirmed)"
+                    wt.resolved_at = datetime.datetime.utcnow()
+                    log_event(s, "internet_recovered", "system", {
+                        "ticket_id": wt.ticket_id, "gateway": cfg["gateway"], "host": cfg["host"],
+                        "wan_probe_episode": True,
+                    }, wt.ticket_id)
+                s.delete(ep)
             s.commit()
-            log_event(s, "internet_recovered", "system", {
-                "ticket_id": t.ticket_id, "gateway": cfg["gateway"], "host": cfg["host"],
-            }, t.ticket_id)
         finally:
             s.close()
 
@@ -277,6 +309,7 @@ class AlertEngine(threading.Thread):
         self._last_eod_day = None
         self._seen_ids = set()
         self._internet = InternetMonitor()
+        self._link = LinkMonitor()
 
     def _check_ticket_lifecycle(self) -> None:
         """Ticket auto-close + human-handoff check-ins (Settings → Tickets).
@@ -348,6 +381,9 @@ class AlertEngine(threading.Thread):
                 # Ticket lifecycle (check-ins + auto-close) also runs without
                 # SMTP — notes + status changes are the record; email is extra.
                 self._check_ticket_lifecycle()
+                # Link-stability monitor (flap/outage tickets) — the TICKET is
+                # the record, so this runs regardless of SMTP too.
+                self._link.check()
                 if smtp_configured():
                     self._check_devices()
                     self._maybe_digest(now)

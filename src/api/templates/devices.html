@@ -59,7 +59,7 @@
   <div id="devices-topology-view" class="hidden mt-4">
     <div id="topology-empty" class="hidden text-center text-gray-500 py-12">No adopted UniFi gear to map yet. Adopted UniFi devices (gateway / switches / APs) appear here as a live topology.</div>
     <div class="bg-white shadow rounded-lg p-6 overflow-x-auto">
-      <div id="topology-mermaid" class="mermaid"></div>
+      <div id="topology-mermaid"></div>
     </div>
   </div>
 
@@ -1029,6 +1029,12 @@ async function toggleNotify(id, current) {
 }
 
 // ── Topology view (adopted UniFi gear) ──
+// The mermaid SOURCE is kept in this variable and rendered from it — never
+// from the DOM. A rendered SVG's textContent begins with the mermaid-injected
+// "#topo-<ts>{font-family:…}" style CSS; feeding that back into mermaid is the
+// "No diagram type detected … for text: #topo-…" cascade (GitHub #50).
+var topologySource = null;
+
 function buildTopologyMermaid(t) {
   var devs = t.devices || [], clients = t.clients || [], links = t.links || [];
   var ids = {}, lines = ['graph TD'];
@@ -1039,7 +1045,15 @@ function buildTopologyMermaid(t) {
     // name on top, then TYPE · MAKE · MODEL (no IPs); offline gear is marked
     var sub = [prettyType(d.type), d.vendor, d.model].filter(function(x) { return x; }).join(' · ');
     if (d.status === 'offline' || d.offline) sub = (sub ? sub + ' · ' : '') + 'offline';
-    return (esc(name || '?') + '<br/>' + esc(sub || '')).replace(/"/g, '&quot;');
+    // Node text is wrapped in ["…"] — mermaid's string lexer accepts every
+    // character except a raw double quote, so the only way to break the label
+    // is an unescaped '"' (or a backslash that a future mermaid grammar could
+    // treat as an escape). esc() already escapes & < > " for mermaid's
+    // loose-HTML label rendering; re-escape the quote + backslash here so the
+    // label can never terminate the string early.
+    return (esc(name || '?') + '<br/>' + esc(sub || ''))
+      .replace(/\\/g, '&#92;')
+      .replace(/"/g, '&quot;');
   }
   var offlineNodes = [];
   devs.forEach(function(d, i) {
@@ -1058,7 +1072,10 @@ function buildTopologyMermaid(t) {
   });
   links.forEach(function(l) {
     if (ids[l.from] && ids[l.to]) {
-      lines.push(ids[l.from] + ' -->' + (l.port ? '|' + l.port + '|' : '') + ' ' + ids[l.to]);
+      // uplink_remote_port is a port number — keep only digits so a controller
+      // string edge case can't break the |…| edge-label syntax.
+      var port = String(l.port == null ? '' : l.port).replace(/[^0-9]/g, '');
+      lines.push(ids[l.from] + ' -->' + (port ? '|' + port + '|' : '') + ' ' + ids[l.to]);
     }
   });
   lines.push('classDef gw fill:#eef2ff,stroke:#6366f1,stroke-width:2px');
@@ -1070,12 +1087,26 @@ function buildTopologyMermaid(t) {
   return lines.join('\n');
 }
 
+// One CDN <script> at a time: refresh/sync can call loadTopology() again while
+// the 3.3 MB mermaid bundle is still downloading. Two tags → two onloads → two
+// renderMermaid() runs where the second reads the FIRST run's SVG text back as
+// a diagram (the #50 cascade). Queue callbacks on a single tag instead.
+var mermaidCallbacks = [];
+var mermaidLoading = false;
 function loadMermaidScript(cb) {
   if (window.mermaid) { cb(); return; }
+  mermaidCallbacks.push(cb);
+  if (mermaidLoading) return;
+  mermaidLoading = true;
   var s = document.createElement('script');
   s.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
-  s.onload = cb;
+  s.onload = function() {
+    var cbs = mermaidCallbacks.splice(0, mermaidCallbacks.length);
+    cbs.forEach(function(f) { f(); });
+  };
   s.onerror = function() {
+    mermaidLoading = false;
+    mermaidCallbacks = [];
     document.getElementById('topology-mermaid').innerHTML =
       '<p class="text-sm text-gray-500 py-8">Could not load the diagram renderer (mermaid CDN unreachable). ' +
       'The topology data is still live — check connectivity and reload.</p>';
@@ -1084,6 +1115,10 @@ function loadMermaidScript(cb) {
 }
 
 function renderMermaid(el) {
+  // Nothing to render — either no topology yet or an error was already shown.
+  // Guarding HERE (before the retry loop) means a failed render can never be
+  // retried into a re-parse of its own error text.
+  if (!topologySource) return;
   if (!window.mermaid || !mermaid.render) {
     el.textContent = 'Diagram renderer not available yet — retrying…';
     setTimeout(function() { renderMermaid(el); }, 800);
@@ -1091,11 +1126,20 @@ function renderMermaid(el) {
   }
   // mermaid.render is promise-based and reports errors reliably (mermaid.run
   // rejects asynchronously — uncaught rejections left the raw text on screen).
+  // Render from the STORED source, never from el.textContent: after a render
+  // the element holds the SVG, whose text starts with "#topo-…{font-family:…}"
+  // and feeding that back in reproduces the "No diagram type detected" cascade.
   var id = 'topo-' + Date.now();
-  mermaid.render(id, el.textContent).then(function(res) {
+  var src = topologySource;
+  mermaid.render(id, src).then(function(res) {
     el.innerHTML = res.svg;
   }).catch(function(e) {
-    el.textContent = 'Topology render failed: ' + ((e && e.message) || e);
+    var msg = ((e && e.message) || String(e)) || 'unknown error';
+    // mermaid embeds the ENTIRE input text in e.message — truncate so the
+    // error stays readable and can never look like a diagram to a later pass.
+    if (msg.length > 280) msg = msg.slice(0, 280) + '…';
+    el.textContent = 'Topology render failed: ' + msg;
+    topologySource = null;   // the error text must never be re-parsed
   });
 }
 
@@ -1107,7 +1151,8 @@ async function loadTopology() {
     document.getElementById('topology-empty').classList.toggle('hidden', devs.length > 0);
     if (!devs.length) return 0;
     var el = document.getElementById('topology-mermaid');
-    el.textContent = buildTopologyMermaid(t);
+    topologySource = buildTopologyMermaid(t);
+    el.textContent = topologySource;
     loadMermaidScript(function() {
       mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: 'default' });
       renderMermaid(el);
