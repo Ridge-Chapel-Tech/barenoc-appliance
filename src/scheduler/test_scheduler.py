@@ -118,5 +118,56 @@ class ScheduleLogicTest(unittest.TestCase):
         post.assert_called_once_with("/updates/now", {}, "tok")
 
 
+class StartupGuardTest(unittest.TestCase):
+    def test_ready_on_first_attempt(self):
+        with patch.object(main, "_api_health_ok", return_value=True), \
+             patch.object(main, "_creds_file_ready", return_value=True), \
+             patch.object(main, "_get_token", return_value="tok"), \
+             patch.object(main.time, "sleep") as slp:
+            self.assertEqual(main._wait_for_ready(max_wait_seconds=10), "tok")
+        slp.assert_not_called()
+
+    def test_waits_for_creds_then_returns_token(self):
+        health = iter([True, True, True])
+        creds = iter([False, True])
+        tokens = iter(["tok"])
+
+        def health_fn():
+            return next(health, True)
+
+        def creds_fn():
+            return next(creds, True)
+
+        def token_fn():
+            return next(tokens, "")
+
+        with patch.object(main, "_api_health_ok", side_effect=health_fn), \
+             patch.object(main, "_creds_file_ready", side_effect=creds_fn), \
+             patch.object(main, "_get_token", side_effect=token_fn), \
+             patch.object(main.time, "sleep") as slp:
+            self.assertEqual(main._wait_for_ready(max_wait_seconds=10), "tok")
+        self.assertEqual(slp.call_count, 1)
+
+    def test_waits_for_api_health(self):
+        health = iter([False, True])
+
+        def health_fn():
+            return next(health, True)
+
+        with patch.object(main, "_api_health_ok", side_effect=health_fn), \
+             patch.object(main, "_creds_file_ready", return_value=True), \
+             patch.object(main, "_get_token", return_value="tok"), \
+             patch.object(main.time, "sleep") as slp:
+            self.assertEqual(main._wait_for_ready(max_wait_seconds=10), "tok")
+        self.assertEqual(slp.call_count, 1)
+
+    def test_times_out_returns_empty_without_sleep(self):
+        with patch.object(main, "_api_health_ok", return_value=True), \
+             patch.object(main, "_creds_file_ready", return_value=False), \
+             patch.object(main.time, "sleep") as slp:
+            self.assertEqual(main._wait_for_ready(max_wait_seconds=0), "")
+        slp.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

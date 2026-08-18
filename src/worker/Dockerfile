@@ -23,6 +23,7 @@ COPY action_validator.py .
 COPY audit.py .
 COPY worknotes.py .
 COPY queue_status.py .
+COPY tone_pool.py .
 COPY database.py .
 COPY models.py .
 COPY schemas.py .

@@ -181,12 +181,15 @@ class SysCtxTest(unittest.TestCase):
 
     def test_sysctx_friendly_chat_tone(self):
         # progress + final must be short, plain, customer-facing — technical
-        # detail stays in the work notes, never in the chat.
+        # detail stays in the work notes, never in the chat. Guidance now asks
+        # for varied, stage-matched phrasing (08-18 chat-tone-diversity).
         sysctx = runner._build_sysctx("")
         low = sysctx.lower()
-        self.assertIn("let me find your laptop", low)
-        self.assertIn("connecting now", low)
-        self.assertIn("installing now", low)
+        self.assertIn("vary your wording", low)
+        self.assertIn("taking a look at that now", low)
+        self.assertIn("connecting to the device", low)
+        self.assertIn("applying that change now", low)
+        self.assertIn("verifying everything looks right", low)
         self.assertIn("no meta-narration", low)
         self.assertIn("here's my final answer to the customer", low)
         self.assertIn("never put internal reasoning", low)
@@ -337,6 +340,152 @@ class ProgressToneFilterTest(unittest.TestCase):
         friendly, was_filtered = runner._friendly_progress_note("")
         self.assertEqual(friendly, "")
         self.assertFalse(was_filtered)
+
+
+class ProgressTonePoolTest(unittest.TestCase):
+    """The 08-18 chat-tone-diversity work: a much larger, categorized pool.
+    Category matching maps the raw note's activity via keyword cues; selection
+    is deterministic per (ticket seed, note) and never immediately repeats."""
+
+    def test_pool_has_dozens_of_variants_per_category(self):
+        self.assertEqual(set(runner._TONE_POOL), set(runner._CATEGORIES))
+        for category, phrases in runner._TONE_POOL.items():
+            self.assertGreaterEqual(len(phrases), 10,
+                                    f"{category} should have 10+ variants")
+        # every phrase is short, friendly, and technical-free
+        for phrase in runner._FRIENDLY_PROGRESS:
+            self.assertLessEqual(len(phrase), 80)
+            self.assertFalse(runner._is_technical_note(phrase),
+                             f"pool phrase should be friendly: {phrase!r}")
+
+    def test_category_matching(self):
+        cases = [
+            ("checking the logs to trace the outage", "investigating"),
+            ("fetching the device list", "investigating"),
+            ("reading through the config", "investigating"),
+            ("ssh into the switch to talk to it", "connecting"),
+            ("connecting to the gateway", "connecting"),
+            ("installing the package now", "applying"),
+            ("applying the change now", "applying"),
+            ("configuring the new settings", "applying"),
+            ("verifying everything is in place", "verifying"),
+            ("confirming the result is correct", "verifying"),
+            ("waiting for the long download", "waiting"),
+            ("still processing the build", "waiting"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(runner._categorize(text), expected)
+
+    def test_stable_seed_same_note_same_phrase(self):
+        # a re-read of the same note (same ticket seed, no recent list) is
+        # deterministic — the phrase never depends on wall-clock or randomness.
+        a, fa = runner._friendly_progress_note("installing the dnf package", seed=42)
+        b, fb = runner._friendly_progress_note("installing the dnf package", seed=42)
+        self.assertTrue(fa and fb)
+        self.assertEqual(a, b)
+
+    def test_no_immediate_repeat(self):
+        tone = runner._ProgressTone("TKT-20260818-0001")
+        notes = [
+            "installing the dnf package now",
+            "configuring ssh access on the gateway",
+            "applying the apt-get update now",
+            "curl the device list from unifi",
+            "checking the journalctl output",
+            "verifying the dnf transaction result",
+            "waiting for the long dnf transaction",
+        ]
+        seen = []
+        for n in notes:
+            phrase, filtered = tone.friendly(n)
+            self.assertTrue(filtered, f"should be technical: {n!r}")
+            self.assertIn(phrase, runner._FRIENDLY_PROGRESS)
+            if seen:
+                self.assertNotEqual(phrase, seen[-1], "consecutive notes must differ")
+            seen.append(phrase)
+
+    def test_adversarial_technical_strings_scrub(self):
+        adversarial = [
+            "cat /etc/shadow && echo uid=1001 > /tmp/x",
+            "sudo sed -i s/foo/bar/ /etc/hosts",
+            "POST https://localhost/api/v1/jobs/result with bearer token",
+            "user barenoc uid 1001 gid 1001 NOPASSWD: ALL",
+            "192.168.4.207 ssh root@0.0.0.0",
+            "chmod 777 /opt/barenoc/volumes/secrets/llm_provider.json",
+        ]
+        for raw in adversarial:
+            with self.subTest(raw=raw[:40]):
+                friendly, filtered = runner._friendly_progress_note(raw)
+                self.assertTrue(filtered, f"should scrub: {raw!r}")
+                self.assertIn(friendly, runner._FRIENDLY_PROGRESS)
+                for leak in ("/", "sudo", "uid", "192.168", "http", "token", "\t"):
+                    self.assertNotIn(leak, friendly,
+                                     f"leak {leak!r} in {friendly!r}")
+
+
+class ProgressHeartbeatTest(unittest.TestCase):
+    """Elapsed-time heartbeat: long pi tasks (>2 min with no distinct activity)
+    inject a keep-alive note; every Nth heartbeat carries the elapsed time."""
+
+    def test_elapsed_heartbeat_text(self):
+        self.assertEqual(
+            runner._elapsed_heartbeat(59),
+            "Still working — about 1 min in — this one's a longer task…")
+        self.assertIn("3 min in", runner._elapsed_heartbeat(180))
+        self.assertIn("longer task", runner._elapsed_heartbeat(180))
+        self.assertIn("1h", runner._elapsed_heartbeat(3600))
+
+    def test_heartbeat_phrase_every_nth_includes_elapsed(self):
+        # every 3rd heartbeat carries the elapsed-time text
+        self.assertIn("min in", runner._heartbeat_phrase(180, 3))
+        # the others draw a varied waiting phrase (no elapsed text)
+        for nth in (1, 2):
+            p = runner._heartbeat_phrase(180, nth)
+            self.assertIn(p, runner._TONE_POOL["waiting"])
+            self.assertNotIn("min in", p)
+
+    def test_progress_tone_heartbeat_gating(self):
+        tone = runner._ProgressTone("TKT-1", started_at=1000.0)
+        self.assertIsNone(tone.heartbeat(1119))          # before 2 min
+        hb = tone.heartbeat(1120)                        # 120s elapsed, idle 120s
+        self.assertIsNotNone(hb)
+        self.assertEqual(tone.last_note_at, 1120)
+        self.assertIsNone(tone.heartbeat(1160))          # only 40s of idle
+        self.assertIsNotNone(tone.heartbeat(1165))       # 45s idle gap met
+
+    def test_progress_tone_heartbeat_every_third_elapsed(self):
+        tone = runner._ProgressTone("TKT-1", started_at=0.0)
+        phrases = []
+        now = 120.0
+        for _ in range(3):
+            tone.last_note_at = now - 45   # ensure the idle gap is met
+            hb = tone.heartbeat(now)
+            self.assertIsNotNone(hb)
+            phrases.append(hb)
+            now += 45
+        self.assertIn("min in", phrases[2])
+        self.assertNotIn("min in", phrases[0])
+        self.assertNotIn("min in", phrases[1])
+
+
+class TonePoolParityTest(unittest.TestCase):
+    """The runner VENDORS its pool/patterns from src/api/tone_pool.py (it
+    deploys as a single self-contained file). Assert the copies stay in sync so
+    the runner and the API-side queue_status speak the same vocabulary."""
+
+    def test_runner_matches_shared_module(self):
+        api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api")
+        sys.path.insert(0, api_dir)
+        import tone_pool
+        self.assertEqual(runner._TONE_POOL, tone_pool._POOL)
+        self.assertEqual(runner._CATEGORY_KEYWORDS, tone_pool._CATEGORY_KEYWORDS)
+        self.assertEqual(runner._CATEGORIES, tone_pool.CATEGORIES)
+        self.assertEqual(
+            [p.pattern for p in runner._TECH_NOTE_PATTERNS],
+            [p.pattern for p in tone_pool._TECH_NOTE_PATTERNS])
+        self.assertEqual(runner._FRIENDLY_PROGRESS, tone_pool.all_phrases())
+
 
 class ProgressSnippetTest(unittest.TestCase):
     """Progress notes must fit a real pi answer (2000 chars, not the old 250)

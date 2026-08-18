@@ -216,6 +216,85 @@ class DirectiveTest(unittest.TestCase):
         self.assertIsNone(juniper.parse_directive("close this port on the switch"))
 
 
+class CloseIntentTest(unittest.TestCase):
+    """close_intent / ack_intent — the ticket-thread close/ack detectors."""
+
+    def test_close_bare(self):
+        self.assertTrue(juniper.close_intent("close"))
+
+    def test_close_yes_please(self):
+        self.assertTrue(juniper.close_intent("yes, please close"))
+
+    def test_close_yes_please_no_comma(self):
+        self.assertTrue(juniper.close_intent("yes please close"))
+
+    def test_close_the_ticket(self):
+        self.assertTrue(juniper.close_intent("close the ticket"))
+
+    def test_close_this_ticket(self):
+        self.assertTrue(juniper.close_intent("close this ticket"))
+
+    def test_close_you_can_close_it(self):
+        self.assertTrue(juniper.close_intent("you can close it"))
+
+    def test_close_done_thanks_close_it(self):
+        self.assertTrue(juniper.close_intent("done, thanks — close it"))
+
+    def test_close_go_ahead_and_close(self):
+        self.assertTrue(juniper.close_intent("go ahead and close"))
+
+    def test_close_please_close_the_ticket(self):
+        self.assertTrue(juniper.close_intent("please close the ticket"))
+
+    def test_close_confirmed_close_it(self):
+        self.assertTrue(juniper.close_intent("confirmed, close it"))
+
+    def test_close_port_is_not_a_ticket_close(self):
+        self.assertFalse(juniper.close_intent("close this port on the switch"))
+
+    def test_close_port_5_is_not_a_ticket_close(self):
+        self.assertFalse(juniper.close_intent("please close port 5"))
+
+    def test_close_mixed_request_is_not_a_pure_close(self):
+        # A new work request that also mentions closing must still dispatch.
+        self.assertFalse(juniper.close_intent("please install the update and close the ticket"))
+
+    def test_close_not_how_to(self):
+        # "how do I close…" is a question, not a close request.
+        self.assertFalse(juniper.close_intent("how do I close the ticket"))
+
+    def test_ack_thanks(self):
+        self.assertTrue(juniper.ack_intent("thanks"))
+
+    def test_ack_thank_you(self):
+        self.assertTrue(juniper.ack_intent("thank you"))
+
+    def test_ack_ok(self):
+        self.assertTrue(juniper.ack_intent("ok"))
+
+    def test_ack_got_it(self):
+        self.assertTrue(juniper.ack_intent("got it"))
+
+    def test_ack_sounds_good(self):
+        self.assertTrue(juniper.ack_intent("sounds good"))
+
+    def test_ack_confirmed(self):
+        self.assertTrue(juniper.ack_intent("confirmed"))
+
+    def test_ack_that_works(self):
+        self.assertTrue(juniper.ack_intent("that works"))
+
+    def test_ack_its_fixed(self):
+        self.assertTrue(juniper.ack_intent("it's fixed"))
+
+    def test_ack_not_a_new_request(self):
+        self.assertFalse(juniper.ack_intent("please run updates"))
+
+    def test_ack_not_close(self):
+        # ack_intent only handles thanks/ack — a close is close_intent's job.
+        self.assertFalse(juniper.ack_intent("yes, please close"))
+
+
 class CloseDirectiveHandlerTest(unittest.TestCase):
     """DB-backed close directive behavior (owner/operator/admin gated)."""
 

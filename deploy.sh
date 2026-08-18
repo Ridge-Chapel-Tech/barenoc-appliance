@@ -106,7 +106,7 @@ ssh "$VM" "crontab -l 2>/dev/null | grep -q backup_app.sh || (crontab -l 2>/dev/
 
 # Shared modules the worker image needs in its build context (see worker/Dockerfile).
 # They live in api/ in the repo; copy into the worker context on the VM.
-SHARED_MODULES=(action_validator.py audit.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py llm_providers.py emailer.py)
+SHARED_MODULES=(action_validator.py audit.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py llm_providers.py emailer.py)
 
 # Sync each service directory (no --delete: VM may have runtime-only files).
 rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/api/"            "$VM:/opt/barenoc/api/"
@@ -131,21 +131,16 @@ ssh "$VM" "sudo install -m 0755 /tmp/barenoc-self-update.sh /usr/local/bin/ && \
 ssh "$VM" 'grep -qE "^ENCRYPTION_KEY=.+" /opt/barenoc/.env || \
   (echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/barenoc/.env && echo "ENCRYPTION_KEY added") || true'
 
-# Agent runner: /opt/barenoc/agent/ is owned by pi-agent, so only sync when changed
-if ! diff -q "$SRC/agent/runner.py" <(ssh "$VM" "cat /opt/barenoc/agent/runner.py" 2>/dev/null) >/dev/null 2>&1; then
-  echo "==> Agent runner.py changed; copying via temp (needs pi-agent access)"
-  # runner identity convergence: docker-group traversal of /opt/barenoc + the
-  # pi-agent-owned job queue and log (fresh installs get this via the provision;
-  # existing installs converge here). pi-agent's docker group was REMOVED (see
-  # setup_agent_credentials.sh — docker membership = self-harm vector).
-  ssh "$VM" "sudo chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent 2>/dev/null; \
-    sudo chown -R pi-agent:pi-agent /opt/barenoc/agent 2>/dev/null || true"
-  scp -q "$SRC/agent/runner.py" "$VM:/tmp/runner.py"
-  if ! ssh "$VM" "sudo -u pi-agent cp /tmp/runner.py /opt/barenoc/agent/runner.py && sudo systemctl restart pi-agent-runner" 2>/dev/null; then
-    echo "!! Could not update agent runner (needs sudo). Deploy manually:"
-    echo "   ssh $VM 'sudo -u pi-agent cp /tmp/runner.py /opt/barenoc/agent/runner.py'"
-  fi
-fi
+# Agent runner + systemd unit: /opt/barenoc/agent/ is pi-agent-owned
+# (deliberately NOT the docker group — see provision_agent.sh), so sync via
+# temp + sudo install. The unit file here is the single source of truth for
+# pi-agent-runner.service; the shared provision step installs it from here.
+scp -q "$SRC/agent/runner.py" "$SRC/agent/pi-agent-runner.service" "$VM:/tmp/"
+ssh "$VM" "sudo mkdir -p /opt/barenoc/agent /opt/barenoc/volumes/logs/agent && \
+  sudo chown -R pi-agent:pi-agent /opt/barenoc/agent /opt/barenoc/volumes/logs/agent /opt/barenoc/jobs /opt/barenoc/pi-work 2>/dev/null || true; \
+  sudo install -o pi-agent -g pi-agent -m 0644 /tmp/runner.py /opt/barenoc/agent/runner.py && \
+  sudo install -o pi-agent -g pi-agent -m 0644 /tmp/pi-agent-runner.service /opt/barenoc/agent/pi-agent-runner.service && \
+  rm -f /tmp/runner.py /tmp/pi-agent-runner.service"
 
 for m in "${SHARED_MODULES[@]}"; do
   rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/api/$m" "$VM:/opt/barenoc/worker/$m"
@@ -196,8 +191,12 @@ ssh "$VM" 'set -e
     echo "main vhost CA-signed cert present (appliance-IP SAN) — keeping"
   fi'
 
-echo "==> Rebuilding stack (docker compose up --build -d)"
-ssh "$VM" "cd /opt/barenoc && docker compose up --build -d"
+# Health-order guard: bring up everything EXCEPT the scheduler first, so the
+# shared agent provision step can create the agent credentials (which needs the
+# api container) BEFORE the scheduler starts. The scheduler is started below,
+# after provisioning — otherwise it 401-floods on a fresh install (08-14/08-18).
+echo "==> Rebuilding stack (all but scheduler — scheduler starts after agent provisioning)"
+ssh "$VM" "cd /opt/barenoc && docker compose up --build -d api worker nginx step-ca pocket-id dns"
 
 echo "==> Waiting for API to come up..."
 API_UP=0
@@ -209,8 +208,8 @@ for i in $(seq 1 30); do
   sleep 2
 done
 if [ "$API_UP" != "1" ]; then
-  echo "!! WARNING: API not healthy after 60s — continuing, but the agent-credentials" >&2
-  echo "   step below will abort loudly if it can't reach the api (fresh-install bug class)." >&2
+  echo "!! WARNING: API not healthy after 60s — continuing, but the shared agent" >&2
+  echo "   provision step below will abort loudly if it can't reach the api (fresh-install bug class)." >&2
 fi
 
 # nginx config is a bind-mounted file — restart nginx to pick up changes (e.g. Pocket ID route)
@@ -243,13 +242,23 @@ RENDER
 # step-cli builds for self-service onboarding (Linux + macOS; fetched once)
 ssh "$VM" 'sudo mkdir -p /opt/barenoc/volumes/static && sudo chown barenoc:docker /opt/barenoc/volumes/static && for p in "step:step_linux_amd64" "step-cli-darwin_amd64:step_darwin_amd64" "step-cli-darwin_arm64:step_darwin_arm64"; do out="${p%%:*}"; src="${p##*:}"; [ -s "/opt/barenoc/volumes/static/$out" ] && continue; (cd /tmp && curl -sL "https://dl.smallstep.com/gh-release/cli/gh-release-header/v0.30.2/${src}.tar.gz" -o s.tgz && tar xzf s.tgz && find "${src}" -name step -type f -exec cp {} "/opt/barenoc/volumes/static/$out" \; && chmod 755 "/opt/barenoc/volumes/static/$out" && rm -rf s.tgz "${src}" && echo "fetched $out") || true; done'
 
-# Agent service credentials: create/rotate the `agent` service account + 0600
-# credential file (needs the api container up). Idempotent.
-echo "==> Provisioning agent service credentials"
-ssh "$VM" "sudo bash /opt/barenoc/scripts/setup_agent_credentials.sh"
+# Shared agent provisioning — the single step every install path converges on
+# (appliance installer, ISO first-boot, and this deploy). Does: dirs, runner
+# unit install + enable + start, agent credentials (api-healthy-before-creds +
+# file↔DB login-200 agreement, loud failure). Idempotent.
+echo "==> Provisioning agent (credentials + runner unit + runner)"
+ssh "$VM" "sudo bash /opt/barenoc/scripts/provision_agent.sh"
 
-# Restart the agent runner so it picks up any runner.py changes (pi-agent-owned dir)
-ssh "$VM" "sudo systemctl restart pi-agent-runner 2>/dev/null && echo 'agent runner restarted' || echo 'agent runner restart skipped (needs sudo)'"
+# Scheduler LAST — it must come up with credentials already in place.
+# --force-recreate guarantees a fresh container (and a fresh log) so the
+# post-install scheduler-log check below can't read stale pre-deploy errors.
+echo "==> Starting scheduler (after agent provisioning)"
+ssh "$VM" "cd /opt/barenoc && docker compose up --build -d --force-recreate scheduler"
+
+# Post-install verification — scheduler logs too, not just health 200 (08-09).
+echo "==> Verifying agent provisioning (login / runner / scheduler logs)"
+ssh "$VM" "sudo bash /opt/barenoc/scripts/verify_agent_provision.sh" \
+  || echo "!! post-install verification FAILED — see checklist above" >&2
 
 echo "==> Container status:"
 ssh "$VM" "cd /opt/barenoc && docker compose ps"

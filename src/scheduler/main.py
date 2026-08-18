@@ -18,7 +18,11 @@ API_BASE = "http://api:8000/api/v1"
 POLL_INTERVAL = 300  # 5 minutes
 HEALTH_INTERVAL = 60  # 1 minute for connectivity checks
 ENV_PATH = "/opt/barenoc/.env"
+CREDS_PATH = "/opt/barenoc/agent/credentials"
 AUTOSYNC_INTERVALS = (5, 10, 15, 30, 60)  # allowed minutes
+# Startup guard: wait this long (s) for the api to be healthy AND the agent
+# credentials to log in before the main loop starts (the 08-14/08-18 family).
+STARTUP_READY_TIMEOUT = 600
 
 
 def _read_env() -> dict:
@@ -38,13 +42,65 @@ def _read_env() -> dict:
     return env
 
 
+def _creds_file_ready() -> bool:
+    """True when the agent credentials file exists as a REGULAR FILE. (A stale
+    directory at this path — an old install bug — would break the scheduler's
+    bind mount forever, so we only proceed on a real file.)"""
+    return os.path.isfile(CREDS_PATH)
+
+
+def _api_health_ok() -> bool:
+    """Unauthenticated api health probe; True only on HTTP 200."""
+    try:
+        req = urllib.request.Request(f"{API_BASE}/health")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _wait_for_ready(max_wait_seconds: int = STARTUP_READY_TIMEOUT) -> str:
+    """Startup guard — block until the api is healthy AND the agent credentials
+    file exists + logs in (200). Retries with VISIBLE logging instead of
+    letting the main loop 401-flood every cycle (the 08-14/08-18 pattern).
+
+    Returns a fresh token when ready, "" when it gave up (the loop then keeps
+    logging loudly — it never goes silent)."""
+    deadline = time.time() + max_wait_seconds
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        if not _api_health_ok():
+            logger.info(f"Waiting for api to become healthy (attempt {attempt})…")
+            time.sleep(5)
+            continue
+        if not _creds_file_ready():
+            logger.warning(
+                f"api healthy but agent credentials file missing (attempt {attempt}) — "
+                f"waiting; run scripts/setup_agent_credentials.sh if this persists")
+            time.sleep(5)
+            continue
+        token = _get_token()
+        if token:
+            logger.info(f"api healthy + agent credentials verified (attempt {attempt})")
+            return token
+        logger.warning(
+            f"api healthy but agent login failed (attempt {attempt}) — credentials file "
+            f"and DB may be out of sync; run scripts/setup_agent_credentials.sh")
+        time.sleep(5)
+    logger.error(
+        "Timed out waiting for api health + agent credentials — entering the loop "
+        "anyway (subsequent errors will be logged loudly)")
+    return ""
+
+
 def _get_token() -> str:
     """Get API token for the agent service account (credentials file is
     provisioned by scripts/setup_agent_credentials.sh and mounted read-only;
     never hardcode API credentials in code)."""
     creds = {}
     try:
-        with open("/opt/barenoc/agent/credentials") as f:
+        with open(CREDS_PATH) as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
@@ -450,6 +506,11 @@ def run():
     """Main scheduler loop."""
     logger.info("BareNOC Scheduler starting...")
     os.makedirs("/opt/barenoc/jobs/incoming", exist_ok=True)
+
+    # Health-order guard: on a fresh install the scheduler must not start its
+    # poll loop (and 401-flood) before the api is healthy and the agent
+    # credentials exist. Wait loudly, then proceed.
+    _wait_for_ready()
 
     last_health = 0
     last_snmp = 0

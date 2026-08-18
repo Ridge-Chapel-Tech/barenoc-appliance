@@ -174,6 +174,14 @@ def process_ticket(db, ticket):
         logger.info(f"Ticket {ticket.ticket_id}: paused — skipping")
         return
 
+    # Close-directive + no-reinvestigate (TKT-20260818-5615): when the agent
+    # already completed the work and the customer's latest reply is only a
+    # close/ack/thanks, handle it inline — close or a short ack note — and
+    # never dispatch a fresh re-investigating session. Non-close follow-ups on
+    # a completed ticket still dispatch normally.
+    if _handle_close_intent(db, ticket):
+        return
+
     ticket_id = ticket.ticket_id
     logger.info(f"Processing ticket {ticket_id}: {ticket.title}")
 
@@ -654,6 +662,141 @@ def _last_note_event(ticket) -> str:
     """Event name of the most recent work note ("" if none)."""
     notes = _notes_list(ticket)
     return (notes[-1].get("event") or "") if notes else ""
+
+
+# ── ticket close-directive (autonomous tickets honor a customer's "close") ──
+# The re-dispatch trigger: a completed ticket (last work event agent_completed)
+# that gets a new customer reply re-enters process_ticket via the poll loop's
+# re_process set; in autonomous mode _dispatch_pi re-spawned a fresh session
+# that re-investigated from scratch (TKT-20260818-5615 — the customer asked
+# twice to close). These helpers detect close/ack intent on the latest reply
+# and handle it inline so no session is ever dispatched for a close/ack.
+
+# Work events that mark where the technician actually is. Chatter notes
+# (user_message, ai_tech_feedback, agent_progress, agent_retry) are skipped so
+# the latest agent_completed stays visible even after the confirm-ask note.
+_TERMINAL_WORK_EVENTS = (
+    "processing", "auto_execute", "agent_completed", "agent_failed",
+    "escalated", "closed", "customer_input", "awaiting_approval",
+)
+
+
+def _latest_user_message(ticket) -> "dict | None":
+    """The most recent user_message note (the customer's latest reply)."""
+    for n in reversed(_notes_list(ticket)):
+        if n.get("event") == "user_message":
+            return n
+    return None
+
+
+def _work_state(ticket) -> str:
+    """The latest work event (skipping chatter), or "" when never worked."""
+    for n in reversed(_notes_list(ticket)):
+        if n.get("event") in _TERMINAL_WORK_EVENTS:
+            return n.get("event") or ""
+    return ""
+
+
+def _close_actor(db, ticket) -> tuple:
+    """(actor_username, actor_user) for the customer's latest reply."""
+    note = _latest_user_message(ticket)
+    username = (note.get("actor") or "").strip() if note else ""
+    user = db.query(User).filter(User.username == username).first() if username else None
+    return username, user
+
+
+def _requester_name(db, ticket) -> str:
+    sub = db.query(User).filter(User.id == ticket.submitter_id).first() if ticket.submitter_id else None
+    return (sub.username or "the requester") if sub else "the requester"
+
+
+def _can_close(ticket, user) -> bool:
+    """Requester or admin/operator/technician may close. A non-requester
+    (e.g. another tenant or a readonly user) gets routed to
+    'waiting on <requester> to verify'."""
+    if user is None:
+        return False
+    if user.role in ("admin", "operator"):
+        return True
+    return ticket.submitter_id == user.id
+
+
+def _close_ticket_inline(db, ticket, username, user) -> None:
+    """Close a completed ticket inline (no pi session) at the customer's
+    explicit request. Mirrors the API PATCH close + Juniper's close."""
+    if not _can_close(ticket, user):
+        req = _requester_name(db, ticket)
+        add_note(ticket, "customer_input",
+                 f"Waiting on {req} to verify before this ticket can be closed.")
+        ticket.status = "customer_action"
+        ticket.resolution = f"Waiting on {req} to verify"
+        ticket.assigned_to = "customer"
+        db.commit()
+        log_event(db, "customer_action", "system", {
+            "ticket_id": ticket.ticket_id,
+            "reason": f"non-requester ({username or 'unknown'}) asked to close; "
+                      f"waiting on {req}",
+        }, ticket.ticket_id)
+        return
+
+    who = username or "customer"
+    ticket.status = "closed"
+    ticket.resolved_at = datetime.datetime.utcnow()
+    ticket.assigned_to = who  # record who closed it (mirrors the API PATCH)
+    ticket.resolution = "Closed at the customer's request"
+    add_note(ticket, "closed", f"Closed by {who} — customer confirmed.", actor=who)
+    db.commit()
+    log_event(db, "ticket_closed", "system", {
+        "ticket_id": ticket.ticket_id, "by": who, "via": "close-directive",
+    }, ticket.ticket_id)
+
+
+def _ack_ticket_inline(db, ticket) -> None:
+    """A thanks/ack on a completed ticket: a short friendly note, no session."""
+    add_note(ticket, "ai_tech_feedback",
+             f"You're welcome! Glad it's sorted. Just say 'close' whenever you'd "
+             f"like me to close this ticket.")
+    ticket.status = "customer_action"
+    ticket.assigned_to = "customer"
+    db.commit()
+
+
+def _handle_close_intent(db, ticket) -> bool:
+    """Detect + handle a close/ack reply inline. Returns True when the message
+    was consumed (the caller must stop processing — no dispatch)."""
+    note = _latest_user_message(ticket)
+    if not note:
+        return False
+    text = (note.get("detail") or "").strip()
+    if not text:
+        return False
+
+    close = juniper.close_intent(text)
+    ack = juniper.ack_intent(text)
+    state = _work_state(ticket)
+
+    if state == "agent_completed":
+        if close or ack:
+            username, user = _close_actor(db, ticket)
+            if close:
+                _close_ticket_inline(db, ticket, username, user)
+            else:
+                _ack_ticket_inline(db, ticket)
+            return True
+        # Non-close follow-up on a completed ticket (a NEW request) dispatches
+        # normally.
+        return False
+
+    # Mid-work ticket + close: don't close (the work isn't done) and don't
+    # re-dispatch — a polite note instead.
+    if close:
+        add_note(ticket, "ai_tech_feedback",
+                 f"Noted — this ticket is still open, so I'll close it once the "
+                 f"work is done. You can also close it anytime from the ticket page.")
+        db.commit()
+        return True
+
+    return False
 
 
 def _count_retry_notes(ticket) -> int:

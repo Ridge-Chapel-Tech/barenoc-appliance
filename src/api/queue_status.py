@@ -17,6 +17,8 @@ import anything outside stdlib + the ticket object's attributes).
 import json
 import datetime
 
+from tone_pool import friendly_note
+
 
 # Stage derived from the last meaningful work_note event. The chat thread can
 # query this repeatedly while the technician works — it never mutates the
@@ -76,6 +78,12 @@ def derive_status(ticket, now=None) -> dict:
     ev = (n or {}).get("event") or ""
     kind, label_t = STATUS_STAGES.get(ev, ("waiting", "No activity yet — queued"))
     detail = str((n or {}).get("detail") or "")[:200]
+    # Parity with the runner's progress filter: for agent_progress (live AI work
+    # notes), a technical detail is scrubbed to a category-matched friendly
+    # phrase from the shared tone pool, so the /status label never leaks paths,
+    # sudo/uids, IPs, or API detail. Friendly details pass through unchanged.
+    if ev == "agent_progress" and detail:
+        detail, _ = friendly_note(detail)
     label = label_t.format(detail=detail) if detail else label_t.split("{")[0].rstrip(" — ")
     at = parse_note_time(n)
 

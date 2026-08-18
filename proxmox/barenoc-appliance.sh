@@ -13,8 +13,9 @@
 #   2. Creates a VM sized by --profile (see PROFILE_MATRIX below) with
 #      cloud-init: `barenoc` user + your SSH key, static IP, qemu-guest-agent.
 #   3. Injects an OS-provisioning cloud-init user-data (Docker, pi-agent user +
-#      the Pi Coding Agent runtime, pi-agent-runner.service, UFW, /opt/barenoc
-#      skeleton) that runs once on first boot.
+#      the Pi Coding Agent runtime, UFW, /opt/barenoc skeleton) that runs once
+#      on first boot. The agent runner unit + credentials are installed by the
+#      shared provision step during the deploy (see scripts/provision_agent.sh).
 #   4. Waits for SSH + the provisioning marker, then runs ./deploy.sh
 #      barenoc@<ip> to install the application (containers, agent creds,
 #      runner sync) — the same single deploy path used for updates.
@@ -226,35 +227,12 @@ chown barenoc:docker /opt/barenoc/volumes /opt/barenoc/jobs /opt/barenoc/backups
 # the runner's writable trees are pi-agent-owned (job queue + its log)
 chown -R pi-agent:pi-agent /opt/barenoc/jobs /opt/barenoc/volumes/logs/agent
 
-# agent runner systemd unit (runs as pi-agent; ProtectHome=no for the pi runtime)
-cat > /etc/systemd/system/pi-agent-runner.service <<'UNIT'
-[Unit]
-Description=BareNOC Pi Agent Runner
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-User=pi-agent
-Group=pi-agent
-ExecStart=/usr/bin/python3 /opt/barenoc/agent/runner.py
-WorkingDirectory=/opt/barenoc
-Restart=always
-RestartSec=5
-StandardOutput=append:/opt/barenoc/volumes/logs/agent/agent.log
-StandardError=append:/opt/barenoc/volumes/logs/agent/agent.log
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=full
-ProtectHome=no
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_RAW
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload
-systemctl enable pi-agent-runner   # survive reboots
+# The pi-agent-runner systemd unit is NOT installed here. It is installed +
+# enabled + started by the shared agent provision step (scripts/provision_agent.sh)
+# during the app deploy — AFTER runner.py and the agent credentials exist.
+# Installing/enabling it at first boot would start a runner with no runner.py
+# and no credentials (the 08-18 fresh-install bug class). This pass only lays
+# the OS/runtime groundwork + the /opt/barenoc skeleton.
 
 # firewall: ssh + 443 (+8443 for Pocket ID)
 ufw --force reset

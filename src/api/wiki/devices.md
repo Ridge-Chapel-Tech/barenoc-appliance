@@ -73,6 +73,10 @@ API's device endpoints require a client cert signed by that CA root. Devices
 without step-cli can still be claimed with SSH (fallback) or adopted via the
 UniFi controller — cert adoption is the preferred, revocable path.
 
+**Prefer an endpoint agent?** For servers and workstations you can install
+**NOC Agent** — the device dials out over mTLS and runs safe actions locally
+(no inbound SSH, no stored credentials). See [NOC Agent](/wiki/noc-agent).
+
 Click **Take ownership** — give it a name, type (gateway/switch/ap/server/
 workstation/printer), vendor/model, and optionally SNMP/SSH credentials.
 Claimed devices become **onboarded**: they're monitored (ping/status), appear

@@ -212,6 +212,79 @@ def parse_directive(text: str, now=None) -> dict:
     return None
 
 
+# ── ticket-thread close intent (autonomous tickets) ─────────────────────────
+# parse_directive above covers the Juniper DM conduit ("close TKT-…", "close
+# the ticket"). The TICKET THREAD needs a broader detector: a customer replying
+# in a completed ticket's thread ("yes, please close", "you can close it",
+# "close", "done, thanks — close it") must close the ticket inline — never
+# spawn a fresh re-investigating session (TKT-20260818-5615). These pure
+# functions are shared with the worker pipeline (main.process_ticket).
+
+# Objects a "close" may target that are NOT the ticket — a close request for
+# these is a device/rule/UI action, never a ticket close.
+_CLOSE_NEGATIVE_OBJECTS = frozenset({
+    "port", "ports", "gap", "app", "apps", "application", "applications",
+    "window", "windows", "tab", "tabs", "program", "programs", "case", "cases",
+    "file", "files", "rule", "rules", "firewall", "vlan", "vlans", "ssid",
+    "ssids", "account", "accounts", "network", "networks", "service",
+    "services", "server", "servers", "device", "devices", "switch", "switches",
+    "router", "routers", "connection", "connections", "session", "sessions",
+    "terminal", "shell", "process", "processes", "ssh", "stream", "streams",
+})
+
+# Every word in a pure close request is close-related filler. Any other word
+# (a new-work verb, an object) means the message isn't ONLY a close request.
+_CLOSE_FILLER = frozenset({
+    "a", "an", "all", "and", "ahead", "can", "close", "closed", "closing",
+    "confirm", "confirmed", "done", "feel", "fine", "for", "free", "go",
+    "good", "great", "is", "it", "me", "my", "now", "ok", "okay", "our",
+    "out", "perfect", "please", "pls", "plz", "request", "sure", "thanks",
+    "thank", "that", "the", "this", "thx", "ticket", "to", "ty", "works",
+    "working", "yeah", "yep", "yes", "you", "your", "yup", "issue",
+})
+
+# Thanks/ack filler: a completed ticket where the customer says only one of
+# these is an ack, handled inline (short note) rather than re-dispatched.
+_ACK_FILLER = frozenset({
+    "all", "appreciate", "appreciated", "awesome", "cheers", "confirm",
+    "confirmed", "cool", "done", "excellent", "fixed", "good", "got", "great",
+    "it", "its", "k", "looks", "much", "nice", "ok", "okay", "perfect",
+    "perfecto", "resolved", "set", "so", "sound", "sounds", "sweet", "thank",
+    "thanks", "that", "thx", "tnx", "ty", "wonderful", "work", "working",
+    "works", "you",
+})
+
+
+def _normalize_intent_text(text: str) -> str:
+    """Lowercase, collapse whitespace, drop apostrophes/em-dashes for matching."""
+    return re.sub(r"['’]", "", " ".join((text or "").lower().split()))
+
+
+def close_intent(text: str) -> bool:
+    """True when the message is an explicit request to close the TICKET (not a
+    port/rule/app/etc.) — 'close', 'yes, please close', 'close the ticket',
+    'you can close it', 'done, thanks — close it'."""
+    t = _normalize_intent_text(text)
+    if not re.search(r"\bclose\b", t):
+        return False
+    # "close <det> <object>" with a non-ticket object is a device/UI action.
+    m = re.search(
+        r"\bclose\b\s+(?:the\s+|this\s+|that\s+|a\s+|an\s+|my\s+|our\s+)?([a-z]+)", t)
+    if m and m.group(1) in _CLOSE_NEGATIVE_OBJECTS:
+        return False
+    # A pure close request has only close-related words (no new-work verbs).
+    return all(w in _CLOSE_FILLER for w in re.findall(r"[a-z]+", t))
+
+
+def ack_intent(text: str) -> bool:
+    """True when the message is ONLY a thanks/ack/confirmation — no new work
+    ('thanks', 'ok', 'got it', 'sounds good', 'confirmed', 'that works')."""
+    tokens = re.findall(r"[a-z]+", _normalize_intent_text(text))
+    if not tokens:
+        return False
+    return all(w in _ACK_FILLER for w in tokens)
+
+
 # ── authorization ───────────────────────────────────────────────────────────
 
 def can_direct(ticket, user) -> bool:

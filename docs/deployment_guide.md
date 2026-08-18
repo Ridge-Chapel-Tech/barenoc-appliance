@@ -174,7 +174,14 @@ run `./deploy.sh barenoc@<ip>` yourself later.
 <a id="a5-verification-checklist"></a>
 ### A5. Verification checklist
 
+The installer runs the shared agent-provision step (`scripts/provision_agent.sh`)
+plus a post-install verification (`scripts/verify_agent_provision.sh`) that
+surfaces three lines — **agent login verified**, **runner active**, **scheduler
+0 errors** (it checks scheduler logs, not just health 200 + a minted token).
+
 - [ ] `https://<vm-ip>/api/v1/health` → `200` (all 7 containers up)
+- [ ] `sudo bash /opt/barenoc/scripts/verify_agent_provision.sh` → all ✓
+      (agent login verified · runner active · scheduler 0 errors)
 - [ ] First login forces a password change
 - [ ] `systemctl status pi-agent-runner` on the VM → active (runs as `pi-agent`)
 - [ ] UniFi sync discovers gear (`Settings → UniFi → Test connection`)

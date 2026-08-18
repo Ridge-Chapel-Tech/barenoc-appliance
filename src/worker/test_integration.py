@@ -648,6 +648,134 @@ def main():
        worker._pi_run_active(tt) is False)
     db.close()
 
+    # 23-28. TICKET CLOSE-DIRECTIVE: a completed ticket's close/ack reply is
+    # handled inline (close or ack note), never re-dispatched to a fresh pi
+    # session (TKT-20260818-5615); non-close follow-ups still dispatch; owner
+    # gating (requester or operator/admin may close).
+    from models import User as _U
+    _db = SessionLocal()
+    _owner = _U(username="close-owner", display_name="Owner",
+                hashed_password="x", role="tenant", is_active=True)
+    _other = _U(username="close-other", display_name="Other",
+                hashed_password="x", role="tenant", is_active=True)
+    _op = _U(username="close-op", display_name="Operator",
+             hashed_password="x", role="operator", is_active=True)
+    _db.add_all([_owner, _other, _op])
+    _db.commit()
+    _owner_id = _owner.id
+    _db.close()
+
+    def _completed(actor, message, submitter_id=None):
+        t = make_ticket("can you run updates on my Laptop?", "P3")
+        db = SessionLocal()
+        tt = db.query(Ticket).filter(Ticket.id == t.id).first()
+        tt.submitter_id = submitter_id if submitter_id is not None else _owner_id
+        worker.add_note(tt, "agent_completed", "updates applied — task done")
+        worker.add_note(tt, "user_message", message, actor=actor)
+        tt.status = "customer_action"
+        db.commit()
+        tid = tt.ticket_id
+        db.close()
+        return tid
+
+    os.environ["LLM_POLICY_PROFILE"] = "autonomous"
+    os.environ["PI_AGENT_ENABLED"] = "true"
+    reset_policy_cache()
+
+    # 23. completed + close (requester) -> closed inline, no pi job file
+    tid = _completed("close-owner", "yes, please close")
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: completed+close -> closed", tt.status == "closed", tt.status)
+    ok("close-directive: resolved_at set", tt.resolved_at is not None)
+    ok("close-directive: assigned_to = who closed", tt.assigned_to == "close-owner",
+       tt.assigned_to or "")
+    ok("close-directive: no pi job file",
+       not os.path.exists(os.path.join(worker.JOBS_INCOMING, f"{tid}.json")))
+    db.close()
+
+    # 24. completed + ack -> short ack note, no dispatch, stays customer_action
+    tid = _completed("close-owner", "thanks!")
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: completed+ack -> stays customer_action",
+       tt.status == "customer_action", tt.status)
+    notes = worker._notes_list(tt)
+    ok("close-directive: ack note posted",
+       any("say 'close'" in (n.get("detail") or "") for n in notes),
+       str([n.get("detail") for n in notes[-3:]]))
+    ok("close-directive: ack -> no pi job file",
+       not os.path.exists(os.path.join(worker.JOBS_INCOMING, f"{tid}.json")))
+    db.close()
+
+    # 25. completed + NEW request -> normal dispatch (a fresh pi session)
+    tid = _completed("close-owner", "please run updates again")
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: completed+new request -> dispatches",
+       tt.status == "in_progress" and tt.action == "pi_task",
+       f"status={tt.status} action={tt.action}")
+    jpath = os.path.join(worker.JOBS_INCOMING, f"{tid}.json")
+    ok("close-directive: new request -> pi job file written", os.path.exists(jpath))
+    if os.path.exists(jpath):
+        os.remove(jpath)
+    db.close()
+
+    # 26. completed + close by NON-requester -> waiting on requester, no close
+    tid = _completed("close-other", "close the ticket", submitter_id=_owner_id)
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: non-requester close -> not closed",
+       tt.status == "customer_action", tt.status)
+    notes = worker._notes_list(tt)
+    ok("close-directive: non-requester -> waiting on requester note",
+       any("Waiting on close-owner" in (n.get("detail") or "") for n in notes),
+       str([n.get("detail") for n in notes[-3:]]))
+    ok("close-directive: non-requester -> no pi job file",
+       not os.path.exists(os.path.join(worker.JOBS_INCOMING, f"{tid}.json")))
+    db.close()
+
+    # 27. completed + close by operator (technician) -> closed
+    tid = _completed("close-op", "close it", submitter_id=_owner_id)
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: operator close -> closed", tt.status == "closed", tt.status)
+    ok("close-directive: operator close -> assigned to op", tt.assigned_to == "close-op",
+       tt.assigned_to or "")
+    db.close()
+
+    # 28. mid-work + close -> polite 'still open' note, no dispatch, not closed
+    t = make_ticket("reboot the AP", "P3")
+    db = SessionLocal()
+    tt = db.query(Ticket).filter(Ticket.id == t.id).first()
+    tt.submitter_id = _owner_id
+    worker.add_note(tt, "auto_execute", worker._PI_DISPATCH_DETAIL)
+    worker.add_note(tt, "user_message", "close it", actor="close-owner")
+    tt.status = "in_progress"
+    db.commit()
+    tid = tt.ticket_id
+    db.close()
+    db = SessionLocal()
+    worker.process_ticket(db, db.query(Ticket).filter(Ticket.ticket_id == tid).first())
+    tt = db.query(Ticket).filter(Ticket.ticket_id == tid).first()
+    ok("close-directive: mid-work close -> not closed", tt.status == "in_progress", tt.status)
+    notes = worker._notes_list(tt)
+    ok("close-directive: mid-work close -> 'still open' note",
+       any("still open" in (n.get("detail") or "") for n in notes),
+       str([n.get("detail") for n in notes[-3:]]))
+    ok("close-directive: mid-work close -> no pi job file",
+       not os.path.exists(os.path.join(worker.JOBS_INCOMING, f"{tid}.json")))
+    db.close()
+
+    os.environ.pop("LLM_POLICY_PROFILE", None)
+    os.environ.pop("PI_AGENT_ENABLED", None)
+    reset_policy_cache()
+
     print(f"\nALL {PASS} INTEGRATION CHECKS PASSED (scratch DB: {_TMP})")
 
 

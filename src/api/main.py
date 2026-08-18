@@ -503,11 +503,18 @@ WIKI_PAGES = [
     ("workflows", "Workflows"),
     ("getting-started", "Getting Started"),
     ("tickets", "Tickets"),
+    ("reports", "Reports & KPIs"),
     ("devices", "Devices"),
+    ("noc-agent", "NOC Agent"),
     ("discovery", "Network Discovery"),
+    ("link-stability", "Link Stability"),
     ("chat-client", "Chat Client"),
     ("security", "Security"),
+    ("network-optimization", "Network Optimization"),
     ("autonomy", "Autonomy Policy"),
+    ("settings", "Settings"),
+    ("updates", "Updates"),
+    ("support", "Support / Bug Report"),
     ("backups", "Backups"),
 ]
 WIKI_DIR = os.path.join(api_dir, "wiki")

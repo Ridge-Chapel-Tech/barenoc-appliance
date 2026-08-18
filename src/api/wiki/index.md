@@ -24,11 +24,19 @@ flowchart LR
 | [Workflows](/wiki/workflows) | The full workflow diagrams (tickets, AI pipeline, discovery, security, backups) |
 | [Getting Started](/wiki/getting-started) | Logging in, roles, first steps |
 | [Tickets](/wiki/tickets) | Lifecycle, priorities, approvals, statuses |
+| [Reports & KPIs](/wiki/reports) | Ticket KPIs (resolution/first-response times), AI spend, digest & EOD emails |
 | [Devices](/wiki/devices) | Adding, discovering, claiming, and managing devices |
+| [NOC Agent](/wiki/noc-agent) | The endpoint agent — adopt devices over mTLS, no stored credentials |
 | [Network Discovery](/wiki/discovery) | UniFi sync, ping scans, nmap fingerprinting |
+| [Link Stability](/wiki/link-stability) | Flap/outage monitor — the 🔔 toggle, graduated tickets, auto-close |
 | [Chat Client](/wiki/chat-client) | The AIM-style desktop chat app |
 | [Security](/wiki/security) | Passwords, passkeys, management lockdown |
+| [Network Optimization](/wiki/network-optimization) | Scheduled read-only audit — score + findings for your gear |
 | [Autonomy Policy](/wiki/autonomy) | How much the AI may do on its own — per deployment |
+| [Settings](/wiki/settings) | Overview of every Settings tab (LLM, UniFi, alerts, backups, identity) |
+| [Updates](/wiki/updates) | Self-update — check, schedule, rollback, progress |
+| [Support / Bug Report](/wiki/support) | Redacted diagnostic export for bug reports |
+| [Backups](/wiki/backups) | App data, VM snapshots, encrypted USB, NAS copy |
 
 ## Three roles
 

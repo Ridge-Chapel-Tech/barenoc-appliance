@@ -232,7 +232,7 @@ ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf
       [Service]
       Type=oneshot
       RemainAfterExit=yes
-      ExecStart=/bin/bash -c 'test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; cd /opt/barenoc && docker compose up --build -d && bash scripts/setup_agent_credentials.sh && mkdir -p /opt/barenoc/volumes/logs/agent && install -m 0644 /opt/barenoc/agent/pi-agent-runner.service /etc/systemd/system/pi-agent-runner.service && systemctl daemon-reload && systemctl enable --now pi-agent-runner && install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now barenoc-self-update.path'
+      ExecStart=/bin/bash -c 'test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; cd /opt/barenoc && docker compose up --build -d api worker nginx step-ca pocket-id dns && bash scripts/provision_agent.sh && docker compose up --build -d scheduler && bash scripts/verify_agent_provision.sh && install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now barenoc-self-update.path'
 
       [Install]
       WantedBy=multi-user.target

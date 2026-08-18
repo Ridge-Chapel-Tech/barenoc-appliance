@@ -65,5 +65,84 @@ class FinalAnswerCleanupTest(unittest.TestCase):
         self.assertEqual(strip_meta_narration("   "), "")
 
 
+class TonePoolTest(unittest.TestCase):
+    """The shared tone pool (imported by queue_status for API-side parity)."""
+
+    def test_categorize_keyword_cues(self):
+        from tone_pool import categorize
+        cases = [
+            ("checking the logs to trace the outage", "investigating"),
+            ("ssh into the switch to talk to it", "connecting"),
+            ("installing the package now", "applying"),
+            ("verifying everything is in place", "verifying"),
+            ("waiting for the long download", "waiting"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(categorize(text), expected)
+
+    def test_friendly_note_scrubs_technical(self):
+        from tone_pool import friendly_note, all_phrases
+        text, filtered = friendly_note("ssh tech@192.168.4.207 && sudo apt-get update")
+        self.assertTrue(filtered)
+        self.assertIn(text, all_phrases())
+        self.assertNotIn("/", text)
+        self.assertNotIn("sudo", text)
+
+    def test_friendly_note_passes_through(self):
+        from tone_pool import friendly_note
+        text, filtered = friendly_note("Connecting to the device now…")
+        self.assertFalse(filtered)
+        self.assertEqual(text, "Connecting to the device now…")
+
+
+class QueueStatusParityTest(unittest.TestCase):
+    """derive_status's 'Working on it — {detail}' label must use the shared
+    pool: technical agent_progress detail scrubs to a friendly phrase; friendly
+    detail passes through; empty detail keeps the existing 'Working on it'."""
+
+    @staticmethod
+    def _ticket(event, detail):
+        import json
+        import datetime
+        notes = json.dumps([{
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "event": event,
+            "detail": detail,
+            "actor": "Lily",
+        }])
+
+        class T:
+            ticket_id = "TKT-20260818-0001"
+            status = "in_progress"
+            work_notes = notes
+            assigned_to = "pi-agent"
+            action = "pi_task"
+            llm_confidence = None
+            resolution = None
+        return T()
+
+    def test_technical_progress_detail_scrubbed(self):
+        from queue_status import derive_status
+        st = derive_status(self._ticket(
+            "agent_progress", "ssh tech@192.168.4.207 && sudo apt-get update"))
+        label = st["label"]
+        self.assertTrue(label.startswith("Working on it — "), label)
+        self.assertNotIn("ssh", label)
+        self.assertNotIn("192.168", label)
+        self.assertNotIn("sudo", label)
+
+    def test_friendly_progress_detail_passes_through(self):
+        from queue_status import derive_status
+        st = derive_status(self._ticket(
+            "agent_progress", "Connecting to the device now…"))
+        self.assertEqual(st["label"], "Working on it — Connecting to the device now…")
+
+    def test_empty_detail_stays_working_on_it(self):
+        from queue_status import derive_status
+        st = derive_status(self._ticket("agent_progress", ""))
+        self.assertEqual(st["label"], "Working on it")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

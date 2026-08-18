@@ -16,6 +16,7 @@ import urllib.request
 import urllib.error
 import ssl
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 # Allow self-signed certs for local API calls
@@ -595,17 +596,157 @@ def _pi_provider_config() -> dict:
 # Chat-tone safety net for live progress notes. A verbose pi session may emit
 # notes full of internals (paths, sudo/perm analysis, package names, API
 # detail). The sysctx asks for friendly one-liners, but this is the backstop:
-# technical-looking notes are replaced with a short friendly generic before they
-# reach the chat. The raw text stays in the pi session transcript (and the
-# runner log) — the customer never sees internals. Final answers are cleaned
-# separately in src/api/tone_filter.py (jobs.py result formatting).
-_FRIENDLY_PROGRESS = [
-    "Working on it…",
-    "Connecting now…",
-    "Installing now…",
-    "Almost done — just verifying…",
-    "Still on it — one moment…",
-]
+# technical-looking notes are replaced with a short, category-matched friendly
+# phrase before they reach the chat. The raw text stays in the pi session
+# transcript (and the runner log) — the customer never sees internals. Final
+# answers are cleaned separately in src/api/tone_filter.py (jobs.py result
+# formatting).
+#
+# The pool + keyword cues + tech patterns below are a VENDORED copy of
+# src/api/tone_pool.py (the canonical source of truth shared with the API-side
+# queue_status). The runner deploys as a single self-contained file, so it
+# cannot import that module at runtime; src/agent/test_runner.py asserts the
+# two copies stay in sync.
+
+# ── Activity categories (order = tie-break priority) ─────────────────────
+_CATEGORIES = ("investigating", "connecting", "applying", "verifying", "waiting")
+
+_CATEGORY_KEYWORDS = {
+    "investigating": (
+        "check", "checking", "read", "reading", "fetch", "fetching",
+        "list", "listing", "look", "looking", "find", "finding", "search",
+        "searching", "scan", "scanning", "inspect", "inspecting", "review",
+        "reviewing", "examine", "examining", "diagnose", "diagnosing",
+        "investigate", "investigating", "gather", "gathering", "query",
+        "querying", "explore", "exploring", "trace", "tracing", "audit",
+        "auditing", "browse", "browsing", "discover", "probe", "probing",
+        "dig", "digging", "peek", "glance", "look into",
+    ),
+    "connecting": (
+        "connect", "connecting", "ssh", "login", "log in", "reach",
+        "reaching", "ping", "talk", "talking", "device", "laptop",
+        "gateway", "switch", "access point", "unifi", "enroll",
+        "enrolling", "adopt", "adopting", "handshake", "establish",
+        "link", "linking", "attach", "interface", "network", "contact",
+        "session", "remote", "handshaking",
+    ),
+    "applying": (
+        "apply", "applying", "change", "changing", "set", "setting",
+        "install", "installing", "update", "updating", "upgrade",
+        "upgrading", "configure", "configuring", "config", "patch",
+        "patching", "deploy", "deploying", "enable", "enabling", "disable",
+        "disabling", "restart", "restarting", "reboot", "rebooting",
+        "start", "starting", "stop", "stopping", "modify", "modifying",
+        "create", "creating", "add", "adding", "remove", "removing",
+        "delete", "deleting", "write", "writing", "push", "pushing",
+        "roll", "rolling", "replace", "replacing", "move", "moving", "fix",
+        "fixing", "adjust", "adjusting", "tune", "tuning", "edit",
+        "editing", "put in",
+    ),
+    "verifying": (
+        "verify", "verifying", "confirm", "confirming", "test", "testing",
+        "validate", "validating", "ensure", "ensuring", "double-check",
+        "doublecheck", "double check", "compare", "comparing", "assert",
+        "finalize", "finalizing", "wrap", "wrapping", "finish", "finishing",
+        "complete", "completing", "cleanup", "clean up", "tidy", "tidying",
+        "almost done", "make sure", "works now", "end to end", "recheck",
+        "check it",
+    ),
+    "waiting": (
+        "wait", "waiting", "hold", "holding", "while", "long", "minute",
+        "minutes", "be patient", "patience", "taking a", "takes a",
+        "running", "processing", "compiling", "building", "downloading",
+        "uploading", "syncing", "still", "moment", "hang tight",
+        "bear with", "longer", "chug", "progress", "ongoing", "be patient",
+    ),
+}
+
+# The friendly phrase pool — one list per activity category.
+_TONE_POOL = {
+    "investigating": [
+        "Taking a look at that now…",
+        "Let me check on that for you…",
+        "Looking into it — one moment…",
+        "Digging into the details now…",
+        "Reading through the current setup…",
+        "Checking the latest state of things…",
+        "Reviewing what's there before I change anything…",
+        "Gathering the information I need…",
+        "Scanning for the source of that…",
+        "Tracing through the logs now…",
+        "Seeing what's going on behind the scenes…",
+        "Investigating — this won't take long…",
+        "Pulling up the current details…",
+        "Having a closer look at your setup…",
+    ],
+    "connecting": [
+        "Connecting to the device now…",
+        "Reaching out to the device…",
+        "Getting a secure connection set up…",
+        "Talking to the device — one sec…",
+        "Making contact with your network…",
+        "Linking up with the hardware…",
+        "Establishing the connection…",
+        "Opening a line to the device…",
+        "Handshaking with the device…",
+        "Connecting to your network gear…",
+        "Reaching the device now…",
+        "Touching base with the device…",
+        "Getting through to the device…",
+        "Bringing the device online…",
+    ],
+    "applying": [
+        "Applying that change now…",
+        "Making the change you asked for…",
+        "Installing it now…",
+        "Setting things up as requested…",
+        "Applying the update…",
+        "Rolling out the new setting…",
+        "Writing the change into place…",
+        "Putting the fix in now…",
+        "Configuring that for you…",
+        "Swapping in the new settings…",
+        "Deploying the change…",
+        "Updating things now…",
+        "Making that adjustment…",
+        "Setting it up — this part takes a moment…",
+    ],
+    "verifying": [
+        "Verifying everything looks right…",
+        "Confirming the change took effect…",
+        "Double-checking my work…",
+        "Testing that it works now…",
+        "Making sure it's all good…",
+        "Checking the result is correct…",
+        "Validating the new setup…",
+        "Confirming it works end to end…",
+        "Running a quick check to be sure…",
+        "Just confirming the details…",
+        "Wrapping up and verifying…",
+        "Almost done — just verifying…",
+        "Giving it a final once-over…",
+        "Confirming everything is in place…",
+    ],
+    "waiting": [
+        "Still on it — one moment…",
+        "Hang tight, this is taking a little longer…",
+        "Still working away on this…",
+        "This step takes a few minutes…",
+        "Running the longer part now…",
+        "Working through it — please bear with me…",
+        "Still making progress…",
+        "This one's a longer task…",
+        "Chugging through it — won't be much longer…",
+        "Still going — thanks for waiting…",
+        "Processing now — this can take a bit…",
+        "Moving along — a few more moments…",
+        "Almost there — thank you for waiting…",
+        "Keeping at it — a little more time…",
+    ],
+}
+
+# Backward-compat flat list (every phrase in the pool).
+_FRIENDLY_PROGRESS = [p for c in _CATEGORIES for p in _TONE_POOL[c]]
 
 _TECH_NOTE_PATTERNS = [
     re.compile(r"`"),                       # backticked command / `code`
@@ -628,6 +769,14 @@ _TECH_NOTE_PATTERNS = [
 # certainly several sentences of internal detail.
 _PROGRESS_MAX_FRIENDLY_LEN = 220
 
+# Elapsed-time heartbeat for long pi tasks: after this long with no distinct
+# activity, the runner injects a keep-alive note so a long run doesn't look
+# hung. Every Nth heartbeat carries the elapsed-time text; the others draw a
+# varied phrase from the "waiting" category.
+HEARTBEAT_AFTER_SECS = 120
+HEARTBEAT_INTERVAL_SECS = 45
+HEARTBEAT_ELAPSED_EVERY = 3
+
 
 def _is_technical_note(text: str) -> bool:
     """True when a live progress note looks like internal/technical detail."""
@@ -648,15 +797,96 @@ def _is_technical_note(text: str) -> bool:
     return jargon >= 2
 
 
-def _friendly_progress_note(text: str) -> "tuple[str, bool]":
+def _categorize(text: str) -> str:
+    """Map a raw (technical) note to an activity category via keyword cues.
+    Highest-scoring category wins; ties break by _CATEGORIES order; no match
+    falls back to "investigating"."""
+    low = (text or "").lower()
+    best, best_score = _CATEGORIES[0], -1
+    for category in _CATEGORIES:
+        score = sum(
+            1 for kw in _CATEGORY_KEYWORDS[category]
+            if re.search(r"\b" + re.escape(kw) + r"\b", low))
+        if score > best_score:
+            best, best_score = category, score
+    return best
+
+
+def _pick_phrase(category: str, seed: int, recent=()) -> str:
+    """Pick a phrase from a category's pool, avoiding `recent` when possible.
+    Deterministic for a given (category, seed, recent)."""
+    pool = _TONE_POOL.get(category) or _TONE_POOL[_CATEGORIES[0]]
+    recent_set = set(recent or ())
+    avail = [p for p in pool if p not in recent_set]
+    if not avail:
+        avail = pool
+    return avail[seed % len(avail)]
+
+
+def _friendly_progress_note(text: str, seed: int = 0, recent=()) -> "tuple[str, bool]":
     """Return (chat_safe_note, was_filtered) for a live progress note.
 
     User-facing notes pass through untouched; technical-looking notes are
-    replaced with a short friendly generic (deterministic per input)."""
+    replaced with a category-matched friendly phrase. `seed` is a stable
+    per-ticket integer (same note -> same phrase); `recent` is an iterable of
+    recently-used phrases so consecutive notes differ."""
     if not _is_technical_note(text):
         return (text or "").strip(), False
-    idx = zlib.crc32((text or "").encode("utf-8")) % len(_FRIENDLY_PROGRESS)
-    return _FRIENDLY_PROGRESS[idx], True
+    category = _categorize(text)
+    base = (seed or 0) ^ (zlib.crc32((text or "").encode("utf-8")) & 0xffffffff)
+    return _pick_phrase(category, base, recent), True
+
+
+def _elapsed_heartbeat(elapsed_seconds: float) -> str:
+    """The elapsed-time keep-alive text for a long task ("about N min in")."""
+    mins = max(1, int(round(elapsed_seconds / 60.0)))
+    if mins < 60:
+        return f"Still working — about {mins} min in — this one's a longer task…"
+    h, m = divmod(mins, 60)
+    return f"Still working — about {h}h {m}m in — this one's a longer task…"
+
+
+def _heartbeat_phrase(elapsed_seconds: float, nth: int, recent=()) -> str:
+    """A heartbeat phrase: every Nth carries elapsed time; the rest are varied
+    "waiting" phrases so long runs stay friendly but not repetitive."""
+    if nth > 0 and nth % HEARTBEAT_ELAPSED_EVERY == 0:
+        return _elapsed_heartbeat(elapsed_seconds)
+    return _pick_phrase("waiting", int(elapsed_seconds) ^ (nth * 7919), recent)
+
+
+class _ProgressTone:
+    """Per-ticket progress-note state: a stable seed, no-repeat memory, and the
+    elapsed-time heartbeat for long tasks. One instance per pi run."""
+
+    def __init__(self, ticket_id: str, started_at: "float | None" = None):
+        self.ticket_seed = zlib.crc32((ticket_id or "").encode("utf-8")) & 0xffffffff
+        self.started_at = started_at if started_at is not None else time.time()
+        self.recent = deque(maxlen=4)   # last N phrases, to avoid repeats
+        self.heartbeat_count = 0
+        self.last_note_at = self.started_at
+
+    def friendly(self, text: str) -> "tuple[str, bool]":
+        """Filter a raw note through the pool (category-matched, no-repeat)."""
+        text, was_filtered = _friendly_progress_note(
+            text, self.ticket_seed, self.recent)
+        if was_filtered:
+            self.recent.append(text)
+        return text, was_filtered
+
+    def heartbeat(self, now: "float | None" = None) -> "str | None":
+        """Return a keep-alive note when the task has run long with no distinct
+        activity, else None. Caller owns the post throttle (min-gap / cap)."""
+        now = now if now is not None else time.time()
+        if now - self.started_at < HEARTBEAT_AFTER_SECS:
+            return None
+        if now - self.last_note_at < HEARTBEAT_INTERVAL_SECS:
+            return None
+        self.heartbeat_count += 1
+        phrase = _heartbeat_phrase(now - self.started_at, self.heartbeat_count,
+                                   self.recent)
+        self.recent.append(phrase)
+        self.last_note_at = now
+        return phrase
 
 # Progress-note cap: high enough that a real pi answer fits (the 08-17 incident
 # stored a 250-char slice of a dnf check-update answer mid-sentence, no
@@ -696,10 +926,13 @@ def _assistant_complete_text(msg: dict) -> "str | None":
     return text.strip() or None
 
 
-def _post_progress(ticket_id: str, text: str) -> None:
+def _post_progress(ticket_id: str, text: str, tone: "_ProgressTone | None" = None) -> None:
     """Post a brief live progress note to the ticket (agent_progress event)."""
     raw = text
-    text, was_filtered = _friendly_progress_note(text)
+    if tone is not None:
+        text, was_filtered = tone.friendly(text)
+    else:
+        text, was_filtered = _friendly_progress_note(text)
     if was_filtered:
         # The technical original lives in the pi session transcript; log it here
         # too so the runner log (support bundle) keeps the full record.
@@ -810,9 +1043,12 @@ def _build_sysctx(context: str = "") -> str:
         "notes directly — do not go hunting devices.\n\n"
         "RULES:\n"
         "- Keep a LIVE work log: after each meaningful step, write ONE short, plain, "
-        "customer-facing progress sentence in a human voice — e.g. 'Let me find your "
-        "laptop…', 'Connecting now…', 'Working on it…', 'Installing now…', 'Almost done "
-        "— just verifying…'. These are relayed to the ticket chat as live updates, so "
+        "customer-facing progress sentence in a human voice and VARY your wording so "
+        "updates don't repeat. Match the sentence to what you're actually doing — e.g. "
+        "'Taking a look at that now…' (reading/checking), 'Connecting to the device…' "
+        "(talking to a device), 'Applying that change now…' (changing/installing), "
+        "'Verifying everything looks right…' (confirming), 'Hang tight, this takes a "
+        "moment…' (waiting). These are relayed to the ticket chat as live updates, so "
         "the customer reads them directly. NEVER put internal reasoning, usernames/uids, "
         "sudo or permissions analysis, file paths, package or command names, "
         "API/endpoint details, or error internals in a progress note — keep those in the "
@@ -903,8 +1139,10 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
         pending = []   # (message_id, snippet) awaiting the rate-limit gap
         last_ts = 0.0
         cap = 15
+        tone = _ProgressTone(ticket_id)
         deadline = time.time() + timeout
         while time.time() < deadline and proc.poll() is None:
+            now = time.time()
             try:
                 files = sorted(f for f in os.listdir(sdir) if f.endswith(".jsonl"))
                 if files:
@@ -935,13 +1173,21 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
                             if snippet:
                                 pending.append((mid, snippet))
                 # Post at most one note per poll cycle, min 8s apart.
-                if pending and time.time() - last_ts >= 8 and len(posted) < cap:
+                if pending and now - last_ts >= 8 and len(posted) < cap:
                     mid, snippet = pending.pop(0)
-                    _post_progress(ticket_id, snippet)
+                    _post_progress(ticket_id, snippet, tone)
                     posted.add(mid)
-                    last_ts = time.time()
+                    last_ts = now
+                    tone.last_note_at = now
                 if len(posted) >= cap:
                     pending = []
+                # Elapsed-time heartbeat: a long task with no distinct activity
+                # must not look hung. Heartbeats don't consume the real-note cap.
+                if len(posted) < cap and now - last_ts >= 8:
+                    hb = tone.heartbeat(now)
+                    if hb:
+                        _post_progress(ticket_id, hb)
+                        last_ts = now
             except Exception:
                 pass
             time.sleep(4)

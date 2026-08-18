@@ -15,6 +15,45 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.d] — 2026-08-18
+
+### Fixed
+- **Fresh-install agent provisioning guarantee (all install paths)** — a clean
+  rebuild via `proxmox/barenoc-appliance.sh` could land with
+  `/opt/barenoc/agent/credentials` MISSING → the scheduler 401-flooded and the
+  runner/autonomous chat had no auth until a manual provision. Now every install
+  path (appliance installer, ISO first-boot, and `deploy.sh`) converges on one
+  shared, idempotent step — `src/scripts/provision_agent.sh` — that creates the
+  runtime dirs, installs + enables + starts `pi-agent-runner` from the repo unit
+  (single source of truth), and provisions the agent credentials with the
+  api-healthy-BEFORE-creds wait + file↔DB login-200 agreement check (loud
+  failure, never a silent file-without-DB-user).
+
+### Changed
+- **Scheduler health-order guard** — `deploy.sh` (and the ISO first-boot) now
+  start the scheduler only AFTER agent provisioning; `scheduler/main.py` also
+  waits at startup for the api to be healthy and the agent credentials to log
+  in (visible retries) instead of flooding `Cannot read agent credentials` /
+  401 errors every cycle.
+- **Post-install verification** — `src/scripts/verify_agent_provision.sh` checks
+  scheduler logs too (not just health 200 + a minted token) and surfaces the
+  checklist lines: agent login verified · runner active · scheduler 0 errors.
+  `deploy.sh` runs it at the end of every install/update.
+### Changed
+- **Autonomous tickets honor a customer's "close" (no-reinvestigate)** — a
+  customer replying in a COMPLETED ticket's thread with an explicit close ask
+  ("yes, please close", "close the ticket", "you can close it", "close",
+  "done, thanks — close it") now closes the ticket inline (status `closed`,
+  resolution + note) instead of spawning a fresh re-investigating pi session —
+  the TKT-20260818-5615 incident (the customer asked twice to close; each
+  reply re-dispatched a session that re-verified instead of closing). A pure
+  thanks/ack on a completed ticket gets a short note (no session); a NEW
+  request on a completed ticket still dispatches normally. Owner-gated: the
+  requester or an admin/operator may close; a non-requester is routed
+  "waiting on <requester> to verify". A mid-work ticket + "close" gets a
+  polite "still open" note and is neither closed nor re-dispatched.
+
+
 ## [2026.08.18.c] — 2026-08-18
 
 ### Added
@@ -37,6 +76,22 @@ Categories per release:
   intrusive scripts), `NETOPT_CONCURRENCY`, `NETOPT_DEFAULT_SCHEDULE`). The
   `nmap` binary is now installed in the api image; scans run entirely in-process
   in the API container and never feed the pi/LLM agent loop.
+
+### Changed
+- **More varied, stage-matched chat progress notes** — the runner's friendly
+  progress vocabulary grows from 5 repeated placeholders to a categorized pool
+  (dozens of variants across reading/investigating, connecting, applying,
+  verifying, and waiting). Selection is context-aware (keyword cues from the
+  raw note map it to the matching activity category) and varied (no immediate
+  repeats; a stable per-ticket seed keeps a re-read deterministic). Long pi
+  tasks (>2 min with no distinct activity) now emit an elapsed-time heartbeat
+  ("Still working — about 3 min in…") so a long run doesn't look hung. The
+  technical-fragment safety net is unchanged and never leaks internals. The
+  API-side `queue_status` "Working on it — {detail}" mapping shares the same
+  category pool (`src/api/tone_pool.py`) for parity. Runner change is host-side
+  (deploy.sh syncs it); `tone_pool.py` is a new shared module copied into the
+  worker context.
+
 ## [2026.08.18.b] — 2026-08-18
 
 ### Added
@@ -47,7 +102,6 @@ Categories per release:
   Firefox's NSS store, best-effort) so `https://<appliance-ip>` and `app.<domain>` stop
   showing &ldquo;Not Secure&rdquo; for home users. Never installed silently — consent is always
   required; undo commands are documented in `docs/deployment_guide.md`.
-
 
 ## [2026.08.18.a] — 2026-08-18
 
