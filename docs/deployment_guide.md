@@ -420,6 +420,42 @@ Changing the domain later requires a redeploy + re-enrolling passkeys
   on the LAN. A $10/yr domain or a free subdomain (e.g. `foo.duckdns.org`)
   is enough; no public DNS records are required.
 
+<a id="browser-trust-optional"></a>
+### Browser trust for the appliance address (optional, opt-in)
+
+The web UI certificate is signed by the BareNOC Internal CA — not a public CA — so a
+browser that hasn't been told about the private root still shows &ldquo;Not Secure&rdquo; on
+`https://<appliance-ip>` and `https://app.<domain>`. The device onboarding scripts
+(`/onboard`, Linux + macOS) and the Linux agent installer (`agent_install.sh`) offer an
+**explicit, default-OFF** opt-in that installs the BareNOC root into the machine's trust
+store (+ Firefox, best-effort) so the padlock goes green for non-technical users:
+
+```bash
+# when prompted — answer y to opt in:
+#   "Trust the BareNOC root CA for this machine's browsers? [y/N]"
+# …or pass the flag to opt in non-interactively:
+sudo bash agent_install.sh --trust-root <appliance_url> <enrollment_token>
+sudo bash bareNOC-onboard.sh --trust-root          # served Linux script
+bash bareNOC-onboard-mac.sh --trust-root           # served macOS script
+```
+
+**Security tradeoff (one line):** trusting this private root makes HTTPS to the
+appliance trusted, and it **only** affects certificates signed by the BareNOC CA —
+nothing else. It is never done silently (always opt-in).
+
+**Undo:**
+
+```bash
+# Linux
+sudo rm /usr/local/share/ca-certificates/barenoc-root.crt && sudo update-ca-certificates
+# macOS
+sudo security delete-certificate -c "BareNOC Internal CA Root"
+```
+
+> Firefox keeps its own certificate store. The scripts import the root there best-effort
+> and warn when it isn't covered (e.g. `certutil` missing, or a flatpak/snap profile) with
+> the manual command to run.
+
 <a id="updating"></a>
 ## Updating
 

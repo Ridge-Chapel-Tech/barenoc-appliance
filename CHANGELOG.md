@@ -15,6 +15,17 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.b] — 2026-08-18
+
+### Added
+- **Root CA browser-trust opt-in (Linux/macOS)** — the Linux agent installer
+  (`agent_install.sh`) and the served `/onboard` Linux + macOS scripts now offer an
+  explicit, **default-OFF** opt-in (&ldquo;Trust the BareNOC root CA for this machine's
+  browsers? [y/N]&rdquo;) that installs the BareNOC root into the OS trust store (and
+  Firefox's NSS store, best-effort) so `https://<appliance-ip>` and `app.<domain>` stop
+  showing &ldquo;Not Secure&rdquo; for home users. Never installed silently — consent is always
+  required; undo commands are documented in `docs/deployment_guide.md`.
+
 ## [2026.08.18.a] — 2026-08-18
 
 ### Added

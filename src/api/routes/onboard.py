@@ -65,9 +65,94 @@ def onboard_root_ca():
     return PlainTextResponse(pem, media_type="application/x-pem-file")
 
 
+def _browser_trust_block(os_name: str) -> str:
+    """The OPT-IN "trust the BareNOC root in this machine's browsers" step.
+
+    Default OFF; explicit consent only; never installs silently. The returned
+    shell text contains no brace characters, so it can be interpolated into an
+    f-string (the surrounding script templates) without escaping.
+    """
+    if os_name == "mac":
+        resolve_home = (
+            'FF_HOME=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | sed -n "s/^NFSHomeDirectory: //p")\n'
+        )
+        os_install = (
+            '  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /etc/barenoc-ca/root_ca.crt\n'
+        )
+        undo = 'sudo security delete-certificate -c "BareNOC Internal CA Root"'
+        ff_glob = '"$FF_HOME/Library/Application Support/Firefox/Profiles/"*'
+    else:
+        resolve_home = (
+            'FF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)\n'
+        )
+        os_install = (
+            '  install -d -m 0755 /usr/local/share/ca-certificates\n'
+            '  install -m 0644 /etc/barenoc-ca/root_ca.crt /usr/local/share/ca-certificates/barenoc-root.crt\n'
+            '  if command -v update-ca-certificates >/dev/null 2>&1; then\n'
+            '    update-ca-certificates\n'
+            '  else\n'
+            '    echo "  !!! update-ca-certificates not found (non-Debian?) — root copied but not activated"\n'
+            '  fi\n'
+        )
+        undo = 'rm /usr/local/share/ca-certificates/barenoc-root.crt && update-ca-certificates'
+        ff_glob = '"$FF_HOME/.mozilla/firefox/"*'
+
+    return (
+        "# --- Optional: trust the BareNOC root CA in this machine's browsers ---\n"
+        "TRUST_ROOT=0\n"
+        'if [ "$1" = "--trust-root" ]; then\n'
+        "  TRUST_ROOT=1\n"
+        "fi\n"
+        "\n"
+        'if [ "$TRUST_ROOT" = "0" ] && [ -t 0 ]; then\n'
+        "  echo\n"
+        "  echo \"Optional: trust the BareNOC root CA so this machine's browsers stop\"\n"
+        "  echo \"showing 'Not Secure' on $APP. This only affects certificates signed by\"\n"
+        "  echo \"the BareNOC CA — nothing else is trusted.\"\n"
+        "  printf \"Trust the BareNOC root CA for this machine's browsers? [y/N] \" > /dev/tty\n"
+        "  read -r ANS < /dev/tty || ANS=N\n"
+        '  case "$ANS" in\n'
+        "    y|Y|yes|YES|Yes) TRUST_ROOT=1 ;;\n"
+        '    *) echo "  (declined — root NOT added; re-run with --trust-root to opt in)" ;;\n'
+        "  esac\n"
+        'elif [ "$TRUST_ROOT" = "0" ]; then\n'
+        '  echo "  (browser trust skipped — pass --trust-root to opt in non-interactively)"\n'
+        "fi\n"
+        "\n"
+        'if [ "$TRUST_ROOT" = "1" ]; then\n'
+        '  echo "==> Trusting the BareNOC root CA (opt-in) — $APP will show as secure"\n'
+        '  echo "    Scope: only certificates signed by the BareNOC CA. Undo anytime with:"\n'
+        "  echo '      " + undo + "'\n"
+        "  FF_HOME=\"$HOME\"\n"
+        '  if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then\n'
+        "    " + resolve_home +
+        '    [ -n "$FF_HOME" ] || FF_HOME="$HOME"\n'
+        "  fi\n"
+        + os_install +
+        '  if command -v certutil >/dev/null 2>&1; then\n'
+        "    for d in " + ff_glob + "; do\n"
+        '      [ -d "$d" ] || continue\n'
+        '      [ -f "$d/cert9.db" ] || [ -f "$d/cert8.db" ] || continue\n'
+        '      if certutil -A -n "BareNOC Internal CA Root" -t "C,," -i /etc/barenoc-ca/root_ca.crt -d "sql:$d" >/dev/null 2>&1; then\n'
+        '        echo "    Firefox: trusted in profile $d"\n'
+        "      else\n"
+        '        echo "    Firefox: import into $d failed (non-fatal)"\n'
+        "      fi\n"
+        "    done\n"
+        "  else\n"
+        '    echo "  !!! Firefox NOT covered: certutil missing."\n'
+        '    echo "      Manual: certutil -A -n \\"BareNOC Internal CA Root\\" -t \\"C,,\\" -i /etc/barenoc-ca/root_ca.crt -d sql:<profile-dir>"\n'
+        "  fi\n"
+        '  echo "  Verify (should print \'HTTP/1.1 200 OK\' with no -k):"\n'
+        '  curl -sI "$APP" 2>/dev/null | head -1 || echo "  (could not reach $APP over HTTPS)"\n'
+        "fi\n"
+    )
+
+
 def _linux_script(app_url: str) -> str:
     key = ensure_control_key()["public_key"]
     fp = root_fingerprint()
+    trust = _browser_trust_block("linux")
     return f"""#!/bin/bash
 # BareNOC device onboarding (Linux/macOS) — run with your admin rights.
 set -e
@@ -176,6 +261,7 @@ else
   fi
 fi
 
+{trust}
 echo "==> Done. This device is now adopted by BareNOC (it appears online within a minute)."
 """
 
@@ -185,6 +271,7 @@ def _mac_script(app_url: str) -> str:
     # Login is assumed enabled; scoped sudo via the current admin user instead.
     key = ensure_control_key()["public_key"]
     fp = root_fingerprint()
+    trust = _browser_trust_block("mac")
     return f"""#!/bin/bash
 # BareNOC device onboarding (macOS) — run with your admin rights.
 set -e
@@ -255,6 +342,7 @@ else
   fi
 fi
 
+{trust}
 echo "==> Done. This device is now adopted by BareNOC."
 """
 
@@ -390,6 +478,11 @@ def onboard_page(request: Request):
   <p class="mt-4 text-xs text-gray-400">The script creates a <code>barenoc</code> user, authorizes the appliance
     key, grants command-scoped sudo, installs step-cli from the appliance, enrolls a short-lived certificate,
     and installs a renew+report heartbeat. Everything runs on the appliance — no internet needed.</p>
+  <p class="mt-2 text-xs text-gray-500">🔒 <b>Optional (default No):</b> the script asks whether to trust the BareNOC
+    root CA in this machine's browsers so <code>https://&lt;appliance-ip&gt;</code> and <code>app.barenoc.com</code>
+    stop showing &ldquo;Not Secure&rdquo;. It <b>only</b> affects certificates signed by the BareNOC CA — nothing
+    else. Undo: <code>rm /usr/local/share/ca-certificates/barenoc-root.crt && update-ca-certificates</code>
+    (Linux) / <code>sudo security delete-certificate -c "BareNOC Internal CA Root"</code> (macOS).</p>
 </div>
 <script>
 function pick() {{
