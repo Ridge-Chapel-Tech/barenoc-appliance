@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN apt update -qq && apt install -y -qq iputils-ping openssh-client cifs-utils nfs-common snmp && rm -rf /var/lib/apt/lists/*
+RUN apt update -qq && apt install -y -qq iputils-ping openssh-client cifs-utils nfs-common snmp nmap && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .

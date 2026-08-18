@@ -183,3 +183,48 @@ def init_db():
             ))
     except OperationalError:
         pass  # Table/index already exists
+    # Migration: scan_runs + findings (Network Optimization, P1). NEW tables —
+    # create_all above already creates them; the guarded CREATEs are idempotent
+    # belt-and-suspenders no-ops. KEEP IN SYNC with models.ScanRun/Finding.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS scan_runs ("
+                " id INTEGER PRIMARY KEY,"
+                " started_at DATETIME,"
+                " finished_at DATETIME,"
+                " scope JSON,"
+                " status VARCHAR(16) DEFAULT 'queued',"
+                " score FLOAT,"
+                " summary TEXT,"
+                " schema_version INTEGER DEFAULT 1,"
+                " triggered_by VARCHAR(16) DEFAULT 'manual',"
+                " created_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS findings ("
+                " id INTEGER PRIMARY KEY,"
+                " run_id INTEGER NOT NULL,"
+                " finding_key VARCHAR(64) NOT NULL,"
+                " category VARCHAR(16) NOT NULL,"
+                " severity VARCHAR(12) NOT NULL,"
+                " device_id INTEGER,"
+                " interface VARCHAR(128),"
+                " title VARCHAR(256) NOT NULL,"
+                " detail TEXT,"
+                " evidence JSON,"
+                " created_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_scan_runs_status ON scan_runs(status)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_findings_run_id ON findings(run_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_findings_finding_key ON findings(finding_key)"
+            ))
+    except OperationalError:
+        pass  # Tables/indexes already exist

@@ -177,3 +177,53 @@ class LinkEpisode(Base):
     ticket_id = Column(String(32), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class ScanRun(Base):
+    """One Network Optimization scan (P1: read-only audit/report).
+
+    Future-proofed per the user-approved data model (2026-08-18):
+      - ``scope`` is the JSON snapshot of what was scanned (device ids + the
+        excluded self-protection list + cost knobs in effect).
+      - ``summary`` is STRUCTURED JSON (category scores + counts) that a later
+        phase can extend with an LLM executive summary in the same slot.
+      - ``schema_version`` pins the findings/evidence schema for the future
+        trend/diff + SOC-appliance versioned-JSON export.
+    """
+
+    __tablename__ = "scan_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, default=datetime.datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    scope = Column(JSON, default=dict)      # {devices: [...], excluded: [...], knobs: {...}}
+    status = Column(String(16), default="queued", index=True)  # queued|running|completed|failed|cancelled
+    score = Column(Float, nullable=True)    # overall 0-100
+    summary = Column(Text, nullable=True)   # JSON: category scores + counts (+ LLM prose later)
+    schema_version = Column(Integer, default=1)
+    triggered_by = Column(String(16), default="manual")  # manual | schedule
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class Finding(Base):
+    """One deterministic rule-based finding from a scan.
+
+    ``finding_key`` is a STABLE identifier (e.g. "perf.duplex_half") so later
+    phases can diff runs ("what changed since last scan") and link findings to
+    fixes without fragile title matching. ``evidence`` is the raw JSON the rule
+    produced — structured + exportable, not prose.
+    """
+
+    __tablename__ = "findings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("scan_runs.id"), index=True, nullable=False)
+    finding_key = Column(String(64), index=True, nullable=False)
+    category = Column(String(16), index=True, nullable=False)   # performance|security|reliability|hygiene
+    severity = Column(String(12), index=True, nullable=False)   # critical|warning|info
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
+    interface = Column(String(128), nullable=True)
+    title = Column(String(256), nullable=False)
+    detail = Column(Text, nullable=True)
+    evidence = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

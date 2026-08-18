@@ -14,7 +14,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 from ratelimit import RateLimitMiddleware
@@ -324,6 +324,7 @@ app.include_router(device_certs.router)
 app.include_router(device_agent.router)
 app.include_router(onboard.router)
 app.include_router(support.router)
+app.include_router(network_opt.router)
 
 
 # ── Health Check ──

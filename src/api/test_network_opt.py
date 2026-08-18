@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""In-container tests for Network Optimization (P1 read-only audit/report).
+
+Covers: the rules engine (each check + thresholds + scoring), the orchestrator
+(fake collectors), scheduling (recurring/onetime local-time), admin gating, and
+the self-protection exclusion. Uses a scratch sqlite DB + fake collectors — no
+live network probes, no controller calls.
+
+    docker compose exec api python3 -m unittest test_network_opt -v
+"""
+
+import datetime
+import json
+import os
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+_TMP = tempfile.mkdtemp(prefix="netopt-")
+os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
+
+from database import SessionLocal, init_db
+from models import User, Device, ScanRun, Finding, Ticket
+import network_opt_rules as rules
+import network_opt
+from routes import network_opt as routes
+
+
+# ── snapshot builders ───────────────────────────────────────────────────────
+
+def dev_snap(**kw):
+    d = {
+        "device_id": None, "name": "core-sw", "ip": "10.0.0.2",
+        "mac": "aa:bb:cc:00:00:02", "device_type": "switch", "vendor": "Ubiquiti",
+        "model": "USW", "unifi_managed": True,
+        "ping": {"reachable": True, "latency_ms": 1.0},
+        "nmap": {"open_ports": [], "open_services": {}, "os": ""},
+        "snmp": None, "unifi": None, "last_seen": None,
+    }
+    d.update(kw)
+    return d
+
+
+def snap(devices=None, networks=None, wlans=None, **kw):
+    s = {"schema_version": 1, "scope": {}, "devices": devices or [],
+         "networks": networks or [], "wlans": wlans or [],
+         "meta": {"collector_errors": [], "hosts_scanned": 0, "profile": "standard"}}
+    s.update(kw)
+    return s
+
+
+def keys(findings):
+    return {f["finding_key"] for f in findings}
+
+
+def by_key(findings, key):
+    return [f for f in findings if f["finding_key"] == key]
+
+
+# ═══════════════════════════════ rules engine ══════════════════════════════
+
+class RuleCatalogTest(unittest.TestCase):
+    def test_catalog_size(self):
+        # ~35-45 deterministic checks across the four categories.
+        self.assertGreaterEqual(rules.count_rules(), 35)
+        self.assertLessEqual(rules.count_rules(), 45)
+
+    def test_categories_balanced(self):
+        counts = {}
+        for r in rules.RULES + rules.SNAPSHOT_RULES:
+            counts[r["category"]] = counts.get(r["category"], 0) + 1
+        for c in ("performance", "security", "reliability", "hygiene"):
+            self.assertGreaterEqual(counts.get(c, 0), 6, f"{c} too thin")
+
+    def test_keys_stable_and_unique(self):
+        seen = set()
+        for r in rules.RULES + rules.SNAPSHOT_RULES:
+            self.assertRegex(r["key"], r"^(perf|sec|rel|hyg)\.[a-z0-9_]+$")
+            self.assertNotIn(r["key"], seen, f"duplicate key {r['key']}")
+            seen.add(r["key"])
+            self.assertIn(r["severity"], ("critical", "warning", "info"))
+
+
+class PerformanceRulesTest(unittest.TestCase):
+    def test_duplex_half_fires(self):
+        d = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/1", "iftype": 6, "oper_status": "up", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "half", "mtu": 1500, "in_errors": 0,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": 0, "out_pkts": 0}]})
+        fs = rules.evaluate(snap([d]))
+        self.assertEqual(by_key(fs, "perf.duplex_half")[0]["severity"], "warning")
+
+    def test_duplex_full_does_not_fire(self):
+        d = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/1", "iftype": 6, "oper_status": "up", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "full", "mtu": 1500, "in_errors": 0,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": 0, "out_pkts": 0}]})
+        self.assertNotIn("perf.duplex_half", keys(rules.evaluate(snap([d]))))
+
+    def test_interface_errors_ratio_threshold(self):
+        # errors below ratio do not fire
+        d = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/1", "iftype": 6, "oper_status": "up", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "full", "mtu": 1500, "in_errors": 1,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": 100000, "out_pkts": 100000}]})
+        self.assertNotIn("perf.interface_errors", keys(rules.evaluate(snap([d]))))
+        # errors above the absolute fallback threshold fire (no packet counts)
+        d2 = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/1", "iftype": 6, "oper_status": "up", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "full", "mtu": 1500, "in_errors": 9000,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": None, "out_pkts": None}]})
+        self.assertIn("perf.interface_errors", keys(rules.evaluate(snap([d2]))))
+
+    def test_mtu_mismatch(self):
+        d = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/1", "iftype": 6, "oper_status": "up", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "full", "mtu": 9000, "in_errors": 0,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": 0, "out_pkts": 0}]})
+        self.assertIn("perf.mtu_mismatch", keys(rules.evaluate(snap([d]))))
+
+    def test_high_cpu_and_memory(self):
+        d = dev_snap(snmp={"version": "2c", "community": "x", "cpu_load": 95.0,
+                           "mem_used_pct": 92.0, "interfaces": []})
+        fs = rules.evaluate(snap([d]))
+        self.assertIn("perf.high_cpu", keys(fs))
+        self.assertIn("perf.high_memory", keys(fs))
+        d2 = dev_snap(snmp={"version": "2c", "community": "x", "cpu_load": 10.0,
+                            "mem_used_pct": 20.0, "interfaces": []})
+        self.assertNotIn("perf.high_cpu", keys(rules.evaluate(snap([d2]))))
+
+    def test_link_speed_mismatch(self):
+        d = dev_snap(unifi={"version": "6", "upgradable": False, "uplink_mac": "",
+                            "fixed_ip": None, "ports": [
+            {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 100,
+             "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+             "link_down_count": 0, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]})
+        self.assertIn("perf.link_speed_100", keys(rules.evaluate(snap([d]))))
+
+
+class SecurityRulesTest(unittest.TestCase):
+    def test_telnet_ssh_http(self):
+        d = dev_snap(nmap={"open_ports": [22, 23, 80], "os": ""})
+        fs = rules.evaluate(snap([d]))
+        self.assertEqual(by_key(fs, "sec.telnet_exposed")[0]["severity"], "critical")
+        self.assertEqual(by_key(fs, "sec.ssh_exposed")[0]["severity"], "warning")
+        self.assertIn("sec.http_mgmt_plaintext", keys(fs))
+
+    def test_default_snmp_community_critical(self):
+        d = dev_snap(snmp={"version": "2c", "community": "public", "interfaces": []})
+        self.assertEqual(by_key(rules.evaluate(snap([d])),
+                                "sec.default_snmp_community")[0]["severity"], "critical")
+        d2 = dev_snap(snmp={"version": "2c", "community": "h4rd2guess", "interfaces": []})
+        self.assertNotIn("sec.default_snmp_community", keys(rules.evaluate(snap([d2]))))
+
+    def test_snmp_v2c_warning(self):
+        d = dev_snap(snmp={"version": "2c", "community": "h4rd2guess", "interfaces": []})
+        self.assertIn("sec.snmp_v2c", keys(rules.evaluate(snap([d]))))
+
+    def test_open_and_legacy_ssids(self):
+        s = snap(wlans=[
+            {"name": "Guest", "enabled": True, "security": "open", "wpa_mode": "", "wpa_enc": "", "vlan": None},
+            {"name": "Old", "enabled": True, "security": "wpa1", "wpa_mode": "wpa1", "wpa_enc": "", "vlan": None},
+            {"name": "Good", "enabled": True, "security": "wpapsk", "wpa_mode": "wpa2", "wpa_enc": "ccmp", "vlan": 5},
+        ])
+        fs = rules.evaluate(s)
+        self.assertEqual(by_key(fs, "sec.open_ssid")[0]["severity"], "critical")
+        self.assertEqual(by_key(fs, "sec.legacy_wpa")[0]["severity"], "critical")
+        self.assertNotIn("sec.wpa2_tkip", keys(fs))
+
+    def test_wpa2_tkip(self):
+        s = snap(wlans=[{"name": "Tk", "enabled": True, "security": "wpapsk",
+                         "wpa_mode": "wpa2", "wpa_enc": "tkip", "vlan": 5}])
+        self.assertIn("sec.wpa2_tkip", keys(rules.evaluate(s)))
+
+    def test_firmware_outdated(self):
+        d = dev_snap(unifi={"version": "6.6.53", "upgradable": True, "uplink_mac": "",
+                            "fixed_ip": None, "ports": []})
+        self.assertIn("sec.firmware_outdated", keys(rules.evaluate(snap([d]))))
+
+
+class ReliabilityRulesTest(unittest.TestCase):
+    def test_offline_gear_critical(self):
+        d = dev_snap(ping={"reachable": False, "latency_ms": None})
+        self.assertEqual(by_key(rules.evaluate(snap([d])),
+                                "rel.offline_gear")[0]["severity"], "critical")
+
+    def test_single_wan_info(self):
+        d = dev_snap(device_type="gateway",
+                     unifi={"version": "x", "upgradable": False, "uplink_mac": "",
+                            "fixed_ip": None, "wan": {"status": "ok", "wan_count": 1}, "ports": []})
+        self.assertIn("rel.single_wan", keys(rules.evaluate(snap([d]))))
+
+    def test_link_down_count(self):
+        d = dev_snap(unifi={"version": "x", "upgradable": False, "uplink_mac": "",
+                            "fixed_ip": None, "ports": [
+            {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+             "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+             "link_down_count": 2, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]})
+        self.assertIn("rel.link_down_count", keys(rules.evaluate(snap([d]))))
+
+    def test_uptime_anomalies(self):
+        d_reboot = dev_snap(snmp={"version": "2c", "community": "x", "uptime_seconds": 60,
+                                  "interfaces": []})
+        self.assertIn("rel.uptime_recent_reboot", keys(rules.evaluate(snap([d_reboot]))))
+        d_long = dev_snap(snmp={"version": "2c", "community": "x",
+                                "uptime_seconds": 400 * 24 * 3600, "interfaces": []})
+        self.assertIn("rel.uptime_extended", keys(rules.evaluate(snap([d_long]))))
+
+    def test_oper_down_admin_up(self):
+        d = dev_snap(snmp={"version": "2c", "community": "x", "interfaces": [
+            {"ifdescr": "Gi0/2", "iftype": 6, "oper_status": "down", "admin_status": "up",
+             "speed_mbps": 1000, "duplex": "full", "mtu": 1500, "in_errors": 0,
+             "out_errors": 0, "in_discards": 0, "out_discards": 0,
+             "in_pkts": 0, "out_pkts": 0}]})
+        self.assertIn("rel.oper_down_admin_up", keys(rules.evaluate(snap([d]))))
+
+
+class HygieneRulesTest(unittest.TestCase):
+    def test_duplicate_ip_critical(self):
+        s = snap([dev_snap(name="a", ip="10.0.0.5"),
+                  dev_snap(name="b", ip="10.0.0.5")])
+        f = by_key(rules.evaluate(s), "hyg.duplicate_ip")[0]
+        self.assertEqual(f["severity"], "critical")
+        self.assertEqual(len(f["evidence"]["devices"]), 2)
+
+    def test_duplicate_mac_warning(self):
+        s = snap([dev_snap(name="a", mac="aa:bb:cc:00:00:99"),
+                  dev_snap(name="b", mac="AA:BB:CC:00:00:99")])
+        self.assertEqual(by_key(rules.evaluate(s),
+                                "hyg.duplicate_mac")[0]["severity"], "warning")
+
+    def test_unused_vlan(self):
+        s = snap(networks=[{"name": "Old", "vlan": 50, "subnet": "", "enabled": True,
+                            "dhcp": False, "dhcp_start": "", "dhcp_stop": ""}])
+        self.assertIn("hyg.unused_vlan", keys(rules.evaluate(s)))
+        # referenced by a port -> not unused
+        s2 = snap(
+            devices=[dev_snap(unifi={"version": "x", "upgradable": False, "uplink_mac": "",
+                                     "fixed_ip": None, "ports": [
+                {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+                 "max_speed_mbps": 1000, "native_vlan": 50, "tagged_vlans": [],
+                 "link_down_count": 0, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]})],
+            networks=[{"name": "Used", "vlan": 50, "subnet": "", "enabled": True,
+                       "dhcp": False, "dhcp_start": "", "dhcp_stop": ""}])
+        self.assertNotIn("hyg.unused_vlan", keys(rules.evaluate(s2)))
+
+    def test_disabled_ssid_and_network(self):
+        s = snap(networks=[{"name": "Off", "vlan": 60, "subnet": "", "enabled": False,
+                            "dhcp": False, "dhcp_start": "", "dhcp_stop": ""}],
+                 wlans=[{"name": "OffSSID", "enabled": False, "security": "wpapsk",
+                         "wpa_mode": "wpa2", "wpa_enc": "ccmp", "vlan": None}])
+        fs = rules.evaluate(s)
+        self.assertIn("hyg.disabled_ssid", keys(fs))
+        self.assertIn("hyg.disabled_network", keys(fs))
+
+    def test_default_vlan1(self):
+        s = snap(networks=[{"name": "LAN", "vlan": 1, "subnet": "", "enabled": True,
+                            "dhcp": True, "dhcp_start": "", "dhcp_stop": ""}])
+        self.assertIn("hyg.default_vlan1", keys(rules.evaluate(s)))
+
+
+class ScoringTest(unittest.TestCase):
+    def test_clean_snapshot_scores_100(self):
+        self.assertEqual(rules.score([])["overall"], 100)
+
+    def test_score_penalties(self):
+        findings = [
+            {"severity": "critical", "category": "security"},
+            {"severity": "warning", "category": "performance"},
+            {"severity": "info", "category": "hygiene"},
+        ]
+        sc = rules.score(findings)
+        self.assertEqual(sc["overall"], 100 - (25 + 8 + 2))
+        self.assertEqual(sc["categories"]["security"], 75)
+        self.assertEqual(sc["categories"]["performance"], 92)
+        self.assertEqual(sc["counts"]["critical"], 1)
+
+    def test_score_floor_zero(self):
+        findings = [{"severity": "critical", "category": "security"} for _ in range(10)]
+        self.assertEqual(rules.score(findings)["overall"], 0)
+
+
+# ═══════════════════════════════ collectors (pure parse helpers) ═══════════
+
+class CollectorParseTest(unittest.TestCase):
+    def test_parse_nmap_grepable(self):
+        text = (
+            "# Nmap 7.94 scan initiated\n"
+            "Host: 192.0.2.1 ()\tStatus: Up\n"
+            "Host: 192.0.2.1 ()\tPorts: 22/open/tcp//ssh//, 80/open/tcp//http//\tIgnored State: closed (98)\n"
+        )
+        parsed = network_opt.parse_nmap_grepable(text)
+        self.assertEqual(parsed["open_ports"], [22, 80])
+        self.assertEqual(parsed["open_services"]["22"], "ssh")
+
+    def test_parse_snmp_value(self):
+        self.assertEqual(network_opt._parse_snmp_value("STRING: Cisco IOS"), "Cisco IOS")
+        self.assertEqual(network_opt._parse_snmp_value("INTEGER: 42"), 42)
+        self.assertEqual(network_opt._parse_snmp_value("Gauge32: 1000"), 1000)
+        self.assertEqual(network_opt._parse_snmp_value("Timeticks: (123456) 0:20:34.56"), 123456)
+        self.assertIsNone(network_opt._parse_snmp_value(""))
+
+    def test_guess_os(self):
+        self.assertIn("network device", network_opt.guess_os([161, 443], None).lower())
+        self.assertIn("windows", network_opt.guess_os([445], None).lower())
+        self.assertIn("unix", network_opt.guess_os([22], 64).lower())
+
+
+# ═══════════════════════════════ orchestrator (fake collectors) ════════════
+
+class OrchestratorTest(unittest.TestCase):
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        for table in (Finding, ScanRun, Ticket, Device, User):
+            db.query(table).delete()
+        db.commit()
+        db.close()
+
+    def _add_device(self, name, ip, device_type, claimed=True, unifi=False, mac=None):
+        db = SessionLocal()
+        d = Device(name=name, ip_address=ip, device_type=device_type, claimed=claimed,
+                   unifi_managed=unifi, mac_address=mac)
+        db.add(d)
+        db.commit()
+        db.refresh(d)
+        did = d.id
+        db.close()
+        return did
+
+    def _run(self):
+        db = SessionLocal()
+        run = ScanRun(status="queued", scope={})
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        rid = run.id
+        db.close()
+        return rid
+
+    def test_execute_scan_persists_findings(self):
+        self._add_device("core-sw", "10.0.0.2", "switch", mac="aa:bb:cc:00:00:02")
+
+        def fake_collect_device(device, config):
+            return {"device_id": device.id, "name": device.name, "ip": device.ip_address,
+                    "device_type": (device.device_type or "unknown").lower(),
+                    "mac": device.mac_address, "unifi_managed": device.unifi_managed,
+                    "ping": {"reachable": True, "latency_ms": 1.0},
+                    "nmap": {"open_ports": [23], "os": ""},
+                    "snmp": {"version": "2c", "community": "public", "interfaces": []},
+                    "unifi": None, "last_seen": None}
+
+        rid = self._run()
+        db = SessionLocal()
+        with patch.object(network_opt, "collect_unifi",
+                          return_value={"devices_by_mac": {}, "networks": [], "wlans": []}), \
+             patch.object(network_opt, "collect_device", side_effect=fake_collect_device), \
+             patch.object(network_opt, "netopt_config",
+                          return_value={"enabled": True, "max_hosts": 25, "concurrency": 2,
+                                        "profile": "standard",
+                                        "default_schedule": {"mode": "recurring", "day": "0",
+                                                             "hour": 3, "enabled": False}}):
+            result = network_opt.execute_scan(db, rid)
+        db.close()
+
+        self.assertEqual(result["status"], "completed")
+        db = SessionLocal()
+        run = db.query(ScanRun).get(rid)
+        self.assertEqual(run.status, "completed")
+        self.assertIsNotNone(run.score)
+        self.assertIsNotNone(run.summary)
+        findings = db.query(Finding).filter(Finding.run_id == rid).all()
+        self.assertTrue(findings)
+        self.assertIn("sec.telnet_exposed", {f.finding_key for f in findings})
+        db.close()
+
+    def test_execute_scan_skips_servers(self):
+        # servers are NOT network gear — out of scope even if claimed
+        self._add_device("nas", "10.0.0.20", "server")
+        rid = self._run()
+        db = SessionLocal()
+        with patch.object(network_opt, "collect_unifi",
+                          return_value={"devices_by_mac": {}, "networks": [], "wlans": []}), \
+             patch.object(network_opt, "netopt_config",
+                          return_value={"enabled": True, "max_hosts": 25, "concurrency": 2,
+                                        "profile": "standard",
+                                        "default_schedule": {"mode": "recurring", "day": "0",
+                                                             "hour": 3, "enabled": False}}):
+            result = network_opt.execute_scan(db, rid)
+        db.close()
+        self.assertEqual(result["status"], "completed")
+        db = SessionLocal()
+        self.assertEqual(db.query(Finding).filter(Finding.run_id == rid).count(), 0)
+        db.close()
+
+
+class SelfProtectionTest(unittest.TestCase):
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        for table in (Finding, ScanRun, Ticket, Device, User):
+            db.query(table).delete()
+        db.commit()
+        db.close()
+
+    def test_self_identifiers(self):
+        ids = network_opt.self_identifiers({"APPLIANCE_IP": "192.168.4.207"})
+        self.assertIn("192.168.4.207", ids)
+        self.assertIn("127.0.0.1", ids)
+
+    def test_is_self(self):
+        ids = network_opt.self_identifiers({"APPLIANCE_IP": "192.168.4.207"})
+        d = SimpleNamespace(name="core-sw", ip_address="192.168.4.207", hostname=None)
+        self.assertTrue(network_opt.is_self(d, ids))
+        d2 = SimpleNamespace(name="core-sw", ip_address="192.168.4.50", hostname=None)
+        self.assertFalse(network_opt.is_self(d2, ids))
+        d3 = SimpleNamespace(name="bareNOC-host", ip_address="10.0.0.9", hostname=None)
+        self.assertTrue(network_opt.is_self(d3, ids))
+
+    def test_build_scope_excludes_appliance(self):
+        db = SessionLocal()
+        db.add(Device(name="appliance", ip_address="192.168.4.207", device_type="switch",
+                      claimed=True))
+        db.add(Device(name="core-sw", ip_address="192.168.4.50", device_type="switch",
+                      claimed=True))
+        db.add(Device(name="nas", ip_address="192.168.4.60", device_type="server",
+                      claimed=True))
+        db.commit()
+        config = {"enabled": True, "max_hosts": 25, "concurrency": 2,
+                  "profile": "standard",
+                  "default_schedule": {"mode": "recurring", "day": "0", "hour": 3,
+                                       "enabled": False}}
+        scope = network_opt.build_scope(db, config,
+                                        env={"APPLIANCE_IP": "192.168.4.207"})
+        db.close()
+        included_ips = {d.ip_address for d in scope["devices"]}
+        self.assertEqual(included_ips, {"192.168.4.50"})   # self + server excluded
+        excluded_ips = {e["ip"] for e in scope["excluded"]}
+        self.assertIn("192.168.4.207", excluded_ips)
+
+    def test_max_hosts_cap(self):
+        db = SessionLocal()
+        for i in range(10):
+            db.add(Device(name=f"sw-{i}", ip_address=f"192.168.4.{10 + i}",
+                          device_type="switch", claimed=True))
+        db.commit()
+        config = {"enabled": True, "max_hosts": 3, "concurrency": 2, "profile": "standard",
+                  "default_schedule": {"mode": "recurring", "day": "0", "hour": 3,
+                                       "enabled": False}}
+        scope = network_opt.build_scope(db, config, env={})
+        db.close()
+        self.assertEqual(len(scope["devices"]), 3)
+
+
+# ═══════════════════════════════ scheduling ════════════════════════════════
+
+class ScheduleTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="netopt-sched-")
+        self._dir = patch.object(routes, "SCHEDULE_FILE",
+                                 os.path.join(self.tmp, "netopt_schedule.conf"))
+        self._dir.start()
+        self._cfg = patch.object(network_opt, "netopt_config",
+                                 return_value={"enabled": True, "max_hosts": 25,
+                                               "concurrency": 5, "profile": "standard",
+                                               "default_schedule": {"mode": "recurring",
+                                                                    "day": "0", "hour": 3,
+                                                                    "enabled": False}})
+        self._cfg.start()
+
+    def tearDown(self):
+        self._dir.stop()
+        self._cfg.stop()
+
+    def test_default_schedule(self):
+        sc = routes._read_schedule()
+        self.assertEqual(sc["mode"], "recurring")
+        self.assertEqual(sc["hour"], 3)
+        self.assertFalse(sc["enabled"])
+
+    def test_set_schedule_recurring_writes_canonical(self):
+        r = routes.set_schedule(routes.ScheduleBody(enabled=True, mode="recurring",
+                                                    day="1", hour=4),
+                                SimpleNamespace(username="admin"))
+        self.assertEqual(r["schedule"]["mode"], "recurring")
+        with open(os.path.join(self.tmp, "netopt_schedule.conf")) as f:
+            content = f.read()
+        self.assertIn("mode=recurring\n", content)
+        self.assertIn("day=1\n", content)
+        self.assertIn("hour=4\n", content)
+
+    def test_set_schedule_onetime_requires_future(self):
+        past = (routes._local_now() - datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        with self.assertRaises(Exception):
+            routes.set_schedule(routes.ScheduleBody(enabled=True, mode="onetime", when=past),
+                                SimpleNamespace(username="admin"))
+        future = (routes._local_now() + datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M")
+        r = routes.set_schedule(routes.ScheduleBody(enabled=True, mode="onetime", when=future),
+                                SimpleNamespace(username="admin"))
+        self.assertEqual(r["schedule"]["when"], future)
+
+    def test_complete_marks_fired_and_disables(self):
+        routes._write_schedule({"mode": "onetime", "enabled": True, "day": "0", "hour": 3,
+                                "when": "2026-08-20T03:00", "fired": ""})
+        r = routes.complete_schedule(SimpleNamespace(username="agent"))
+        self.assertFalse(r["schedule"]["enabled"])
+        self.assertTrue(r["schedule"]["fired"])
+
+    def test_cancel_disables(self):
+        routes._write_schedule({"mode": "recurring", "enabled": True, "day": "0", "hour": 3,
+                                "when": "", "fired": ""})
+        r = routes.cancel_schedule(SimpleNamespace(username="admin"))
+        self.assertFalse(r["schedule"]["enabled"])
+
+
+# ═══════════════════════════════ admin gating ══════════════════════════════
+
+class AdminGatingTest(unittest.TestCase):
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        for table in (Finding, ScanRun, Ticket, Device, User):
+            db.query(table).delete()
+        db.commit()
+        from auth import hash_password
+        admin = User(username="admin", role="admin",
+                     hashed_password=hash_password("pw"), is_active=True)
+        op = User(username="op", role="operator",
+                  hashed_password=hash_password("pw"), is_active=True)
+        db.add(admin)
+        db.add(op)
+        db.commit()
+        # capture plain attrs BEFORE the session closes (ORM objects expire on close)
+        self.admin = SimpleNamespace(username="admin", role="admin")
+        self.op = SimpleNamespace(username="op", role="operator")
+        db.close()
+
+    def _client(self, user):
+        from main import app
+        from fastapi.testclient import TestClient
+        from auth import create_access_token
+        token = create_access_token({"sub": user.username, "role": user.role,
+                                     "groups": [], "auth_method": "password"})
+        return TestClient(app), token
+
+    def test_routes_require_admin(self):
+        client, token = self._client(self.op)
+        self.assertEqual(client.get("/api/v1/netopt/status",
+                                    headers={"Authorization": f"Bearer {token}"}).status_code, 403)
+        self.assertEqual(client.post("/api/v1/netopt/runs", json={},
+                                     headers={"Authorization": f"Bearer {token}"}).status_code, 403)
+        self.assertEqual(client.get("/api/v1/netopt/limits",
+                                    headers={"Authorization": f"Bearer {token}"}).status_code, 403)
+
+    def test_admin_passes_gate(self):
+        client, token = self._client(self.admin)
+        self.assertEqual(client.get("/api/v1/netopt/status",
+                                    headers={"Authorization": f"Bearer {token}"}).status_code, 200)
+        # empty scope -> 400 (gate passed; nothing to scan)
+        self.assertEqual(client.post("/api/v1/netopt/runs", json={},
+                                     headers={"Authorization": f"Bearer {token}"}).status_code, 400)
+
+    def test_unauthenticated_401(self):
+        from main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        self.assertEqual(client.get("/api/v1/netopt/status").status_code, 401)
+        self.assertEqual(client.post("/api/v1/netopt/runs", json={}).status_code, 401)
+
+    def test_route_binds_to_start_run(self):
+        from main import app
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/netopt/runs"
+                     and "POST" in getattr(r, "methods", []))
+        self.assertEqual(route.endpoint.__name__, "start_run")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

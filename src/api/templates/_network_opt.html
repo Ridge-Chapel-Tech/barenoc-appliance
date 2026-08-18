@@ -1,0 +1,437 @@
+{# Network Optimization tab (admin-only) — included by dashboard.html #}
+<div id="netopt-app" class="mt-2">
+  <div class="flex items-center justify-between flex-wrap gap-3">
+    <div>
+      <h2 class="text-lg font-medium text-gray-900">Network Optimization</h2>
+      <p class="text-sm text-gray-500 mt-1">Read-only audit of your network gear — performance, security, reliability, hygiene.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="netopt-run" onclick="netoptStart()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">▶ Run scan</button>
+      <button id="netopt-cancel" onclick="netoptCancel()" class="hidden rounded-md bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100">Cancel</button>
+    </div>
+  </div>
+
+  <!-- progress -->
+  <div id="netopt-progress" class="mt-4 hidden bg-white shadow rounded-lg p-4">
+    <div class="flex items-center justify-between text-sm text-gray-600">
+      <span id="netopt-progress-label">Scanning…</span>
+      <span id="netopt-progress-count" class="font-mono"></span>
+    </div>
+    <div class="mt-2 h-2 rounded-full bg-gray-100 overflow-hidden">
+      <div id="netopt-progress-bar" class="h-2 bg-barenoc-600" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- current report -->
+  <div id="netopt-report" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-xs font-medium text-gray-500 uppercase">Overall score</div>
+      <div id="netopt-score" class="text-3xl font-semibold mt-1">—</div>
+      <div id="netopt-score-note" class="text-xs text-gray-400 mt-1"></div>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-xs font-medium text-gray-500 uppercase">Critical</div>
+      <div id="netopt-critical" class="text-3xl font-semibold mt-1 text-red-600">—</div>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-xs font-medium text-gray-500 uppercase">Warnings</div>
+      <div id="netopt-warning" class="text-3xl font-semibold mt-1 text-orange-600">—</div>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-xs font-medium text-gray-500 uppercase">Info</div>
+      <div id="netopt-info" class="text-3xl font-semibold mt-1 text-gray-600">—</div>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-xs font-medium text-gray-500 uppercase">Last scan</div>
+      <div id="netopt-last" class="text-sm font-medium mt-1 text-gray-700">—</div>
+      <div id="netopt-last-scope" class="text-xs text-gray-400 mt-1"></div>
+    </div>
+  </div>
+
+  <!-- category scores -->
+  <div id="netopt-categories" class="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4"></div>
+
+  <!-- findings -->
+  <div id="netopt-findings" class="mt-6"></div>
+
+  <!-- schedule + limits -->
+  <div class="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-sm font-medium text-gray-900">Schedule</div>
+      <div id="netopt-sched-summary" class="mt-2 text-xs text-gray-500"></div>
+      <div class="mt-3 space-y-2 text-sm">
+        <label class="flex items-center gap-2"><input type="checkbox" id="netopt-sched-enable"> enable scheduled scan</label>
+        <div class="flex items-center gap-2">
+          <select id="netopt-sched-mode" onchange="netoptModeChange()" class="rounded-md border-gray-300 border px-2 py-1 text-sm">
+            <option value="recurring">Recurring</option>
+            <option value="onetime">One-time</option>
+          </select>
+          <span id="netopt-sched-recurring" class="inline-flex items-center gap-1">
+            <select id="netopt-sched-day" class="rounded-md border-gray-300 border px-2 py-1 text-sm">
+              <option value="daily">Daily</option>
+              <option value="0">Sunday</option><option value="1">Monday</option>
+              <option value="2">Tuesday</option><option value="3">Wednesday</option>
+              <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+            </select>
+            at <input type="number" id="netopt-sched-hour" min="0" max="23" value="3" class="w-14 rounded-md border-gray-300 border px-1 py-1 text-sm"> :00 <span class="text-gray-400">(local time)</span>
+          </span>
+          <span id="netopt-sched-onetime" class="hidden inline-flex items-center gap-1">
+            <input type="datetime-local" id="netopt-sched-when" class="rounded-md border-gray-300 border px-2 py-1 text-sm">
+          </span>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="netoptSaveSchedule()" class="rounded-md bg-gray-100 px-3 py-1.5 text-sm hover:bg-gray-200">Save schedule</button>
+          <button onclick="netoptCancelSchedule()" id="netopt-sched-cancel" class="hidden rounded-md bg-red-50 text-red-700 px-3 py-1.5 text-sm hover:bg-red-100">Cancel schedule</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white shadow rounded-lg p-4">
+      <div class="text-sm font-medium text-gray-900">Scope &amp; limits</div>
+      <div class="mt-3 space-y-2 text-sm">
+        <label class="flex items-center gap-2"><input type="checkbox" id="netopt-enabled"> Network Optimization enabled</label>
+        <div class="flex items-center gap-2">
+          <span class="text-gray-500 w-28">Max hosts</span>
+          <input type="number" id="netopt-max-hosts" min="1" max="250" class="w-20 rounded-md border-gray-300 border px-2 py-1 text-sm">
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-gray-500 w-28">Profile</span>
+          <select id="netopt-profile" class="rounded-md border-gray-300 border px-2 py-1 text-sm">
+            <option value="standard">standard (-T3)</option>
+            <option value="light">light (-T2)</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-gray-500 w-28">Concurrency</span>
+          <input type="number" id="netopt-concurrency" min="1" max="16" class="w-20 rounded-md border-gray-300 border px-2 py-1 text-sm">
+        </div>
+        <button onclick="netoptSaveLimits()" class="rounded-md bg-gray-100 px-3 py-1.5 text-sm hover:bg-gray-200">Save limits</button>
+        <div id="netopt-scope" class="mt-2 text-xs text-gray-500"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- run history -->
+  <div class="mt-6">
+    <h3 class="text-sm font-medium text-gray-900">Run history</h3>
+    <div class="mt-2 bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Run</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Score</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Findings</th>
+            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
+          </tr>
+        </thead>
+        <tbody id="netopt-history"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- run detail -->
+  <div id="netopt-detail" class="mt-6 hidden"></div>
+</div>
+
+<script>
+(function () {
+  var NO = { total: 0, critical: 0, warning: 0, info: 0 };
+
+  function token() { return localStorage.getItem('access_token'); }
+  async function nFetch(path, opts) {
+    var r = await fetch('/api/v1/netopt' + path, Object.assign({
+      headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' }
+    }, opts || {}));
+    if (!r.ok) { var e = await r.json().catch(function(){return{};}); throw new Error(e.detail || ('HTTP ' + r.status)); }
+    return r.json();
+  }
+  function esc(t) { if (t === null || t === undefined) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmtTz(ts) {
+    if (!ts) return '—';
+    var s = String(ts).trim().replace(' ', 'T');
+    if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z';
+    var d = new Date(s);
+    return isNaN(d) ? ts : d.toLocaleString();
+  }
+  var SEV = {
+    critical: ['bg-red-100 text-red-700', 'Critical'],
+    warning: ['bg-orange-100 text-orange-700', 'Warning'],
+    info: ['bg-gray-100 text-gray-600', 'Info']
+  };
+  var CAT = { performance: 'Performance', security: 'Security', reliability: 'Reliability', hygiene: 'Hygiene' };
+
+  async function netoptLoad() {
+    try {
+      var s = await nFetch('/status');
+      document.getElementById('netopt-enabled').checked = !!s.enabled;
+      document.getElementById('netopt-max-hosts').value = s.knobs.max_hosts;
+      document.getElementById('netopt-profile').value = s.knobs.profile;
+      document.getElementById('netopt-concurrency').value = s.knobs.concurrency;
+      netoptRenderSchedule(s.schedule);
+      netoptLoadLimits();
+      netoptLoadHistory();
+      if (s.active) {
+        netoptShowProgress(s.active);
+        netoptPoll(s.active.run_id);
+      } else if (s.latest) {
+        netoptRenderLatest(s.latest);
+        netoptLoadRun(s.latest.run_id);
+      } else {
+        netoptEmpty();
+      }
+    } catch (e) { console.error('netopt:', e); }
+  }
+
+  function netoptEmpty() {
+    document.getElementById('netopt-score').textContent = '—';
+    document.getElementById('netopt-critical').textContent = '0';
+    document.getElementById('netopt-warning').textContent = '0';
+    document.getElementById('netopt-info').textContent = '0';
+    document.getElementById('netopt-last').textContent = 'no scans yet';
+    document.getElementById('netopt-findings').innerHTML =
+      '<div class="bg-white shadow rounded-lg p-6 text-center text-gray-500">No scan yet — run your first Network Optimization scan.</div>';
+    document.getElementById('netopt-categories').innerHTML = '';
+  }
+
+  function netoptRenderLatest(r) {
+    document.getElementById('netopt-score').textContent = r.score != null ? r.score : '—';
+    document.getElementById('netopt-score-note').textContent = '0-100, higher is better';
+    document.getElementById('netopt-last').textContent = fmtTz(r.finished_at || r.started_at);
+    document.getElementById('netopt-last-scope').textContent = 'run #' + r.run_id + ' · ' + r.total_findings + ' findings';
+    document.getElementById('netopt-critical').textContent = '…';
+    document.getElementById('netopt-warning').textContent = '…';
+    document.getElementById('netopt-info').textContent = '…';
+  }
+
+  async function netoptLoadRun(id) {
+    try {
+      var d = await nFetch('/runs/' + id);
+      document.getElementById('netopt-critical').textContent = (d.summary.counts && d.summary.counts.critical) || 0;
+      document.getElementById('netopt-warning').textContent = (d.summary.counts && d.summary.counts.warning) || 0;
+      document.getElementById('netopt-info').textContent = (d.summary.counts && d.summary.counts.info) || 0;
+      netoptRenderCategories(d.summary.categories);
+      netoptRenderFindings(d.findings);
+    } catch (e) { console.error('netopt run:', e); }
+  }
+
+  function netoptRenderCategories(cats) {
+    if (!cats) { document.getElementById('netopt-categories').innerHTML = ''; return; }
+    var html = '';
+    Object.keys(cats).forEach(function (c) {
+      html += '<div class="bg-white shadow rounded-lg p-3">' +
+        '<div class="text-xs font-medium text-gray-500">' + (CAT[c] || c) + '</div>' +
+        '<div class="text-2xl font-semibold ' + (cats[c] >= 90 ? 'text-green-600' : cats[c] >= 70 ? 'text-yellow-600' : 'text-red-600') + '">' + cats[c] + '</div></div>';
+    });
+    document.getElementById('netopt-categories').innerHTML = html;
+  }
+
+  function netoptRenderFindings(findings) {
+    var el = document.getElementById('netopt-findings');
+    if (!findings || !findings.length) {
+      el.innerHTML = '<div class="bg-white shadow rounded-lg p-6 text-center text-green-700">✅ No findings — the network looks clean.</div>';
+      return;
+    }
+    var html = '<h3 class="text-sm font-medium text-gray-900 mb-2">Findings (' + findings.length + ')</h3>';
+    html += '<div class="space-y-2">';
+    findings.forEach(function (f) {
+      var sev = SEV[f.severity] || SEV.info;
+      var cat = CAT[f.category] || f.category;
+      html += '<div class="bg-white shadow rounded-lg p-3 border-l-4 ' +
+        (f.severity === 'critical' ? 'border-red-500' : f.severity === 'warning' ? 'border-orange-400' : 'border-gray-300') + '">' +
+        '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+          '<span class="text-sm font-medium text-gray-900">' + esc(f.title) + '</span>' +
+          '<span class="flex items-center gap-1">' +
+            '<span class="px-2 py-0.5 text-xs rounded-full ' + sev[0] + '">' + sev[1] + '</span>' +
+            '<span class="px-2 py-0.5 text-xs rounded-full bg-blue-50 text-blue-700">' + esc(cat) + '</span>' +
+          '</span>' +
+        '</div>' +
+        (f.detail ? '<div class="mt-1 text-xs text-gray-500">' + esc(f.detail) + '</div>' : '') +
+        '<div class="mt-1 text-xs font-mono text-gray-400">' + esc(f.finding_key) +
+          (f.interface ? ' · ' + esc(f.interface) : '') + '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function netoptShowProgress(a) {
+    document.getElementById('netopt-progress').classList.remove('hidden');
+    document.getElementById('netopt-run').classList.add('hidden');
+    document.getElementById('netopt-cancel').classList.remove('hidden');
+    var p = a.progress || {};
+    document.getElementById('netopt-progress-label').textContent = 'Scanning… (' + (p.stage || 'queued') + ')';
+    var total = p.total || 0, done = p.done || 0;
+    document.getElementById('netopt-progress-count').textContent = done + ' / ' + total;
+    document.getElementById('netopt-progress-bar').style.width = (total ? Math.round(done / total * 100) : 0) + '%';
+  }
+
+  async function netoptPoll(id) {
+    for (var i = 0; i < 120; i++) {
+      await new Promise(function (r) { setTimeout(r, 3000); });
+      try {
+        var s = await nFetch('/status');
+        if (s.active && s.active.run_id === id) { netoptShowProgress(s.active); continue; }
+        if (s.latest) { netoptRenderLatest(s.latest); netoptLoadRun(s.latest.run_id); }
+        break;
+      } catch (e) { break; }
+    }
+    document.getElementById('netopt-progress').classList.add('hidden');
+    document.getElementById('netopt-run').classList.remove('hidden');
+    document.getElementById('netopt-cancel').classList.add('hidden');
+    netoptLoadHistory();
+  }
+
+  async function netoptStart() {
+    if (!confirm('Run a Network Optimization scan now? It is read-only.')) return;
+    try {
+      var r = await nFetch('/runs', { method: 'POST' });
+      netoptShowProgress({ run_id: r.run_id, progress: { stage: 'queued', total: r.hosts || 0, done: 0 } });
+      netoptPoll(r.run_id);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function netoptCancel() {
+    try {
+      var s = await nFetch('/status');
+      if (!s.active) return;
+      await nFetch('/runs/' + s.active.run_id + '/cancel', { method: 'POST' });
+      netoptLoad();
+    } catch (e) { alert(e.message); }
+  }
+
+  function netoptRenderSchedule(sc) {
+    document.getElementById('netopt-sched-enable').checked = !!sc.enabled;
+    document.getElementById('netopt-sched-mode').value = sc.mode === 'onetime' ? 'onetime' : 'recurring';
+    document.getElementById('netopt-sched-day').value = (sc.day === 'daily' ? 'daily' : String(sc.day)) || '0';
+    document.getElementById('netopt-sched-hour').value = sc.hour != null ? sc.hour : 3;
+    document.getElementById('netopt-sched-when').value = (sc.when || '').slice(0, 16);
+    document.getElementById('netopt-sched-cancel').classList.toggle('hidden', !(sc.enabled && sc.mode === 'onetime' && sc.when));
+    document.getElementById('netopt-sched-summary').textContent = netoptSchedSummary(sc);
+    netoptModeChange();
+  }
+  function netoptSchedSummary(sc) {
+    if (!sc.enabled) return 'No schedule set — scans run manually.';
+    if (sc.mode === 'onetime') return 'One-time scan at ' + fmtTz(sc.when) + ' local.';
+    var day = sc.day === 'daily' ? 'daily' : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][parseInt(sc.day) || 0];
+    return 'Recurring ' + day + ' at ' + sc.hour + ':00 local time.';
+  }
+  function netoptModeChange() {
+    var mode = document.getElementById('netopt-sched-mode').value;
+    document.getElementById('netopt-sched-recurring').classList.toggle('hidden', mode !== 'recurring');
+    document.getElementById('netopt-sched-onetime').classList.toggle('hidden', mode !== 'onetime');
+  }
+  async function netoptSaveSchedule() {
+    var mode = document.getElementById('netopt-sched-mode').value;
+    try {
+      await nFetch('/schedule', { method: 'POST', body: JSON.stringify({
+        enabled: document.getElementById('netopt-sched-enable').checked,
+        mode: mode,
+        day: document.getElementById('netopt-sched-day').value,
+        hour: parseInt(document.getElementById('netopt-sched-hour').value),
+        when: mode === 'onetime' ? document.getElementById('netopt-sched-when').value : ''
+      })});
+      var s = await nFetch('/status');
+      netoptRenderSchedule(s.schedule);
+    } catch (e) { alert(e.message); }
+  }
+  async function netoptCancelSchedule() {
+    try {
+      await nFetch('/schedule/cancel', { method: 'POST' });
+      var s = await nFetch('/status');
+      netoptRenderSchedule(s.schedule);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function netoptLoadLimits() {
+    try {
+      var l = await nFetch('/limits');
+      var scope = l.scope || {};
+      var names = (scope.included || []).map(function (d) { return esc(d.name || d.ip); }).join(', ');
+      document.getElementById('netopt-scope').textContent =
+        'Scope: ' + (scope.count || 0) + ' device(s)' +
+        (scope.max_hosts && scope.count >= scope.max_hosts ? ' (capped at ' + scope.max_hosts + ')' : '') +
+        (names ? ' — ' + names : '') +
+        ((scope.excluded && scope.excluded.length) ? ' · excluded (self): ' + scope.excluded.map(function(e){return esc(e.name||e.ip);}).join(', ') : '');
+    } catch (e) { console.error('netopt limits:', e); }
+  }
+  async function netoptSaveLimits() {
+    try {
+      await nFetch('/limits', { method: 'POST', body: JSON.stringify({
+        enabled: document.getElementById('netopt-enabled').checked,
+        max_hosts: parseInt(document.getElementById('netopt-max-hosts').value),
+        profile: document.getElementById('netopt-profile').value,
+        concurrency: parseInt(document.getElementById('netopt-concurrency').value)
+      })});
+      await netoptLoadLimits();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function netoptLoadHistory() {
+    try {
+      var d = await nFetch('/runs');
+      var tbody = document.getElementById('netopt-history');
+      tbody.innerHTML = '';
+      (d.runs || []).forEach(function (r) {
+        var sev = SEV[r.status] || null;
+        var statusBadge = r.status === 'completed' ? '<span class="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700">completed</span>' :
+          r.status === 'running' || r.status === 'queued' ? '<span class="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700">' + esc(r.status) + '</span>' :
+          '<span class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">' + esc(r.status) + '</span>';
+        tbody.innerHTML += '<tr class="hover:bg-gray-50 cursor-pointer" onclick="netoptShowRun(' + r.run_id + ')">' +
+          '<td class="px-4 py-2 font-mono text-barenoc-600">#' + r.run_id + '</td>' +
+          '<td class="px-4 py-2">' + statusBadge + '</td>' +
+          '<td class="px-4 py-2">' + (r.score != null ? r.score : '—') + '</td>' +
+          '<td class="px-4 py-2">' + r.total_findings + '</td>' +
+          '<td class="px-4 py-2 text-gray-500">' + fmtTz(r.started_at) + '</td>' +
+        '</tr>';
+      });
+    } catch (e) { console.error('netopt history:', e); }
+  }
+
+  async function netoptShowRun(id) {
+    try {
+      var d = await nFetch('/runs/' + id);
+      var el = document.getElementById('netopt-detail');
+      el.classList.remove('hidden');
+      el.innerHTML = '<div class="bg-white shadow rounded-lg p-4">' +
+        '<div class="flex items-center justify-between">' +
+          '<h3 class="text-sm font-medium text-gray-900">Run #' + d.run_id + ' detail</h3>' +
+          '<button onclick="document.getElementById(\'netopt-detail\').classList.add(\'hidden\')" class="text-sm text-gray-400 hover:text-gray-600">✕ close</button>' +
+        '</div>' +
+        '<div class="mt-2 text-xs text-gray-500">Score ' + (d.score != null ? d.score : '—') + ' · ' + d.findings.length + ' findings · ' + fmtTz(d.started_at) + ' → ' + fmtTz(d.finished_at) + '</div>' +
+        '<div id="netopt-detail-findings" class="mt-3"></div>' +
+      '</div>';
+      var inner = document.createElement('div');
+      netoptRenderFindingsInto(d.findings, inner);
+      el.querySelector('#netopt-detail-findings').innerHTML = inner.innerHTML;
+      el.scrollIntoView({ behavior: 'smooth' });
+    } catch (e) { alert(e.message); }
+  }
+  function netoptRenderFindingsInto(findings, el) {
+    if (!findings || !findings.length) { el.innerHTML = '<div class="text-sm text-green-700">No findings.</div>'; return; }
+    var html = '<div class="space-y-2">';
+    findings.forEach(function (f) {
+      var sev = SEV[f.severity] || SEV.info;
+      html += '<div class="border rounded p-2">' +
+        '<div class="flex items-center justify-between gap-2">' +
+          '<span class="text-sm font-medium">' + esc(f.title) + '</span>' +
+          '<span class="px-2 py-0.5 text-xs rounded-full ' + sev[0] + '">' + sev[1] + '</span>' +
+        '</div>' +
+        (f.detail ? '<div class="mt-1 text-xs text-gray-500">' + esc(f.detail) + '</div>' : '') +
+        '<div class="mt-1 text-xs font-mono text-gray-400">' + esc(f.finding_key) + '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  window.netoptLoad = netoptLoad;
+  window.netoptShowRun = netoptShowRun;
+  window.netoptStart = netoptStart;
+  window.netoptCancel = netoptCancel;
+  window.netoptModeChange = netoptModeChange;
+  window.netoptSaveSchedule = netoptSaveSchedule;
+  window.netoptCancelSchedule = netoptCancelSchedule;
+  window.netoptSaveLimits = netoptSaveLimits;
+})();
+</script>

@@ -340,6 +340,70 @@ def check_update_schedule(token: str, last_triggered: dict):
                   log_label=f"Scheduled update queued ({key})")
 
 
+def _queue_netopt(token: str, key: str, last_triggered: dict, complete: bool):
+    """POST /netopt/runs (scheduled scan). One-time schedules are marked fired
+    + disabled after a successful queue so they never re-fire."""
+    try:
+        _api_post("/netopt/runs", {"triggered_by": "schedule"}, token)
+    except Exception as e:
+        logger.warning(f"netopt schedule not queued: {e}")
+        return
+    last_triggered["netopt"] = key
+    logger.info(f"Scheduled Network Optimization scan queued ({key})")
+    if complete:
+        try:
+            _api_post("/netopt/schedule/complete", {}, token)
+        except Exception as e:
+            logger.warning(f"netopt schedule complete failed: {e}")
+
+
+def check_netopt_schedule(token: str, last_triggered: dict):
+    """Network Optimization schedule (recurring day/hour or one-time local
+    datetime — same local-time pattern as updates-schedule-v2). The scan is
+    READ-ONLY; the scheduler just triggers it like a manual run."""
+    try:
+        sched = _api_get("/netopt/schedule", token)
+    except Exception as e:
+        logger.debug(f"netopt schedule read failed: {e}")
+        return
+    if not sched.get("enabled"):
+        return
+
+    mode = str(sched.get("mode") or "recurring").lower()
+    tz = _appliance_tz()
+
+    if mode == "onetime":
+        when = str(sched.get("when") or "").strip()
+        if not when or sched.get("fired"):
+            return
+        try:
+            when_utc = _local_to_utc(_parse_local_dt(when), tz)
+        except Exception as e:
+            logger.warning(f"netopt schedule: bad one-time when '{when}': {e}")
+            return
+        if datetime.datetime.now(datetime.timezone.utc) < when_utc:
+            return
+        key = f"netopt-onetime-{when}"
+        if last_triggered.get("netopt") == key:
+            return
+        _queue_netopt(token, key, last_triggered, complete=True)
+        return
+
+    # recurring
+    now = _local_now(tz)
+    day = str(sched.get("day", "0"))
+    if day != "daily":
+        sun0 = (now.weekday() + 1) % 7
+        if sun0 != int(day):
+            return
+    if int(sched.get("hour", 3)) != now.hour:
+        return
+    key = f"netopt-{day}-{now.date().isoformat()}"
+    if last_triggered.get("netopt") == key:
+        return
+    _queue_netopt(token, key, last_triggered, complete=False)
+
+
 def check_update_progress(token: str, last_notified: dict):
     """Watch the host self-update service's progress file (exposed via
     /updates/status). When it reaches a terminal stage (done/failed), email
@@ -392,6 +456,7 @@ def run():
     last_unifi = 0
     last_upd_sched = 0
     last_upd_prog = 0
+    last_netopt = 0
     _last_triggered = {}
 
     while True:
@@ -428,6 +493,11 @@ def run():
             if now - last_upd_prog >= 60:
                 check_update_progress(token, _last_triggered)
                 last_upd_prog = now
+
+            # Network Optimization schedule — checked every 60s.
+            if now - last_netopt >= 60:
+                check_netopt_schedule(token, _last_triggered)
+                last_netopt = now
 
         except Exception as e:
             logger.error(f"Scheduler error: {e}")

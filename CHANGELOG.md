@@ -15,6 +15,28 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.c] — 2026-08-18
+
+### Added
+- **Network Optimization tab (P1 — scheduled read-only network audit/report)** —
+  an admin-only Dashboard tab that runs a deterministic, rule-based audit of
+  NETWORK GEAR ONLY (gateway/router/switch/AP + UniFi-managed devices; never
+  endpoints/servers, and never the appliance itself — self-protection). A
+  vendor-agnostic collector framework (channels: `unifi` + `snmp` + `nmap/ping`,
+  extensible to Cisco/Juniper SSH config-parsing in P2) feeds ~40 stable,
+  testable checks across PERFORMANCE, SECURITY, RELIABILITY and HYGIENE, each
+  with a stable `finding_key`, severity (critical/warning/info), title/detail,
+  and structured `evidence` JSON — no LLM in the findings path, no tickets/
+  emails/actions. Results persist in new `scan_runs` + `findings` tables
+  (schema-versioned, summary slot reserved for a later LLM executive summary,
+  stable keys make trend/diff + finding→fix links cheap later). Scheduling
+  reuses the updates-schedule-v2 local-time pattern (one-time or recurring,
+  default weekly Sun 03:00 local, disabled until enabled) with progress +
+  cancel and per-host concurrency. Cost knobs are first-class (`NETOPT_ENABLED`,
+  `NETOPT_MAX_HOSTS`, `NETOPT_SCAN_PROFILE` (-T3/-T2, capped ports, no
+  intrusive scripts), `NETOPT_CONCURRENCY`, `NETOPT_DEFAULT_SCHEDULE`). The
+  `nmap` binary is now installed in the api image; scans run entirely in-process
+  in the API container and never feed the pi/LLM agent loop.
 ## [2026.08.18.b] — 2026-08-18
 
 ### Added
@@ -25,6 +47,7 @@ Categories per release:
   Firefox's NSS store, best-effort) so `https://<appliance-ip>` and `app.<domain>` stop
   showing &ldquo;Not Secure&rdquo; for home users. Never installed silently — consent is always
   required; undo commands are documented in `docs/deployment_guide.md`.
+
 
 ## [2026.08.18.a] — 2026-08-18
 

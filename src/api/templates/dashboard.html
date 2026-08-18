@@ -2,6 +2,13 @@
 {% block title %}BareNOC — Dashboard{% endblock %}
 {% block inner_content %}
 <div id="dashboard-app">
+    <!-- Dashboard tabs (Network Optimization is admin-only) -->
+    <div id="dash-tabs" class="flex gap-1 border-b border-gray-200">
+        <button id="tab-overview" onclick="showDashTab('overview')" class="px-4 py-2 text-sm font-medium rounded-t-md border-b-2 border-barenoc-600 text-barenoc-700">Overview</button>
+        <button id="tab-netopt" onclick="showDashTab('netopt')" class="hidden px-4 py-2 text-sm font-medium rounded-t-md border-b-2 border-transparent text-gray-500 hover:text-gray-700">Network Optimization</button>
+    </div>
+
+    <div id="overview-pane">
     <div class="flex items-center gap-4">
         <img id="brand-logo" class="hidden h-14 w-auto max-w-xs object-contain" alt="Customer logo">
         <div>
@@ -93,11 +100,49 @@
         </div>
     </div>
 
+    </div><!-- /overview-pane -->
+
+    <!-- Network Optimization (admin-only tab) -->
+    <div id="netopt-pane" class="hidden">
+        {% include "_network_opt.html" %}
+    </div>
+
     <div id="loading-dashboard" class="mt-8 text-center text-gray-500">Loading dashboard...</div>
 </div>
 
 <script>
 const TOKEN = () => localStorage.getItem('access_token');
+
+// ── Dashboard tabs (Overview / Network Optimization) ──
+function showDashTab(tab) {
+    var ov = document.getElementById('overview-pane');
+    var no = document.getElementById('netopt-pane');
+    var to = document.getElementById('tab-overview');
+    var tn = document.getElementById('tab-netopt');
+    ov.classList.toggle('hidden', tab !== 'overview');
+    no.classList.toggle('hidden', tab !== 'netopt');
+    to.classList.toggle('border-barenoc-600', tab === 'overview');
+    to.classList.toggle('text-barenoc-700', tab === 'overview');
+    to.classList.toggle('border-transparent', tab !== 'overview');
+    to.classList.toggle('text-gray-500', tab !== 'overview');
+    tn.classList.toggle('border-barenoc-600', tab === 'netopt');
+    tn.classList.toggle('text-barenoc-700', tab === 'netopt');
+    tn.classList.toggle('border-transparent', tab !== 'netopt');
+    tn.classList.toggle('text-gray-500', tab !== 'netopt');
+    if (tab === 'netopt' && window.netoptLoad) { window.netoptLoad(); }
+}
+function initNetoptTab() {
+    // Network Optimization is admin-only — the API is admin-gated server-side;
+    // this just controls whether the tab is offered in the UI.
+    try {
+        var token = localStorage.getItem('access_token');
+        if (!token) return;
+        var payload = JSON.parse(atob(token.split('.')[1]));
+        if (payload.role === 'admin') {
+            document.getElementById('tab-netopt').classList.remove('hidden');
+        }
+    } catch (e) { /* non-admin: keep the tab hidden */ }
+}
 
 // Minimal escape helper (dashboard uses template literals elsewhere).
 function esc(t) { if (t === null || t === undefined) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -220,7 +265,7 @@ async function loadDashboard() {
     document.getElementById('loading-dashboard').style.display = 'none';
 }
 
-document.addEventListener('DOMContentLoaded', function () { loadDashboard(); loadReleaseBanner(); });
+document.addEventListener('DOMContentLoaded', function () { loadDashboard(); loadReleaseBanner(); initNetoptTab(); });
 
 // ── Performance & Reporting ──
 let _charts = [];
