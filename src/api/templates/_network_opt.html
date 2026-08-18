@@ -196,7 +196,7 @@
 
   function netoptRenderLatest(r) {
     document.getElementById('netopt-score').textContent = r.score != null ? r.score : '—';
-    document.getElementById('netopt-score-note').textContent = '0-100, higher is better';
+    document.getElementById('netopt-score-note').textContent = 'Healthy home networks score 90+; a low score means real risks — check Critical and Warnings first.';
     document.getElementById('netopt-last').textContent = fmtTz(r.finished_at || r.started_at);
     document.getElementById('netopt-last-scope').textContent = 'run #' + r.run_id + ' · ' + r.total_findings + ' findings';
     document.getElementById('netopt-critical').textContent = '…';

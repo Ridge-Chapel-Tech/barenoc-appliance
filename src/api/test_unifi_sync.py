@@ -396,6 +396,47 @@ class AutoAdoptTest(unittest.TestCase):
         db.close()
 
 
+class SyncIpRefreshTest(unittest.TestCase):
+    """08-18 incident: the sync only refreshed status/last_seen — a stale
+    pre-VLAN-move IP survived and NetOpt trusted it. The sync must now write
+    the controller's LIVE IP + hostname on every pass."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+
+    def test_existing_device_ip_and_hostname_refresh(self):
+        init_db()
+        db = SessionLocal()
+        db.add(Device(name="U6 Mesh", hostname=None, ip_address="192.168.1.41",
+                      mac_address="aa:bb:cc:00:00:77", device_type="ap",
+                      status="unreachable", claimed=True, unifi_managed=True,
+                      device_group="default"))
+        db.commit()
+        db.close()
+
+        devs = [{"name": "U6 Mesh", "hostname": "u6-mesh", "ip": "192.168.5.41",
+                 "mac": "aa:bb:cc:00:00:77", "type": "ap", "model": "U6 Mesh",
+                 "status": "online"}]
+        fake = FakeClient(devs, [])
+        db = SessionLocal()
+        with patch.object(unifi_sync, "_auth_ready", return_value=True), \
+             patch.object(unifi_sync, "_get_unifi_config",
+                          return_value={"url": "x", "username": "u", "password": "p", "api_key": ""}), \
+             patch.object(unifi_sync, "_read_unifi_env", return_value={"UNIFI_AUTO_ADOPT": "true"}), \
+             patch.object(unifi_sync, "_unifi_client", return_value=fake):
+            unifi_sync.sync_from_unifi(db=db, user=SimpleNamespace(username="tester"))
+        db.expire_all()
+        rec = db.query(Device).filter(Device.mac_address == "aa:bb:cc:00:00:77").first()
+        self.assertEqual(rec.ip_address, "192.168.5.41")   # stale .1.41 -> live .5.41
+        self.assertEqual(rec.hostname, "u6-mesh")
+        self.assertEqual(rec.status, "online")
+        db.close()
+
+
 class RouteBindingRegressionTest(unittest.TestCase):
     """Route-level guard: a decorator must bind to the intended endpoint.
     (2026-08-16: the /config decorator bound to the extracted _write_env

@@ -322,20 +322,57 @@ def validate_action(action: str) -> tuple[bool, str]:
         return False, f"Unknown action: '{action}'. Allowed: {[a.value for a in AllowedAction]}"
 
 
+_IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+_CIDR_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$")
+
+
+def is_ip_or_subnet(target: str) -> bool:
+    """True for a bare IPv4 address or a subnet CIDR (agent-validated later)."""
+    return bool(_IP_RE.match(target or "") or _CIDR_RE.match(target or ""))
+
+
+def find_subnet(text: str) -> "str | None":
+    """First subnet CIDR in free text — the actionable target of a
+    whole-subnet scan request ('ping sweep 192.168.1.0/24')."""
+    m = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", text or "")
+    return m.group(0) if m else None
+
+
+# Tone-discipline: customer-facing (chat) vs technical (ticket/log) wording.
+_UNKNOWN_TARGET_FRIENDLY = (
+    "I couldn't find a device named '{target}'. You can ask me to check an IP "
+    "address or subnet instead (for example, 'scan 192.168.1.0/24'), or adopt "
+    "the device first so it shows up in my inventory."
+)
+
+
+def unknown_target_friendly(target: str) -> str:
+    """Customer-facing message for an unresolvable device name."""
+    return _UNKNOWN_TARGET_FRIENDLY.format(target=target)
+
+
+def unknown_target_detail(target: str) -> str:
+    """Technical ticket/log wording — keeps the internal inventory context."""
+    managed = ", ".join(sorted(MANAGED_DEVICES.keys())) or "(none loaded)"
+    return (f"Unknown target '{target}' — device not in managed inventory "
+            f"(managed: {managed})")
+
+
 def validate_target(target: str) -> tuple[bool, str]:
-    """Check if a target device is in managed inventory."""
+    """Check if a target device is in managed inventory.
+
+    IPs and subnet CIDRs pass through (validated at the agent level). An
+    unresolvable NAME returns the customer-friendly message; call
+    unknown_target_detail() for the technical ticket/log text.
+    """
     if not MANAGED_DEVICES:
         # Not loaded yet — skip validation (will be caught at agent level)
         return True, ""
     if target in MANAGED_DEVICES:
         return True, ""
-    # Allow IP addresses to pass through (validated at agent level)
-    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", target):
+    if is_ip_or_subnet(target):
         return True, ""
-    # Allow subnet CIDRs (network_discovery targets)
-    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$", target):
-        return True, ""
-    return False, f"Unknown target: '{target}'. Device not in managed inventory."
+    return False, unknown_target_friendly(target)
 
 
 def validate_params(action: str, params: dict) -> tuple[bool, str]:

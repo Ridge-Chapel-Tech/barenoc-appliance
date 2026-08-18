@@ -559,6 +559,9 @@ def collect_unifi(config: dict, client=None) -> dict:
                 "is_uplink": bool(pt.get("is_uplink")),
             })
         devices_by_mac[mac] = {
+            "name": d.get("name") or mac,
+            "ip": _live_ip(d),
+            "status": "online" if d.get("state", 0) == 1 else "offline",
             "model": d.get("model", ""),
             "version": d.get("version", ""),
             "upgradable": bool(d.get("upgradable")),
@@ -630,12 +633,29 @@ def _unifi_client_from_env():
     )
 
 
+def _live_ip(d: dict) -> str:
+    """The device's current management IP from a raw stat/device entry:
+    ``config_network.ip`` (static/configured) preferred, falling back to the
+    last-known ``ip``. This is the authority IP for UniFi-managed gear."""
+    cn = d.get("config_network") or {}
+    return (cn.get("ip") or d.get("ip") or "").strip()
+
+
 # ── per-device snapshot builder ────────────────────────────────────────────
 
-def collect_device(device: Device, config: dict) -> dict:
+def collect_device(device: Device, config: dict, unifi_rec: dict = None) -> dict:
     """Run ping/nmap/snmp for ONE device. UniFi data is merged in later (it's
-    collected once at the run level via a shared session)."""
+    collected once at the run level via a shared session).
+
+    ``unifi_rec`` is the controller's live snapshot for this device's MAC (when
+    it is UniFi-managed). For UniFi-managed gear the CONTROLLER is the
+    authority for reachability + the live IP — a stale DB ``ip_address`` (the
+    08-18 incident) must never produce a false ``offline_gear`` critical while
+    the controller shows the device UP."""
     ip = device.ip_address
+    unifi_managed = bool(device.unifi_managed)
+    if unifi_managed and unifi_rec:
+        ip = unifi_rec.get("ip") or ip
     snap = {
         "device_id": device.id,
         "name": device.name,
@@ -644,7 +664,7 @@ def collect_device(device: Device, config: dict) -> dict:
         "device_type": (device.device_type or "unknown").lower(),
         "vendor": device.vendor,
         "model": device.model,
-        "unifi_managed": bool(device.unifi_managed),
+        "unifi_managed": unifi_managed,
         "ping": None,
         "nmap": None,
         "snmp": None,
@@ -653,17 +673,37 @@ def collect_device(device: Device, config: dict) -> dict:
     }
     if not ip:
         return snap
+    if unifi_managed and unifi_rec:
+        # Controller-live authority: reachability comes from the controller's
+        # snapshot, never an ICMP probe of a possibly-stale record IP. (Many
+        # managed devices also drop ICMP while being perfectly online.)
+        online = unifi_rec.get("status") == "online"
+        snap["ping"] = {"reachable": online, "latency_ms": None, "source": "unifi"}
+        if online:
+            # Still port-scan/SNMP the LIVE ip for security/performance
+            # findings (nmap -sT -Pn does not depend on ICMP).
+            snap["nmap"] = collect_nmap(ip, config["profile"])
+            snap["snmp"] = _collect_snmp(device, ip)
+        return snap
+    # Non-UniFi (or UniFi-managed with no controller record): record/scan path.
     snap["ping"] = collect_ping(ip)
     snap["nmap"] = collect_nmap(ip, config["profile"])
-    if device.snmp_community:
-        from crypto import decrypt
-        try:
-            community = decrypt(device.snmp_community)
-        except Exception:
-            community = None
-        if community:
-            snap["snmp"] = collect_snmp(ip, community, "2c")
+    snap["snmp"] = _collect_snmp(device, ip)
     return snap
+
+
+def _collect_snmp(device: Device, ip: str) -> dict:
+    """Decrypt + poll SNMP for a device (None when SNMP is not configured)."""
+    if not device.snmp_community:
+        return None
+    from crypto import decrypt
+    try:
+        community = decrypt(device.snmp_community)
+    except Exception:
+        community = None
+    if community:
+        return collect_snmp(ip, community, "2c")
+    return None
 
 
 # ── run execution ──────────────────────────────────────────────────────────
@@ -736,7 +776,8 @@ def execute_scan(db, run_id: int, config: dict = None, cancel_event=None,
             for d in scope["devices"]:
                 if cancel_event is not None and cancel_event.is_set():
                     break
-                futs[pool.submit(collect if collect else collect_device, d, config)] = d
+                unifi_rec = by_mac.get((d.mac_address or "").lower())
+                futs[pool.submit(collect if collect else collect_device, d, config, unifi_rec)] = d
             for fut in as_completed(futs):
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True

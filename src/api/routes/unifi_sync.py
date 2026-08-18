@@ -689,6 +689,14 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             existing.vendor = existing.vendor or "Ubiquiti"
             existing.model = existing.model or ud["model"]
             existing.last_seen = datetime.utcnow()
+            # Refresh the controller's LIVE IP + hostname on EVERY sync — the
+            # 08-18 incident: records held a stale pre-VLAN-move IP because the
+            # sync only touched status/last_seen, and NetOpt then trusted that
+            # stale record.
+            if ud["ip"]:
+                existing.ip_address = ud["ip"]
+            if ud.get("hostname"):
+                existing.hostname = ud["hostname"]
             if auto_adopt and not existing.claimed:
                 # Adopt previously-discovered-but-unclaimed gear
                 existing.claimed = True
@@ -702,6 +710,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             # established, else left unclaimed for review
             device = Device(
                 name=(ud["name"] or f"unifi-{ud['mac']}") if auto_adopt else (f"unifi-{ud['name']}" if ud["name"] else f"unifi-{ud['mac']}"),
+                hostname=ud.get("hostname") or None,
                 ip_address=ud["ip"] or ud["mac"],
                 mac_address=ud["mac"],
                 device_type=ud["type"],

@@ -50,7 +50,12 @@ CATEGORIES = ("performance", "security", "reliability", "hygiene")
 SEVERITIES = ("critical", "warning", "info")
 
 # Score penalty per finding severity (overall + per-category, floor 0).
-SEVERITY_WEIGHT = {"critical": 25, "warning": 8, "info": 2}
+# PINNED SEMANTICS (gate decision 08-18): criticals −20 stack, warnings −5
+# stack with NO cap, infos −2 but CAPPED (first INFO_COUNT_CAP count, then
+# free) so noise can never tank a healthy network's score.
+SEVERITY_WEIGHT = {"critical": 20, "warning": 5, "info": 2}
+INFO_COUNT_CAP = 5           # first 5 info findings cost −2 each; then stop
+INFO_PENALTY_CAP = 10        # absolute info penalty ceiling (−10 => ≥90 even with 100 infos)
 
 GEAR_TYPES = {"gateway", "router", "switch", "ap"}
 
@@ -62,7 +67,12 @@ CPU_LOAD_WARN = 90.0          # UCD-SNMP 1-min load avg (%) -> warning
 MEM_USED_WARN = 90.0          # UCD-SNMP memory used (%) -> warning
 DUPLEX_FULL_SPEED = 100       # half-duplex at >=100Mbps -> warning
 MTU_EXPECTED = 1500
-LINK_DOWN_COUNT_WARN = 1      # any recorded link-down transition -> warning
+LINK_DOWN_COUNT_WARN = 3      # >2 link-down transitions on a port -> warning.
+                               # A single historical flap (e.g. the 08-18
+                               # PoE-cycle artifact) must not warn forever —
+                               # UniFi's port_table exposes no per-flap
+                               # timestamp, so "recent/repeated" is enforced
+                               # as "repeated" (>2).
 RECENT_REBOOT_SECONDS = 15 * 60      # uptime below this -> "recently rebooted"
 EXTENDED_UPTIME_SECONDS = 365 * 24 * 3600  # uptime above this -> "never rebooted"
 STALE_DEVICE_DAYS = 30
@@ -275,11 +285,18 @@ def _sec_telnet_exposed(snap, dev):
       "SSH management exposed on {name}")
 def _sec_ssh_exposed(snap, dev):
     ports = (dev.get("nmap") or {}).get("open_ports") or []
-    if 22 in ports:
-        return {"port": 22,
-                "detail": _fmt("SSH (port 22) is open on {name}. Fine for management, "
-                               "but restrict it to a management VLAN/ACL and use "
-                               "key-only auth.", {"name": dev.get("name")})}
+    if 22 not in ports:
+        return None
+    ev = {"port": 22,
+          "detail": _fmt("SSH (port 22) is open on {name}. Fine for management, "
+                         "but restrict it to a management VLAN/ACL and use "
+                         "key-only auth.", {"name": dev.get("name")})}
+    # Context-aware severity: Ubiquiti gear ships with SSH as its stock
+    # management channel — an open SSH port there is the vendor default, not a
+    # misconfiguration, so it's informational (never a warning).
+    if _is_ubiquiti(dev):
+        ev["severity"] = "info"
+    return ev
 
 
 @rule("sec.http_mgmt_plaintext", "security", "warning",
@@ -429,7 +446,7 @@ def _rel_link_down_count(snap, dev):
             return {"port": p.get("port_idx"), "name": p.get("name"),
                     "link_down_count": p.get("link_down_count"),
                     "detail": _fmt("Port {name} (idx {port}) has recorded {n} link-down "
-                                   "transition(s) — flapping link / intermittent cable.",
+                                   "transition(s) — repeated flapping / intermittent cable.",
                                    {"name": p.get("name"), "port": p.get("port_idx"),
                                     "n": p.get("link_down_count")})}
 
@@ -694,32 +711,47 @@ def _mgmt_vlans(snap) -> set:
     return out
 
 
+def _is_ubiquiti(dev) -> bool:
+    """True when the device is Ubiquiti gear (UniFi-managed or Ubiquiti
+    vendor). Used to downgrade UniFi-default SSH to info."""
+    if dev.get("unifi_managed"):
+        return True
+    blob = f"{dev.get('vendor') or ''} {dev.get('model') or ''}".lower()
+    return "ubiquiti" in blob or "unifi" in blob
+
+
 # ── evaluation + scoring ───────────────────────────────────────────────────
 
 def _mk_finding(rule, dev, evidence) -> dict:
+    evidence = dict(evidence or {})
+    severity = evidence.pop("severity", None) or rule["severity"]
+    detail = evidence.pop("detail", "")
     iface = evidence.get("interface") or evidence.get("port")
     return {
         "finding_key": rule["key"],
         "category": rule["category"],
-        "severity": rule["severity"],
+        "severity": severity,
         "device_id": dev.get("device_id"),
         "interface": str(iface) if iface is not None else None,
         "title": _fmt(rule["title"], {**dev, **evidence}),
-        "detail": evidence.get("detail", ""),
-        "evidence": {k: v for k, v in evidence.items() if k != "detail"},
+        "detail": detail,
+        "evidence": evidence,
     }
 
 
 def _mk_snapshot_finding(rule, evidence) -> dict:
+    evidence = dict(evidence or {})
+    severity = evidence.pop("severity", None) or rule["severity"]
+    detail = evidence.pop("detail", "")
     return {
         "finding_key": rule["key"],
         "category": rule["category"],
-        "severity": rule["severity"],
+        "severity": severity,
         "device_id": None,
         "interface": None,
         "title": _fmt(rule["title"], evidence),
-        "detail": evidence.get("detail", ""),
-        "evidence": {k: v for k, v in evidence.items() if k != "detail"},
+        "detail": detail,
+        "evidence": evidence,
     }
 
 
@@ -753,12 +785,20 @@ def evaluate(snapshot) -> list:
 def score(findings) -> dict:
     """Overall + per-category scores (0-100, floor 0) and severity/category
     counts. The overall score is stored on scan_runs.score; the rest lands in
-    the structured summary (scan_runs.summary JSON)."""
+    the structured summary (scan_runs.summary JSON).
+
+    PINNED SEMANTICS (gate decision 08-18):
+      * criticals −20 each, stack, floor 0
+      * warnings −5 each, stack, NO cap (genuine multi-warning networks score low)
+      * infos −2 each but CAPPED — only the first INFO_COUNT_CAP count, then
+        free (noise must never tank the score; 100 infos ⇒ ≈90)
+    """
     findings = findings or []
     counts = {"critical": 0, "warning": 0, "info": 0}
     cat_counts = {c: 0 for c in CATEGORIES}
     cat_penalty = {c: 0 for c in CATEGORIES}
     total_penalty = 0
+    info_counted = 0
     for f in findings:
         sev = f.get("severity", "info")
         cat = f.get("category", "hygiene")
@@ -766,6 +806,11 @@ def score(findings) -> dict:
             sev = "info"
         counts[sev] = counts.get(sev, 0) + 1
         w = SEVERITY_WEIGHT.get(sev, 0)
+        if sev == "info":
+            if info_counted >= INFO_COUNT_CAP:
+                w = 0   # beyond the cap, info findings are free
+            else:
+                info_counted += 1
         total_penalty += w
         if cat in cat_counts:
             cat_counts[cat] += 1

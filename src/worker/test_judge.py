@@ -452,6 +452,47 @@ class UnifiNetworkCreateTest(unittest.TestCase):
         self.assertFalse(vp("unifi_set_ssid_password", {"password": "newpass1234"})[0])
 
 
+class TargetValidationWordingTest(unittest.TestCase):
+    """Friendlier unknown-target wording + whole-subnet scan helpers (bug #2)."""
+
+    def setUp(self):
+        from action_validator import MANAGED_DEVICES
+        self._saved = dict(MANAGED_DEVICES)
+        MANAGED_DEVICES.clear()
+        MANAGED_DEVICES["gateway"] = {"id": 1, "ip": "192.168.1.1",
+                                      "type": "router", "hostname": None}
+
+    def tearDown(self):
+        from action_validator import MANAGED_DEVICES
+        MANAGED_DEVICES.clear()
+        MANAGED_DEVICES.update(self._saved)
+
+    def test_unknown_name_returns_friendly_product_message(self):
+        from action_validator import validate_target
+        ok, msg = validate_target("switch-01")
+        self.assertFalse(ok)
+        self.assertIn("I couldn't find a device named 'switch-01'", msg)
+        self.assertIn("adopt", msg)
+        self.assertNotIn("managed inventory", msg)
+
+    def test_technical_detail_kept_for_ticket_log(self):
+        from action_validator import unknown_target_detail
+        detail = unknown_target_detail("switch-01")
+        self.assertIn("not in managed inventory", detail)
+        self.assertIn("gateway", detail)
+
+    def test_ip_and_subnet_still_pass(self):
+        from action_validator import validate_target
+        self.assertTrue(validate_target("192.168.1.50")[0])
+        self.assertTrue(validate_target("192.168.1.0/24")[0])
+
+    def test_find_subnet_extracts_cidr(self):
+        from action_validator import find_subnet
+        self.assertEqual(find_subnet("ping sweep 192.168.1.0/24 please"),
+                         "192.168.1.0/24")
+        self.assertIsNone(find_subnet("ping the switch please"))
+
+
 class PolicyTest(unittest.TestCase):
     def setUp(self):
         self.env_backup = dict(os.environ)

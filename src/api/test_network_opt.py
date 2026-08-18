@@ -145,11 +145,19 @@ class PerformanceRulesTest(unittest.TestCase):
 
 class SecurityRulesTest(unittest.TestCase):
     def test_telnet_ssh_http(self):
-        d = dev_snap(nmap={"open_ports": [22, 23, 80], "os": ""})
+        # Non-Ubiquiti gear: SSH exposed is a warning.
+        d = dev_snap(vendor="Cisco", unifi_managed=False,
+                     nmap={"open_ports": [22, 23, 80], "os": ""})
         fs = rules.evaluate(snap([d]))
         self.assertEqual(by_key(fs, "sec.telnet_exposed")[0]["severity"], "critical")
         self.assertEqual(by_key(fs, "sec.ssh_exposed")[0]["severity"], "warning")
         self.assertIn("sec.http_mgmt_plaintext", keys(fs))
+
+    def test_ssh_on_ubiquiti_gear_is_info(self):
+        # UniFi-default SSH is the vendor's stock management channel -> info.
+        d = dev_snap(nmap={"open_ports": [22], "os": ""})   # vendor=Ubiquiti, unifi_managed=True
+        self.assertEqual(by_key(rules.evaluate(snap([d])),
+                                "sec.ssh_exposed")[0]["severity"], "info")
 
     def test_default_snmp_community_critical(self):
         d = dev_snap(snmp={"version": "2c", "community": "public", "interfaces": []})
@@ -197,12 +205,17 @@ class ReliabilityRulesTest(unittest.TestCase):
         self.assertIn("rel.single_wan", keys(rules.evaluate(snap([d]))))
 
     def test_link_down_count(self):
-        d = dev_snap(unifi={"version": "x", "upgradable": False, "uplink_mac": "",
-                            "fixed_ip": None, "ports": [
-            {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
-             "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
-             "link_down_count": 2, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]})
-        self.assertIn("rel.link_down_count", keys(rules.evaluate(snap([d]))))
+        def port(n):
+            return {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+                    "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+                    "link_down_count": n, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}
+        uni = lambda n: {"version": "x", "upgradable": False, "uplink_mac": "",
+                         "fixed_ip": None, "ports": [port(n)]}
+        # a single old flap (the 08-18 PoE-cycle artifact) must NOT warn forever
+        self.assertNotIn("rel.link_down_count", keys(rules.evaluate(snap([dev_snap(unifi=uni(1))]))))
+        self.assertNotIn("rel.link_down_count", keys(rules.evaluate(snap([dev_snap(unifi=uni(2))]))))
+        # repeated flaps (>2) warn
+        self.assertIn("rel.link_down_count", keys(rules.evaluate(snap([dev_snap(unifi=uni(3))]))))
 
     def test_uptime_anomalies(self):
         d_reboot = dev_snap(snmp={"version": "2c", "community": "x", "uptime_seconds": 60,
@@ -276,10 +289,51 @@ class ScoringTest(unittest.TestCase):
             {"severity": "info", "category": "hygiene"},
         ]
         sc = rules.score(findings)
-        self.assertEqual(sc["overall"], 100 - (25 + 8 + 2))
-        self.assertEqual(sc["categories"]["security"], 75)
-        self.assertEqual(sc["categories"]["performance"], 92)
+        self.assertEqual(sc["overall"], 100 - (20 + 5 + 2))
+        self.assertEqual(sc["categories"]["security"], 80)
+        self.assertEqual(sc["categories"]["performance"], 95)
         self.assertEqual(sc["counts"]["critical"], 1)
+
+    def test_info_cap_100_infos(self):
+        # 100 infos => only the first 5 cost −2 each; noise never tanks the score.
+        findings = [{"severity": "info", "category": "hygiene"} for _ in range(100)]
+        sc = rules.score(findings)
+        self.assertEqual(sc["overall"], 90)
+        self.assertEqual(sc["counts"]["info"], 100)   # the count stays honest
+        self.assertGreaterEqual(sc["overall"], 88)
+
+    def test_warnings_stack_no_cap(self):
+        findings = [{"severity": "warning", "category": "performance"} for _ in range(10)]
+        self.assertEqual(rules.score(findings)["overall"], 50)   # 10 × 5, no cap
+
+    def test_critical_weight_20(self):
+        self.assertEqual(rules.score([{"severity": "critical", "category": "security"}])["overall"], 80)
+
+    def test_healthy_home_scores_ge_88(self):
+        # U6 up (no critical), SSH/single-WAN/single-uplink/unnamed-port all
+        # cosmetic infos -> a healthy home must score 90+ (pinned).
+        gw = dev_snap(name="UCG-Max", device_type="gateway", ip="192.168.1.1",
+                      mac="aa:bb:cc:00:00:01",
+                      unifi={"version": "8", "upgradable": False, "uplink_mac": "",
+                             "fixed_ip": None,
+                             "wan": {"status": "ok", "wan_count": 1}, "ports": []})
+        ap = dev_snap(name="U6 Mesh", device_type="ap", ip="192.168.5.41",
+                      mac="aa:bb:cc:00:00:77",
+                      nmap={"open_ports": [22], "os": ""},
+                      ping={"reachable": True, "latency_ms": None},
+                      unifi={"version": "6", "upgradable": False, "uplink_mac": "aa:bb:cc:00:00:01",
+                             "fixed_ip": None, "wan": None, "ports": []})
+        sw = dev_snap(name="HouseSwitch", device_type="switch", ip="192.168.5.2",
+                      mac="aa:bb:cc:00:00:02",
+                      unifi={"version": "7", "upgradable": False, "uplink_mac": "aa:bb:cc:00:00:01",
+                             "fixed_ip": None, "wan": None, "ports": [
+                          {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+                           "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+                           "link_down_count": 1, "tx_errors": 0, "rx_errors": 0, "is_uplink": True}]})
+        findings = rules.evaluate(snap([gw, ap, sw]))
+        self.assertNotIn("rel.offline_gear", keys(findings))
+        self.assertNotIn("rel.link_down_count", keys(findings))   # single old flap ignored
+        self.assertGreaterEqual(rules.score(findings)["overall"], 88)
 
     def test_score_floor_zero(self):
         findings = [{"severity": "critical", "category": "security"} for _ in range(10)]
@@ -310,6 +364,59 @@ class CollectorParseTest(unittest.TestCase):
         self.assertIn("network device", network_opt.guess_os([161, 443], None).lower())
         self.assertIn("windows", network_opt.guess_os([445], None).lower())
         self.assertIn("unix", network_opt.guess_os([22], 64).lower())
+
+
+# ═══════════════════════════ controller-live authority ═════════════════════
+
+class ControllerAuthorityTest(unittest.TestCase):
+    """For UniFi-managed gear the controller snapshot is the authority for
+    reachability + the live IP — a stale DB record must never produce a false
+    ``offline_gear`` critical (the 08-18 U6 Mesh incident)."""
+
+    def _device(self, **kw):
+        d = SimpleNamespace(id=1, name="U6 Mesh", ip_address="192.168.1.41",
+                            mac_address="aa:bb:cc:00:00:77", device_type="ap",
+                            vendor="Ubiquiti", model="U6 Mesh", unifi_managed=True,
+                            snmp_community=None, last_seen=None)
+        for k, v in kw.items():
+            setattr(d, k, v)
+        return d
+
+    def _rec(self, status="online", ip="192.168.5.41"):
+        return {"ip": ip, "status": status, "name": "U6 Mesh", "model": "U6 Mesh",
+                "version": "6.6.53", "upgradable": False, "uptime_seconds": 1000,
+                "uplink_mac": "", "fixed_ip": None, "wan": None, "ports": []}
+
+    def test_stale_record_controller_live_no_false_offline(self):
+        dev = self._device()
+        with patch.object(network_opt, "collect_nmap",
+                          return_value={"open_ports": [22], "open_services": {}, "os": ""}) as nm:
+            dev_snap = network_opt.collect_device(dev, {"profile": "standard"}, self._rec())
+        self.assertEqual(dev_snap["ip"], "192.168.5.41")          # live IP used, not the record
+        self.assertTrue(dev_snap["ping"]["reachable"])             # controller authority
+        self.assertEqual(dev_snap["ping"]["source"], "unifi")
+        nm.assert_called_once_with("192.168.5.41", "standard")     # nmap hits the LIVE ip
+        self.assertNotIn("rel.offline_gear", keys(rules.evaluate(snap([dev_snap]))))
+
+    def test_controller_offline_still_bites(self):
+        dev = self._device()
+        with patch.object(network_opt, "collect_nmap",
+                          return_value={"open_ports": [], "open_services": {}, "os": ""}) as nm:
+            dev_snap = network_opt.collect_device(dev, {"profile": "standard"},
+                                                  self._rec(status="offline"))
+        self.assertFalse(dev_snap["ping"]["reachable"])
+        nm.assert_not_called()    # offline gear isn't port-scanned
+        self.assertIn("rel.offline_gear", keys(rules.evaluate(snap([dev_snap]))))
+
+    def test_non_unifi_keeps_record_path(self):
+        dev = self._device(unifi_managed=False, vendor="Cisco", model="Catalyst")
+        with patch.object(network_opt, "collect_ping",
+                          return_value={"reachable": True, "latency_ms": 1.0}) as ping, \
+             patch.object(network_opt, "collect_nmap",
+                          return_value={"open_ports": [], "open_services": {}, "os": ""}):
+            dev_snap = network_opt.collect_device(dev, {"profile": "standard"}, None)
+        ping.assert_called_once_with("192.168.1.41")   # non-UniFi keeps the DB record IP
+        self.assertNotIn("source", dev_snap["ping"])
 
 
 # ═══════════════════════════════ orchestrator (fake collectors) ════════════
@@ -347,7 +454,7 @@ class OrchestratorTest(unittest.TestCase):
     def test_execute_scan_persists_findings(self):
         self._add_device("core-sw", "10.0.0.2", "switch", mac="aa:bb:cc:00:00:02")
 
-        def fake_collect_device(device, config):
+        def fake_collect_device(device, config, unifi_rec=None):
             return {"device_id": device.id, "name": device.name, "ip": device.ip_address,
                     "device_type": (device.device_type or "unknown").lower(),
                     "mac": device.mac_address, "unifi_managed": device.unifi_managed,
@@ -397,6 +504,38 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         db = SessionLocal()
         self.assertEqual(db.query(Finding).filter(Finding.run_id == rid).count(), 0)
+        db.close()
+
+    def test_unifi_managed_uses_controller_live_ip(self):
+        # 08-18 regression: stale DB record (.1.41) + controller live (.5.41,
+        # online) -> device UP, NO offline_gear critical, score stays high.
+        self._add_device("U6 Mesh", "192.168.1.41", "ap", unifi=True, mac="aa:bb:cc:00:00:77")
+        rid = self._run()
+        db = SessionLocal()
+        unifi_data = {
+            "devices_by_mac": {
+                "aa:bb:cc:00:00:77": {"ip": "192.168.5.41", "status": "online",
+                                      "name": "U6 Mesh", "model": "U6 Mesh",
+                                      "version": "6.6.53", "upgradable": False,
+                                      "uptime_seconds": 1000, "uplink_mac": "",
+                                      "fixed_ip": None, "wan": None, "ports": []}},
+            "networks": [], "wlans": [],
+        }
+        with patch.object(network_opt, "collect_unifi", return_value=unifi_data), \
+             patch.object(network_opt, "collect_nmap",
+                          return_value={"open_ports": [], "open_services": {}, "os": ""}), \
+             patch.object(network_opt, "netopt_config",
+                          return_value={"enabled": True, "max_hosts": 25, "concurrency": 2,
+                                        "profile": "standard",
+                                        "default_schedule": {"mode": "recurring", "day": "0",
+                                                             "hour": 3, "enabled": False}}):
+            result = network_opt.execute_scan(db, rid)
+        db.close()
+        self.assertEqual(result["status"], "completed")
+        db = SessionLocal()
+        run_keys = {f.finding_key for f in db.query(Finding).filter(Finding.run_id == rid)}
+        self.assertNotIn("rel.offline_gear", run_keys)
+        self.assertGreaterEqual(db.query(ScanRun).get(rid).score, 88)
         db.close()
 
 

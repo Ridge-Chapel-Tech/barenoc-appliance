@@ -26,6 +26,15 @@ SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode = ssl.CERT_NONE
 
 
+def device_live_ip(d: dict) -> str:
+    """The device's current management IP: ``config_network.ip`` (the static /
+    configured address) preferred, falling back to stat/device's last-known
+    ``ip`` (the DHCP lease / reported address). This is what the sync must
+    write into the appliance record so a pre-VLAN-move IP never goes stale."""
+    cn = d.get("config_network") or {}
+    return (cn.get("ip") or d.get("ip") or "").strip()
+
+
 class UniFiClient:
     """Client for the UniFi Controller REST API (legacy + UniFi OS)."""
 
@@ -147,7 +156,8 @@ class UniFiClient:
                 up = d.get("uplink") or {}
                 devices.append({
                     "name": d.get("name") or d.get("mac") or "unknown",
-                    "ip": d.get("ip", ""),
+                    "hostname": d.get("hostname") or d.get("name") or "",
+                    "ip": device_live_ip(d),
                     "mac": d.get("mac", ""),
                     "model": d.get("model", ""),
                     "type": self._map_type(d.get("type", "")),

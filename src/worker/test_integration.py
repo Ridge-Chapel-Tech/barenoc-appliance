@@ -776,6 +776,69 @@ def main():
     os.environ.pop("PI_AGENT_ENABLED", None)
     reset_policy_cache()
 
+    # 29. WHOLE-SUBNET RESILIENCE (friend's bug #2): a "ping sweep
+    # 192.168.1.0/24" request must not abort because the AI pinned an
+    # unresolvable device name — scan the subnet + note the name miss.
+    from action_validator import MANAGED_DEVICES as _MD
+    _MD.clear()
+    _MD["gateway"] = {"id": 1, "ip": "192.168.1.1", "type": "router",
+                      "hostname": None}
+    t = make_ticket("ping sweep 192.168.1.0/24", "find live hosts on the subnet")
+    db = SessionLocal()
+    sweep_resp = LLMResponse(action="ping_test", target="switch-01",
+                             params={"count": 4}, reason="sweep", confidence=0.95,
+                             raw_text="{}", model="deepseek/deepseek-chat",
+                             prompt_tokens=5, response_tokens=5, cost_usd=0.0)
+    with patch("llm_client.call_llm", return_value=sweep_resp):
+        worker.process_ticket(db, db.query(Ticket).filter(Ticket.id == t.id).first())
+    t = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("subnet sweep -> auto-executed", t.status == "in_progress", t.status)
+    ok("subnet sweep -> job written", bool(t.job_file_path) and os.path.exists(t.job_file_path))
+    if t.job_file_path and os.path.exists(t.job_file_path):
+        job = json.load(open(t.job_file_path))
+        ok("subnet sweep -> network_discovery", job["action"] == "network_discovery",
+           job.get("action"))
+        ok("subnet sweep -> CIDR target", job["target"] == "192.168.1.0/24",
+           job.get("target"))
+    notes = t.work_notes or ""
+    ok("subnet sweep -> name-miss note",
+       "switch-01" in notes and "couldn't find a device" in notes, notes[-400:])
+    db.close()
+    _MD.clear()
+
+    # 30. BARE NAME-ONLY REQUEST: an unknown device name with no subnet in the
+    # request still fails — but with the friendly product message in chat, and
+    # the technical inventory detail kept in the ticket note/log.
+    _MD.clear()
+    _MD["gateway"] = {"id": 1, "ip": "192.168.1.1", "type": "router",
+                      "hostname": None}
+    t = make_ticket("ping switch-01", "is it up")
+    db = SessionLocal()
+    bad_resp = LLMResponse(action="ping_test", target="switch-01",
+                           params={"count": 4}, reason="t", confidence=0.95,
+                           raw_text="{}", model="deepseek/deepseek-chat",
+                           prompt_tokens=5, response_tokens=5, cost_usd=0.0)
+    with patch("llm_client.call_llm", return_value=bad_resp):
+        worker.process_ticket(db, db.query(Ticket).filter(Ticket.id == t.id).first())
+    t = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("bare name -> escalated", t.status == "escalated", t.status)
+    ok("bare name -> friendly chat message",
+       "I couldn't find a device named 'switch-01'" in (t.resolution or ""),
+       t.resolution or "")
+    ok("bare name -> no inventory jargon in chat",
+       "managed inventory" not in (t.resolution or ""), t.resolution or "")
+    _notes = json.loads(t.work_notes or "[]")
+    _esc = next((n for n in _notes if n.get("event") == "escalated"), {})
+    _tech = next((n for n in _notes if n.get("event") == "target_validation_failed"), {})
+    ok("bare name -> escalated note is friendly",
+       "I couldn't find a device named 'switch-01'" in (_esc.get("detail") or ""),
+       _esc.get("detail") or "")
+    ok("bare name -> technical detail kept in hidden note",
+       "managed inventory" in (_tech.get("detail") or ""), _tech.get("detail") or "")
+    ok("bare name -> no job file", not t.job_file_path, t.job_file_path or "")
+    db.close()
+    _MD.clear()
+
     print(f"\nALL {PASS} INTEGRATION CHECKS PASSED (scratch DB: {_TMP})")
 
 

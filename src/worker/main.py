@@ -18,7 +18,10 @@ from database import SessionLocal, init_db
 from models import Ticket, Device, User, AuditLog
 from schemas import generate_ticket_id, generate_event_id
 from sanitizer import sanitize_ticket
-from action_validator import AllowedAction, validate_action, validate_target
+from action_validator import (
+    AllowedAction, validate_action, validate_target,
+    unknown_target_detail, find_subnet,
+)
 from audit import log_event
 from worknotes import add_note
 from queue_status import is_paused
@@ -66,6 +69,27 @@ def _ticket_status_intent(text: str):
         return None
     return m.group(0).upper()
 
+
+# ── whole-subnet ping resilience (friend's bug #2) ────────────────────────
+# A "ping sweep 192.168.1.0/24" request must not abort because the AI pinned
+# an unresolvable device NAME. When the request is a subnet/IP scan, scan the
+# subnet and note the name miss; a bare name-only request still fails friendly.
+_MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+_SCAN_INTENT_RE = re.compile(
+    r"\b(ping|sweep|scan|discover|find|reachable|online|hosts?|devices?)\b", re.I)
+
+
+def _subnet_scan_fallback(ticket_text: str, target: str) -> "str | None":
+    """Return a subnet CIDR to scan when the AI pinned an unresolvable device
+    NAME but the customer actually asked for a whole-subnet/IP scan. None when
+    the request isn't a scan (or the target isn't a bare name) — the bare
+    name-only request then fails with the friendly validation message."""
+    t = (target or "").strip()
+    if not t or _MAC_RE.match(t):
+        return None
+    if not _SCAN_INTENT_RE.search(ticket_text or ""):
+        return None
+    return find_subnet(ticket_text)
 
 
 def _judge_enabled() -> bool:
@@ -454,12 +478,35 @@ def process_ticket(db, ticket):
     if llm_response.target and llm_response.action != "escalate_human":
         valid, msg = validate_target(llm_response.target)
         if not valid:
-            logger.warning(f"Ticket {ticket_id}: {msg}")
-            add_note(ticket, "escalated", f"Target validation failed: {msg}")
-            ticket.status = "escalated"
-            ticket.resolution = f"Escalated: {msg}"
-            db.commit()
-            return
+            bad_name = llm_response.target
+            technical = unknown_target_detail(bad_name)
+            # Whole-subnet resilience (friend's bug #2): a subnet/IP scan must
+            # not abort because the AI happened to pin an unresolvable device
+            # name. Scan the subnet instead and note the name miss.
+            subnet = _subnet_scan_fallback(ticket_text, bad_name)
+            # Tone-discipline: technical detail goes in the log (logger +
+            # hidden note), friendly text goes in the customer-facing note.
+            logger.warning(f"Ticket {ticket_id}: {technical}"
+                           + (f" — falling back to subnet scan {subnet}" if subnet else ""))
+            add_note(ticket, "target_validation_failed", technical)
+            if subnet:
+                add_note(ticket, "agent_progress",
+                         f"{_assistant_name()}: I couldn't find a device named "
+                         f"'{bad_name}', so I'll scan {subnet} instead. "
+                         f"(If you meant a specific device, tell me its exact name or IP.)")
+                llm_response.action = "network_discovery"
+                llm_response.target = subnet
+                llm_response.params = {}
+                llm_response.reason = (
+                    f"{llm_response.reason or 'subnet scan'} — note: could not "
+                    f"resolve device name '{bad_name}'")
+                valid = True
+            else:
+                add_note(ticket, "escalated", msg)
+                ticket.status = "escalated"
+                ticket.resolution = msg
+                db.commit()
+                return
 
     # Step 10: Check confidence gates
     ticket.action = llm_response.action

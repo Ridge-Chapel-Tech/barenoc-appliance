@@ -15,6 +15,33 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.f] — 2026-08-18
+
+### Fixed
+- **NetOpt tuning (sync-IP refresh + controller-live authority + score calibration)** —
+  the 08-18 live incident where NetOpt scored the home network 0 and flagged
+  `rel.offline_gear` on a UP U6 Mesh because the appliance's device record held
+  a stale pre-VLAN-move IP. Three layers: (1) the UniFi sync now refreshes the
+  controller's **LIVE IP** (`config_network.ip` / device `ip`) **and hostname**
+  on every sync, not just status/last_seen; (2) for `unifi_managed` devices the
+  NetOpt reachability/status source is the **controller snapshot** (live IP +
+  state), never the DB record — a stale record IP can no longer produce a false
+  offline_gear critical (non-UniFi devices keep the record/scan path); (3) score
+  calibration pinned to gate semantics: criticals −20 stack (floor 0), warnings
+  −5 stack with no cap, info findings capped at the first 5 (−2 each, absolute
+  −10) so noise never tanks a healthy network; UniFi-default SSH downgrades to
+  info on Ubiquiti gear; `rel.link_down_count` now warns only on repeated (>2)
+  link-down transitions so a single old PoE-cycle counter can't warn forever.
+  A healthy home network now scores ~90+ while real risks still bite.
+- **Friendlier unknown-target wording + whole-subnet ping resilience (friend's bug #2)** —
+  a "ping sweep 192.168.1.0/24" request no longer aborts with a cryptic
+  `Unknown target: 'switch-01'. Device not in managed inventory.` when the AI
+  pinned an unresolvable device name. The customer-facing message now reads as a
+  product message ("I couldn't find a device named 'X' — you can ask me to check
+  an IP/subnet, or adopt the device first"), the technical detail stays in the
+  ticket/log (a hidden `target_validation_failed` note), and a subnet/IP scan
+  request falls back to scanning the subnet with a clear name-miss note instead
+  of escalating.
 ## [2026.08.18.e] — 2026-08-18
 
 ### Fixed
@@ -24,6 +51,8 @@ Categories per release:
   there was no manual control. Now: a **"Check now" button** on System → Updates, and
   `check_stale` also triggers when the last check is older than the staleness window
   (default 6 h, `UPDATES_CHECK_STALE_HOURS`), so a stable build still finds new releases.
+
+
 
 ## [2026.08.18.d] — 2026-08-18
 
@@ -62,7 +91,6 @@ Categories per release:
   requester or an admin/operator may close; a non-requester is routed
   "waiting on <requester> to verify". A mid-work ticket + "close" gets a
   polite "still open" note and is neither closed nor re-dispatched.
-
 
 ## [2026.08.18.c] — 2026-08-18
 
