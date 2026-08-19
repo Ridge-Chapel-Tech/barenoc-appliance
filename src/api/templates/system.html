@@ -170,9 +170,13 @@
   <!-- Support / Bug report -->
   <div class="mt-6 bg-white shadow rounded-lg p-5">
     <h2 class="text-lg font-medium text-gray-900 mb-3">Support / Bug Report</h2>
-    <p class="text-sm text-gray-500 mb-2">Export a <strong>redacted</strong> diagnostic bundle to attach to a bug report. API keys, passwords, tokens, and certificates are scrubbed before export.</p>
-    <textarea id="bug-desc" rows="3" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="What went wrong? (optional — included in the export)"></textarea>
-    <button onclick="exportSupportBundle()" class="mt-3 rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">⬇️ Download support bundle</button>
+    <p class="text-sm text-gray-500 mb-2">Describe the bug, then <strong>Submit Report</strong> to post it to the customer forum with a <strong>redacted</strong> support bundle attached. You can also download the bundle on its own — API keys, passwords, tokens, and certificates are scrubbed before export.</p>
+    <textarea id="bug-desc" rows="3" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="What went wrong? (required for Submit Report)" oninput="_reportUnclear=false;"></textarea>
+    <div class="mt-3 flex items-center gap-2 flex-wrap">
+      <button onclick="exportSupportBundle()" class="rounded-md bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200">⬇️ Download support bundle</button>
+      <button id="submit-report-btn" onclick="submitReport()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Submit Report</button>
+    </div>
+    <div id="report-vet" class="mt-3 hidden rounded-md border p-3 text-sm"></div>
     <p id="support-msg" class="text-sm mt-2"></p>
   </div>
 
@@ -714,6 +718,85 @@ async function exportSupportBundle() {
   } catch (e) {
     msg.textContent = '❌ ' + e.message;
     msg.className = 'text-sm text-red-600';
+  }
+}
+
+var _reportUnclear = false;
+
+async function submitReport() {
+  var msg = document.getElementById('support-msg');
+  var vet = document.getElementById('report-vet');
+  var btn = document.getElementById('submit-report-btn');
+  var comment = document.getElementById('bug-desc').value.trim();
+  msg.textContent = '';
+  vet.classList.add('hidden');
+  if (!comment) {
+    msg.textContent = '❌ Please describe the bug first (required for Submit Report).';
+    msg.className = 'text-sm text-red-600';
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Vetting…';
+  try {
+    var r = await fetch('/api/v1/report/vet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ comment: comment })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (!d.gate || !d.gate.open) {
+      vet.classList.remove('hidden');
+      vet.className = 'mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700';
+      vet.textContent = '❌ ' + ((d.gate && d.gate.note) || 'Report submission is currently gated.');
+      btn.disabled = false; btn.textContent = 'Submit Report';
+      return;
+    }
+    if (d.verdict === 'not-bug') {
+      vet.classList.remove('hidden');
+      vet.className = 'mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800';
+      vet.textContent = (d.explanation || "That doesn't look like a bug.") + ' Please add the specific symptoms, steps to reproduce, and what you expected to happen.';
+      btn.disabled = false; btn.textContent = 'Submit Report';
+      return;
+    }
+    if (d.verdict === 'unclear' && !_reportUnclear) {
+      _reportUnclear = true;
+      vet.classList.remove('hidden');
+      vet.className = 'mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800';
+      vet.textContent = (d.explanation || 'Could you add a little more detail?') + ' Edit the description above, then click Submit Report again — or click it once more to send as-is (flagged for review).';
+      btn.disabled = false; btn.textContent = 'Submit Report';
+      return;
+    }
+    await doSubmitReport(comment, d.verdict === 'unclear');
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'text-sm text-red-600';
+    btn.disabled = false; btn.textContent = 'Submit Report';
+  }
+}
+
+async function doSubmitReport(comment, flagged) {
+  var vet = document.getElementById('report-vet');
+  var btn = document.getElementById('submit-report-btn');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  vet.classList.add('hidden');
+  try {
+    var r = await fetch('/api/v1/report/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ comment: comment, flagged: !!flagged })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    vet.classList.remove('hidden');
+    vet.className = 'mt-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700';
+    var link = d.thread_url ? (' <a class="underline font-medium" href="' + esc(d.thread_url) + '" target="_blank" rel="noopener">View thread ↗</a>') : '';
+    vet.innerHTML = '✅ Report submitted' + (flagged ? ' (flagged for review)' : '') + ' — thread created' + link + '.';
+  } catch (e) {
+    vet.classList.remove('hidden');
+    vet.className = 'mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700';
+    vet.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Submit Report';
   }
 }
 </script>

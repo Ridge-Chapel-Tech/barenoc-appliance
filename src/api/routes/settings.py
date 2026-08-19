@@ -539,6 +539,66 @@ def _write_provider_secret():
         pass
 
 
+FORUM_SUBMIT_SECRET_FILE = "/opt/barenoc/volumes/secrets/forum_submit.json"
+
+
+def _read_forum_submit_secret_file() -> dict:
+    """Read the 0600 forum-submit config {url, token} (never in .env)."""
+    try:
+        with open(FORUM_SUBMIT_SECRET_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_forum_submit_secret(url: str, token: str):
+    """Persist the forum-submit url + token (0600 — same pattern as the
+    device-control key / NAS creds)."""
+    os.makedirs(os.path.dirname(FORUM_SUBMIT_SECRET_FILE), exist_ok=True)
+    fd = os.open(FORUM_SUBMIT_SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"url": url, "token": token}, f)
+    os.chmod(FORUM_SUBMIT_SECRET_FILE, 0o600)
+
+
+def _support_section() -> dict:
+    """Settings → Support: forum-submit endpoint + token (presence only)."""
+    cfg = _read_forum_submit_secret_file()
+    env = _read_env_file()
+    token_configured = bool((cfg.get("token") or "").strip())
+    return {
+        "forum_submit_url": (cfg.get("url") or "").strip()
+                            or env.get("FORUM_SUBMIT_URL", "").strip(),
+        "forum_submit_token_configured": token_configured,
+        "forum_submit_token": "••••••••" if token_configured else "",
+    }
+
+
+def _update_support(config: dict, db: Session, user: User) -> dict:
+    """Save the forum-submit URL + token (token to the 0600 file, never .env)."""
+    cfg = _read_forum_submit_secret_file()
+    url = str(config.get("forum_submit_url", "") or "").strip()
+    token = str(config.get("forum_submit_token", "") or "")
+    current_url = (cfg.get("url") or "").strip()
+    current_token = (cfg.get("token") or "").strip()
+
+    new_url = url or current_url
+    new_token = token if (token and "••" not in token) else current_token
+
+    fields = []
+    if new_url != current_url:
+        fields.append("forum_submit_url")
+    if new_token != current_token:
+        fields.append("forum_submit_token")
+    if not fields:
+        return {"status": "ok", "updated": 0}
+    _write_forum_submit_secret(new_url, new_token)
+    log_event(db, "settings_change", user.username, {
+        "section": "support", "fields": fields,
+    })
+    return {"status": "ok", "updated": 1}
+
+
 @router.get("/status")
 def get_settings_status(user: User = Depends(require_role("admin"))):
     """Get which integrations are configured (presence only, no secrets)."""
@@ -591,6 +651,8 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         return _llm_section(_read_env_file())
     if section == "backups":
         return _backups_section()
+    if section == "support":
+        return _support_section()
     if section not in SECTIONS:
         raise HTTPException(status_code=404, detail="Unknown settings section")
     env = _read_env_file()
@@ -723,6 +785,8 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
         return _update_llm(config, db, user)
     if section == "backups":
         return _update_backups(config, db, user)
+    if section == "support":
+        return _update_support(config, db, user)
     if section not in SECTIONS:
         raise HTTPException(status_code=404, detail="Unknown settings section")
     env = _read_env_file()

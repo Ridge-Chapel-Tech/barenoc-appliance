@@ -32,11 +32,22 @@ credentials, no keys, no certs** — presence-only where config is shown.
 
 ## How to send it
 
-1. Open **System → Support**, describe the bug (optional — it's included in the
-   file), and **Download diagnostic bundle**.
-2. Attach the `.md` file to a bug report on the **support forum**
-   (forum.barenoc.com), or to a GitHub issue if your support contact asked for
-   one.
+**Easiest — Submit Report (recommended):**
+
+1. Open **System → Support**, describe the bug in the comment box (required),
+   and click **Submit Report**.
+2. The comment is checked once by the AI — if it doesn't look like a bug, or
+   needs more detail, you'll be prompted before anything is posted.
+3. BareNOC creates a bug thread on the **support forum** (forum.barenoc.com)
+   in your name and attaches the bundle automatically. You'll get a link to
+   the thread.
+
+**Manual:**
+
+1. Open **System → Support**, describe the bug, and **Download diagnostic
+   bundle**.
+2. Attach the `.md` file to a bug report on the support forum, or to a GitHub
+   issue if your support contact asked for one.
 
 If a support engineer needs a value that was scrubbed, they'll tell you a safe
 way to provide it separately — the bundle itself never carries it.

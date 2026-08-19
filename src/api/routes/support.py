@@ -132,17 +132,13 @@ class BundleRequest(BaseModel):
     bug_description: Optional[str] = None
 
 
-@router.post("/bundle")
-def export_bundle(body: BundleRequest = None,
-                  db: Session = Depends(get_db),
-                  user=Depends(require_role("admin"))):
-    """Export a redacted diagnostic markdown bundle (admin only).
+def build_bundle(desc: str, db: Session, user) -> str:
+    """Assemble the redacted diagnostic markdown bundle.
 
-    Attach the download + a bug description to a support ticket; a support
-    agent/worker diagnoses from it. Secrets are scrubbed before export.
+    Shared by the /bundle download endpoint and the Submit Report flow (which
+    ships the same bundle to the forum). Returns the markdown text.
     """
-    body = body or BundleRequest()
-    desc = (body.bug_description or "").strip()[:2000]
+    desc = (desc or "").strip()[:2000]
     now = datetime.datetime.utcnow()
     local_tz = os.environ.get("TZ", "UTC")
 
@@ -270,7 +266,21 @@ def export_bundle(body: BundleRequest = None,
     L.append("---")
     L.append("*End of bundle. Redaction applied: secrets/tokens/keys/certs are never exported.*")
 
-    md = _md(L)
+    return _md(L)
+
+
+@router.post("/bundle")
+def export_bundle(body: BundleRequest = None,
+                  db: Session = Depends(get_db),
+                  user=Depends(require_role("admin"))):
+    """Export a redacted diagnostic markdown bundle (admin only).
+
+    Attach the download + a bug description to a support ticket; a support
+    agent/worker diagnoses from it. Secrets are scrubbed before export.
+    """
+    body = body or BundleRequest()
+    md = build_bundle(body.bug_description, db, user)
+    now = datetime.datetime.utcnow()
     fname = f"barenoc-support-{now.strftime('%Y%m%d-%H%M%S')}.md"
     return Response(
         content=md,

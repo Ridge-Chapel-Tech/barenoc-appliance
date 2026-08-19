@@ -15,6 +15,26 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.19.c] — 2026-08-19
+
+### Added
+- **In-app "Submit Report" → forum bug thread + bundle** (`feat/report-submit`):
+  System → Support / Bug Report gains a **Submit Report** button beside the
+  existing Download support bundle. The flow requires a mandatory comment,
+  vets it with one LLM call (bug / not-bug / unclear — not-a-bug explains
+  inline, unclear prompts once then submits flagged), then creates a forum bug
+  thread on forum.barenoc.com attributed to the logged-in user and uploads the
+  redacted support bundle to the forum's private `session-logs` bucket.
+  - New modules: `report_gate.py` (`REPORT_GATE` env — open during beta,
+    Support-subscription gate stubs in for GA), `report_vet.py` (single-LLM
+    classification reusing the provider registry), `report_submit.py` (the
+    forum-submit client; token stored 0600 in Settings → Support).
+  - `routes/report.py` (`POST /api/v1/report/vet` + `/submit`); `support.py`
+    refactored to expose `build_bundle()` for reuse by the submit flow.
+  - Settings gains a **Support** section (forum-submit URL + token).
+  - Forum repo (`Ridge-Chapel-Tech/BareNOC-Forum`): new `forum-submit` edge
+    function — token-gated, creates the bug thread + uploads the bundle.
+
 ## [2026.08.19.b] — 2026-08-19
 
 ### Added

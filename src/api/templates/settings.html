@@ -17,6 +17,7 @@
       <button onclick="switchTab('tickets')" id="tab-tickets" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Tickets</button>
       <button onclick="switchTab('restrictions')" id="tab-restrictions" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Restrictions</button>
       <button onclick="switchTab('backups')" id="tab-backups" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Backups</button>
+      <button onclick="switchTab('support')" id="tab-support" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Support</button>
     </nav>
   </div>
 
@@ -570,6 +571,20 @@
     </div>
   </div>
 
+  <!-- Support (forum submit) -->
+  <div id="panel-support" class="mt-6 max-w-xl hidden">
+    <div class="bg-white shadow rounded-lg p-6">
+      <h3 class="text-lg font-medium">Support</h3>
+      <p class="text-xs text-gray-500 mt-1">The <b>Submit Report</b> button in System → Support posts bug reports to the customer forum with the support bundle attached. Set the forum endpoint + shared token here (stored 0600, never in .env).</p>
+      <div class="mt-4 space-y-4">
+        <div><label class="block text-sm font-medium text-gray-700">Forum submit URL</label><input id="sup-url" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="https://…/functions/v1/forum-submit"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Forum submit token</label><input id="sup-token" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="••••••••"><p class="text-xs text-gray-400 mt-1" id="sup-token-status"></p></div>
+        <button onclick="saveSupport()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Support Config</button>
+        <p id="sup-msg" class="text-sm"></p>
+      </div>
+    </div>
+  </div>
+
 <script>
 function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -595,7 +610,40 @@ function switchTab(tab) {
   if (tab === 'tickets') loadTickets();
   if (tab === 'restrictions') loadRestrictions();
   if (tab === 'backups') loadBackups();
+  if (tab === 'support') loadSupport();
   if (tab === 'general') loadRemoteAccess();
+}
+
+// ── Support (forum submit) ──
+async function loadSupport() {
+  try {
+    var r = await fetch('/api/v1/settings/support', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('sup-url').value = d.forum_submit_url || '';
+    document.getElementById('sup-token').value = d.forum_submit_token || '';
+    document.getElementById('sup-token-status').textContent = d.forum_submit_token_configured ? 'Token configured' : 'No token set — Submit Report will fail until one is saved.';
+  } catch (e) { console.error(e); }
+}
+async function saveSupport() {
+  var msg = document.getElementById('sup-msg');
+  msg.textContent = ''; msg.className = 'text-sm';
+  try {
+    var r = await fetch('/api/v1/settings/support', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({
+        forum_submit_url: document.getElementById('sup-url').value,
+        forum_submit_token: document.getElementById('sup-token').value
+      })
+    });
+    if (!r.ok) { var e = await r.json().catch(function () { return {}; }); throw new Error(e.detail || ('HTTP ' + r.status)); }
+    msg.textContent = '✅ Support config saved.';
+    msg.className = 'text-sm text-green-600';
+    document.getElementById('sup-token').value = '••••••••';
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'text-sm text-red-600';
+  }
 }
 
 // ── General ──
