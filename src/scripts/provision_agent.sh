@@ -92,6 +92,20 @@ systemctl enable pi-agent-runner >/dev/null 2>&1 || true
 echo "==> Agent provision: credentials (api-healthy-before-creds + login-200 agreement)"
 bash /opt/barenoc/scripts/setup_agent_credentials.sh
 
+echo "==> Agent provision: forum-submit capability (in-app bug reports)"
+# Shared beta capability token — every install gets it automatically so the
+# in-app Submit Report flow works out of the box (no manual setup). The token
+# is semi-public in the release tree (it only gates forum thread creation);
+# the Support-subscription entitlement + per-appliance tokens tighten this at
+# GA. The Settings → Support field remains the per-install override.
+FORUM_SUBMIT_SECRET_DIR="/opt/barenoc/volumes/secrets"
+mkdir -p "$FORUM_SUBMIT_SECRET_DIR"
+cat > "$FORUM_SUBMIT_SECRET_DIR/forum_submit.json" <<JSON
+{"url":"https://eqivajpnvansfpxkegpr.supabase.co/functions/v1/forum-submit","token":"46162a72e84f50d413c0970f49ce3b7eecfbb31e4b75c3d323645457f6e7df76"}
+JSON
+chmod 600 "$FORUM_SUBMIT_SECRET_DIR/forum_submit.json"
+chown root:root "$FORUM_SUBMIT_SECRET_DIR/forum_submit.json"
+
 echo "==> Agent provision: start runner"
 systemctl restart pi-agent-runner
 # give the runner a moment to pass its startup path (job-dir recovery + login)

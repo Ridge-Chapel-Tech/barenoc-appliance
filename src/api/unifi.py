@@ -283,6 +283,26 @@ class UniFiClient:
             })
         return out
 
+    def get_dhcp_leases(self) -> list:
+        """DHCP leases (stat/dhcpd_lease) — best-effort. UniFi OS 4.x on the
+        UCG-Max 404s this endpoint, so this returns [] on this build; the
+        client list (get_clients) is the fallback path for lease hostnames.
+        Never raises."""
+        result = self._stat("stat/dhcpd_lease")
+        leases = (result or {}).get("data", [])
+        if not isinstance(leases, list):
+            return []
+        out = []
+        for l in leases:
+            if not isinstance(l, dict) or not l.get("mac"):
+                continue
+            out.append({
+                "mac": str(l.get("mac")).strip().lower(),
+                "ip": l.get("ip") or "",
+                "hostname": l.get("hostname") or l.get("name") or "",
+            })
+        return out
+
     def get_networks(self) -> list:
         """Get active local network configs (VLANs/subnets)."""
         result = self._stat("rest/networkconf")

@@ -576,6 +576,35 @@ class PortCollectorTest(unittest.TestCase):
         self.assertEqual(network_opt._port_mac_table_count({}), 0)
         self.assertEqual(network_opt._port_mac_table_count({"mac_table_count": "x"}), 0)
 
+    def test_effective_port_profile_override_wins(self):
+        pt = {"port_idx": 7, "name": "Port 7", "native_networkconf_id": ""}
+        ov = {"port_idx": 7, "name": "Google WAN",
+              "native_networkconf_id": "def-net", "tagged_networkconf_id": "v5,v9"}
+        prof = network_opt._effective_port_profile(pt, ov)
+        self.assertEqual(prof["name"], "Google WAN")
+        self.assertEqual(prof["native_id"], "def-net")
+        self.assertEqual(prof["tagged_ids"], "v5,v9")
+
+    def test_effective_port_profile_falls_back_to_port_table(self):
+        pt = {"port_idx": 7, "name": "Port 7", "native_networkconf_id": "pt-native",
+              "tagged_networkconf_id": "pt-tag"}
+        prof = network_opt._effective_port_profile(pt, {})
+        self.assertEqual(prof["native_id"], "pt-native")
+        self.assertEqual(prof["tagged_ids"], "pt-tag")
+        self.assertEqual(prof["name"], "Port 7")
+
+    def test_clients_by_port(self):
+        clients = [
+            {"mac": "aa:bb:cc:00:00:99", "hostname": "puck",
+             "sw_mac": "aa:bb:cc:00:00:02", "sw_port": 7},
+            {"mac": "aa:bb:cc:00:00:98", "hostname": "phone",
+             "sw_mac": "AA:BB:CC:00:00:02", "sw_port": "7"},
+            {"mac": "aa:bb:cc:00:00:97", "hostname": "no-port",
+             "sw_mac": "aa:bb:cc:00:00:02"},
+        ]
+        by = network_opt._clients_by_port(clients)
+        self.assertEqual(len(by[("aa:bb:cc:00:00:02", 7)]), 2)
+
 
 # ═══════════════════════════ SNMP OID pinning ══════════════════════════════
 
@@ -1385,6 +1414,117 @@ def _dev_with_port(device_type, name, port):
     return dev_snap(name=name, device_type=device_type,
                     unifi={"version": "x", "upgradable": False, "uplink_mac": "",
                            "fixed_ip": None, "ports": [port]})
+
+
+class DeviceIdentificationTest(unittest.TestCase):
+    """Device identification WITHOUT packet capture: traffic archetype + OUI
+    + DHCP hostname + the conservative no-change rule (the 08-19 HouseSwitch
+    port 7 Google/Nest WAN regression)."""
+
+    def _port(self, **kw):
+        p = {"port_idx": 7, "name": "Google WAN", "up": True, "speed_mbps": 1000,
+             "mac_table_count": 0, "rx_packets": 0, "tx_packets": 0,
+             "tx_multicast": 0, "stp_state": "forwarding", "uplink_devices": []}
+        p.update(kw)
+        return p
+
+    # ── traffic archetype classifier ──
+    def test_archetype_router_ap(self):
+        p = self._port(mac_table_count=1, rx_packets=50000, tx_packets=50000,
+                       tx_multicast=3000)
+        self.assertEqual(rules.classify_archetype(p), "router_ap")
+
+    def test_archetype_switch_many_macs(self):
+        self.assertEqual(rules.classify_archetype(self._port(mac_table_count=5)),
+                         "switch")
+
+    def test_archetype_host_modest(self):
+        p = self._port(mac_table_count=1, rx_packets=50, tx_packets=50)
+        self.assertEqual(rules.classify_archetype(p), "host")
+
+    def test_archetype_dead_end(self):
+        p = self._port(mac_table_count=0, rx_packets=1, tx_multicast=1400000)
+        self.assertEqual(rules.classify_archetype(p), "dead_end")
+
+    def test_archetype_unknown(self):
+        # two MACs (not clearly a switch) -> unknown, never guessed
+        self.assertEqual(rules.classify_archetype(self._port(mac_table_count=2,
+                                                             rx_packets=100,
+                                                             tx_packets=100)),
+                         "unknown")
+        # MACs not learnable but traffic present -> unknown
+        self.assertEqual(rules.classify_archetype(self._port(mac_table_count=0,
+                                                             rx_packets=500,
+                                                             tx_packets=500)),
+                         "unknown")
+
+    # ── OUI best-effort ──
+    def test_oui_known_vendor(self):
+        self.assertEqual(rules.oui_vendor("3c:5a:b4:11:22:33"), "Google/Nest")
+        self.assertEqual(rules.oui_guess("3C-5A-B4-11-22-33"), "likely Google/Nest gear")
+        self.assertEqual(rules.oui_vendor("f0:18:98:aa:bb:cc"), "Apple")
+        self.assertEqual(rules.oui_vendor("44:d9:e7:aa:bb:cc"), "Ubiquiti")
+
+    def test_oui_unknown(self):
+        self.assertIsNone(rules.oui_vendor("00:00:00:00:00:01"))
+        self.assertIsNone(rules.oui_guess("zz:zz:zz:00:00:01"))
+
+    # ── no-profile fix: an overridden native Default is a working profile ──
+    def test_no_profile_does_not_fire_on_overridden_default(self):
+        # HouseSwitch port 7 has native=Default via its override -> native_vlan
+        # is None (untagged) but native_network='Default' -> configured.
+        d = dev_snap(name="HouseSwitch", device_type="switch", unifi={
+            "version": "x", "upgradable": False, "uplink_mac": "", "fixed_ip": None,
+            "ports": [self._port(native_network="Default", native_vlan=None)]})
+        fs = rules.evaluate(snap([d], networks=VLAN_FIXTURE))
+        self.assertNotIn("hyg.port_no_profile", keys(fs))
+
+    def test_no_profile_still_fires_on_truly_unprofiled(self):
+        d = dev_snap(name="HouseSwitch", device_type="switch", unifi={
+            "version": "x", "upgradable": False, "uplink_mac": "", "fixed_ip": None,
+            "ports": [self._port(native_network=None, native_vlan=None)]})
+        self.assertIn("hyg.port_no_profile",
+                      keys(rules.evaluate(snap([d], networks=VLAN_FIXTURE))))
+
+    # ── the 08-19 pinned regression: router/AP-like -> never Management ──
+    def test_router_ap_port_never_suggests_management(self):
+        d = dev_snap(name="HouseSwitch", device_type="switch", unifi={
+            "version": "x", "upgradable": False, "uplink_mac": "", "fixed_ip": None,
+            "ports": [self._port(mac_table_count=1, rx_packets=50000,
+                                 tx_packets=50000, tx_multicast=3000,
+                                 native_network=None, native_vlan=None)]})
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "hyg.port_no_profile")[0]
+        action = f["evidence"].get("suggested_action") or ""
+        self.assertIn("likely a router/AP", action)
+        self.assertIn("verify before any change", action)
+        self.assertNotIn("Management vlan8", action)
+        self.assertNotIn("suggested_network", f["evidence"])
+
+    def test_port_discovery_router_ap_no_change(self):
+        dev = {"name": "HouseSwitch"}
+        p = self._port(mac_table_count=1, rx_packets=50000, tx_packets=50000,
+                       tx_multicast=3000, connected_mac="3c:5a:b4:11:22:33",
+                       dhcp_hostname="google-wifi")
+        pd = rules.port_discovery(dev, p)
+        self.assertEqual(pd["archetype"], "router_ap")
+        self.assertEqual(pd["device_guess"], "likely Google/Nest gear")
+        self.assertEqual(pd["dhcp_hostname"], "google-wifi")
+        self.assertIn("left on the default network", pd["suggested_action"])
+        self.assertNotIn("Management", pd["suggested_action"])
+
+    def test_port_discovery_unknown_conservative(self):
+        dev = {"name": "HouseSwitch"}
+        pd = rules.port_discovery(dev, self._port(mac_table_count=2,
+                                                  rx_packets=100, tx_packets=100))
+        self.assertEqual(pd["archetype"], "unknown")
+        self.assertEqual(pd["suggested_action"],
+                         "unknown device — verify before any change")
+
+    def test_capture_capability_declared_absent(self):
+        cap = network_opt.probe_capture_capability()
+        self.assertFalse(cap["packet_capture"]["available"])
+        self.assertIn("SOC appliance", cap["packet_capture"]["note"])
 
 
 class VlanAwarenessTest(unittest.TestCase):

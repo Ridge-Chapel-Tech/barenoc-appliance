@@ -538,6 +538,65 @@ def _port_mac_table_count(pt: dict) -> int:
     return 0
 
 
+def _mac_string(v) -> str:
+    """Normalize a MAC-ish value (string or {mac:...} dict) to lowercase colon
+    form — '' when not a usable MAC. Best-effort, never raises."""
+    if isinstance(v, dict):
+        v = v.get("mac") or v.get("mac_address") or ""
+    h = re.sub(r"[^0-9a-fA-F]", "", str(v or ""))
+    if len(h) < 12:
+        return ""
+    h = h[:12].lower()
+    return ":".join(h[i:i + 2] for i in range(0, 12, 2))
+
+
+def _port_macs(pt: dict) -> list:
+    """The learned MAC list for a port (``mac_table`` list entries) — ''-safe,
+    deduped, best-effort. The firmware hides port→MAC on some builds, so this
+    may be empty even when a device is connected."""
+    out = []
+    mac_table = (pt or {}).get("mac_table")
+    if isinstance(mac_table, list):
+        for entry in mac_table:
+            m = _mac_string(entry)
+            if m and m not in out:
+                out.append(m)
+    return out
+
+
+def _effective_port_profile(pt: dict, ov: dict) -> dict:
+    """The port's EFFECTIVE name/native/tagged — the port_overrides entry wins
+    when it sets the field (the 08-19 HouseSwitch port 7 fix: the override set
+    native=Default while the port_table had no native, so the 'no profile'
+    rule fired on a CONFIGURED port)."""
+    pt = pt or {}
+    ov = ov or {}
+    return {
+        "name": ov.get("name") or pt.get("name") or f"Port {pt.get('port_idx')}",
+        "native_id": ov.get("native_networkconf_id") or pt.get("native_networkconf_id"),
+        "tagged_ids": ov.get("tagged_networkconf_id") or pt.get("tagged_networkconf_id") or "",
+    }
+
+
+def _clients_by_port(clients: list) -> dict:
+    """Map (switch_mac, port_idx) -> list of client records (hostname/mac/oui)
+    for the client-list correlation (OUI + DHCP hostname best-effort)."""
+    out = {}
+    for c in (clients or []):
+        if not isinstance(c, dict):
+            continue
+        sw_mac = (c.get("sw_mac") or "").strip().lower()
+        port = c.get("sw_port")
+        if not sw_mac or port is None:
+            continue
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        out.setdefault((sw_mac, port), []).append(c)
+    return out
+
+
 def _uplinks_by_port(raw_devices) -> dict:
     """Map (switch_mac, port_idx) -> list of KNOWN managed device names that
     report their uplink on that switch port (the controller's uplink data)."""
@@ -582,6 +641,26 @@ def collect_unifi(config: dict, client=None) -> dict:
     nets_by_id = _networks_by_id(client)
     # port -> KNOWN managed devices that uplink on it (the controller's uplink data)
     uplinks = _uplinks_by_port(raw)
+    # client-list correlation (OUI + DHCP hostname) — fail-soft. The
+    # stat/dhcpd_lease endpoint 404s on this build, so the client list is the
+    # primary path; leases are a best-effort supplement.
+    clients = []
+    try:
+        clients = client.get_clients() or []
+    except Exception:
+        clients = []
+    clients_by_port = _clients_by_port(clients)
+    leases = []
+    try:
+        leases = client.get_dhcp_leases() or []
+    except Exception:
+        leases = []
+    lease_hostnames = {}
+    for lease in leases:
+        m = (lease.get("mac") or "").strip().lower()
+        host = (lease.get("hostname") or "").strip()
+        if m and host:
+            lease_hostnames.setdefault(m, host)
 
     def _vlan(network_id):
         return nets_by_id.get(network_id, {}).get("vlan")
@@ -606,21 +685,35 @@ def collect_unifi(config: dict, client=None) -> dict:
         for pt in (d.get("port_table") or []):
             port_idx = pt.get("port_idx")
             ov = overrides.get(_as_int(port_idx)) or {}
-            native_id = pt.get("native_networkconf_id")
+            prof = _effective_port_profile(pt, ov)
+            native_id = prof["native_id"]
+            tagged_ids = prof["tagged_ids"]
+            learned_macs = _port_macs(pt)
+            port_clients = clients_by_port.get((mac, _as_int(port_idx)), [])
+            client_macs = [m for m in (_mac_string(c.get("mac")) for c in port_clients) if m]
+            connected_mac = (client_macs[0] if client_macs else
+                             (learned_macs[0] if learned_macs else ""))
+            client_hostnames = [str(c.get("hostname") or c.get("name") or "").strip()
+                                for c in port_clients]
+            client_hostnames = [h for h in client_hostnames if h]
+            dhcp_hostname = ""
+            if client_hostnames:
+                dhcp_hostname = client_hostnames[0]
+            elif connected_mac:
+                dhcp_hostname = lease_hostnames.get(connected_mac.lower(), "")
 
             ports.append({
                 "port_idx": port_idx,
-                "name": pt.get("name") or f"Port {port_idx}",
+                "name": prof["name"],
                 "up": bool(pt.get("up")),
                 "disabled": bool(ov.get("disabled", False)),
                 "speed_mbps": pt.get("speed"),
                 "max_speed_mbps": pt.get("max_speed"),
                 "native_vlan": _vlan(native_id),
                 "native_network": _name(native_id),
-                "tagged_vlans": [_vlan(x) for x in
-                                 (pt.get("tagged_networkconf_id") or "").split(",") if x],
+                "tagged_vlans": [_vlan(x) for x in tagged_ids.split(",") if x],
                 "tagged_networks": [n for n in (
-                    _name(x) for x in (pt.get("tagged_networkconf_id") or "").split(",") if x) if n],
+                    _name(x) for x in tagged_ids.split(",") if x) if n],
                 "link_down_count": pt.get("link_down_count") or 0,
                 "tx_errors": pt.get("tx_errors") or 0,
                 "rx_errors": pt.get("rx_errors") or 0,
@@ -631,6 +724,10 @@ def collect_unifi(config: dict, client=None) -> dict:
                 "tx_multicast": _as_int(pt.get("tx_multicast")),
                 "stp_state": pt.get("stp_state"),
                 "uplink_devices": uplinks.get((mac, _as_int(port_idx)), []),
+                "learned_macs": learned_macs,
+                "client_macs": client_macs,
+                "connected_mac": connected_mac or None,
+                "dhcp_hostname": dhcp_hostname or None,
             })
         devices_by_mac[mac] = {
             "name": d.get("name") or mac,
@@ -933,6 +1030,24 @@ def build_vlan_context(snapshot: dict) -> list:
     return out
 
 
+def probe_capture_capability() -> dict:
+    """Declared tool state for the future SOC-appliance packet-capture
+    integration (light). This scan identifies devices WITHOUT packet capture;
+    the probe reports whether a mirror/native capture capability exists. On
+    current gear (UCG-Max 4.x UniFi OS) there is no SPAN/mirror/tcpdump/PBR
+    channel exposed to the appliance, so it is ABSENT by construction."""
+    return {
+        "packet_capture": {
+            "available": False,
+            "channels": ["mirror", "native_tcpdump", "pbr"],
+            "note": ("capture/mirror capability not present on this gear — "
+                     "device identification uses controller-exposed signals "
+                     "(traffic archetype, OUI, DHCP hostname) instead; packet "
+                     "capture lands on the future SOC appliance."),
+        },
+    }
+
+
 def _finalize(db, run: ScanRun, snapshot: dict, findings: list) -> dict:
     """Score + persist findings + finalize the run. Exposed for tests."""
     sc = score(findings)
@@ -952,6 +1067,7 @@ def _finalize(db, run: ScanRun, snapshot: dict, findings: list) -> dict:
         "port_discovery": build_port_discovery(snapshot),
         "network_map": snapshot.get("vlan_map") or {},
         "vlan_context": build_vlan_context(snapshot),
+        "capabilities": probe_capture_capability(),
 
     })
     for f in findings:

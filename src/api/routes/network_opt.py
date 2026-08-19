@@ -227,6 +227,7 @@ def run_detail(run_id: int, db: Session = Depends(get_db),
         "port_discovery": summary.get("port_discovery") or [],
         "network_map": summary.get("network_map") or {},
         "vlan_context": summary.get("vlan_context") or [],
+        "capabilities": summary.get("capabilities") or {},
 
         "findings": [{
             "id": f.id,

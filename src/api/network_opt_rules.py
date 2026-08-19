@@ -96,6 +96,109 @@ PORT_UNUSED_MAX_RX_PACKETS = 10        # ~zero traffic both ways
 PORT_UNUSED_MAX_TX_PACKETS = 10
 PORT_UNUSED_MAX_TX_MULTICAST = 10
 PORT_CONNECTED_MIN_PACKETS = 10        # real RX/TX above this = a device is here
+
+# ── traffic archetype (device identification WITHOUT packet capture) ──────
+# The 08-19 HouseSwitch port 7 false positive: a port carrying a Google/Nest
+# router's WAN was inferred as "switch" (from the switch's own device type)
+# and told to move to Management — stranding the Google WiFi. The archetype
+# now classifies what is ON the port from the controller's exposed counters:
+#   router_ap — 1 learned MAC + heavy bidirectional traffic (+ multicast)
+#   switch    — many learned MACs (a downstream switch/trunk)
+#   host      — 1 learned MAC, modest traffic
+#   dead_end  — 0 MACs + a multicast flood (loop/dead-end cable)
+#   unused    — 0 MACs + ~zero traffic
+#   down      — link down / admin-disabled
+#   unknown   — anything we cannot classify confidently (NEVER guess)
+PORT_SWITCH_MIN_MACS = 3
+PORT_EDGE_MIN_RX_PACKETS = 1000
+PORT_EDGE_MIN_TX_PACKETS = 1000
+PORT_EDGE_MIN_TX_MULTICAST = 200
+
+CONSERVATIVE_ROUTER_AP_ACTION = ("likely a router/AP — left on the default "
+                                 "network; verify before any change")
+CONSERVATIVE_UNKNOWN_ACTION = "unknown device — verify before any change"
+
+
+# ── OUI best-effort (small embedded vendor table) ─────────────────────────
+# When a port's connected MAC is learnable (port mac_table or client-list
+# correlation), map its OUI (first 3 bytes) to a vendor. Best-effort: some
+# firmware hides port→MAC, so this fails gracefully to None (never a guess).
+OUI_VENDORS = {
+    # Google / Nest
+    "001a11": "Google/Nest", "089e08": "Google/Nest", "18b430": "Google/Nest",
+    "3c5ab4": "Google/Nest", "546009": "Google/Nest", "5c27d4": "Google/Nest",
+    "641666": "Google/Nest", "703acb": "Google/Nest", "a47733": "Google/Nest",
+    "d8eb97": "Google/Nest", "f4f5d8": "Google/Nest",
+    # Apple
+    "000393": "Apple", "000a27": "Apple", "001b63": "Apple", "001ec2": "Apple",
+    "002500": "Apple", "0026bb": "Apple", "0c3021": "Apple", "14109f": "Apple",
+    "186590": "Apple", "209bcd": "Apple", "28cfe9": "Apple", "2c200b": "Apple",
+    "38c986": "Apple", "403004": "Apple", "442a60": "Apple", "48d705": "Apple",
+    "54e43a": "Apple", "68967b": "Apple", "703c69": "Apple", "7831c1": "Apple",
+    "881fa1": "Apple", "8c8590": "Apple", "a45e60": "Apple", "a85c2c": "Apple",
+    "acbc32": "Apple", "b0702d": "Apple", "bc926b": "Apple", "c0847a": "Apple",
+    "c86f1d": "Apple", "dc2b2a": "Apple", "e0b55f": "Apple", "e4ce8f": "Apple",
+    "f01898": "Apple", "f0dbe2": "Apple",
+    # Ubiquiti
+    "00156d": "Ubiquiti", "002722": "Ubiquiti", "0418d6": "Ubiquiti",
+    "24a43c": "Ubiquiti", "44d9e7": "Ubiquiti", "687251": "Ubiquiti",
+    "70a741": "Ubiquiti", "788a20": "Ubiquiti", "802aa8": "Ubiquiti",
+    "b4fbe4": "Ubiquiti", "dc9fdb": "Ubiquiti", "e063da": "Ubiquiti",
+    "f09fc2": "Ubiquiti", "fcecda": "Ubiquiti",
+    # common top OUIs (best-effort — never exhaustive)
+    "001c0f": "Cisco", "0023ac": "Cisco", "3c0e23": "Cisco", "4c6e6e": "Cisco",
+    "5897bd": "Cisco", "7079b3": "Cisco", "e0acf1": "Cisco",
+    "3c7dd9": "Intel", "5c5eab": "Intel", "889c16": "Intel", "a4bb6d": "Intel",
+    "f45c89": "Intel",
+    "001dd5": "Samsung", "20719e": "Samsung", "8c8b83": "Samsung",
+    "a04f85": "Samsung", "e4788a": "Samsung",
+    "008ab8": "Amazon", "0cb394": "Amazon", "68d0f8": "Amazon",
+    "8c0ca6": "Amazon", "b0c554": "Amazon", "fc65de": "Amazon",
+    "0024e4": "Microsoft", "0060dd": "Microsoft", "b826d4": "Microsoft",
+    "c42f90": "Microsoft", "f02f74": "Microsoft",
+    "0015db": "Sonos", "5caafd": "Sonos", "78a86a": "Sonos", "949f3e": "Sonos",
+    "b8e937": "Sonos", "dcbd9c": "Sonos",
+    "00a04e": "Roku", "5ce0ca": "Roku", "8c3e7c": "Roku", "d8a24e": "Roku",
+    "008ecc": "LG", "a0a3c8": "LG", "c0d3b5": "LG", "e03f49": "LG",
+    "00242b": "Sony", "1cf0e1": "Sony", "f0b40e": "Sony",
+    "001a6c": "TP-Link", "14cc20": "TP-Link", "50c7bf": "TP-Link",
+    "a0f3c1": "TP-Link", "b0be76": "TP-Link", "c46e1f": "TP-Link",
+    "001e2a": "Netgear", "201331": "Netgear", "a021b7": "Netgear",
+    "b07fb9": "Netgear", "cc40d0": "Netgear", "e0469a": "Netgear",
+    "001fc5": "ASUS", "042e8c": "ASUS", "3871de": "ASUS", "ac9e17": "ASUS",
+    "d850e6": "ASUS",
+    "001b11": "D-Link", "14d64d": "D-Link", "b075d5": "D-Link",
+    "c8be19": "D-Link",
+    "001150": "Belkin", "944452": "Belkin",
+    "b827eb": "Raspberry Pi", "dc7188": "Raspberry Pi", "e45f01": "Raspberry Pi",
+    "246f28": "Espressif", "30aea4": "Espressif", "40f520": "Espressif",
+    "7c9ebd": "Espressif", "84f3eb": "Espressif", "b4e62d": "Espressif",
+    "0017c0": "Texas Instruments", "f0b014": "Texas Instruments",
+    "00e04c": "Realtek", "1019ce": "Realtek", "8cdcd4": "Realtek",
+}
+
+
+def _oui_of_mac(mac) -> str:
+    """First 3 bytes of a MAC, normalized to 6 lowercase hex chars ('' when
+    the MAC is unlearnable/malformed)."""
+    h = re.sub(r"[^0-9a-fA-F]", "", str(mac or ""))
+    return h[:6].lower() if len(h) >= 6 else ""
+
+
+def oui_vendor(mac) -> "str | None":
+    """Vendor name for a MAC's OUI (the embedded table), or None when the OUI
+    is unknown/unlearnable. Fails gracefully — never guesses."""
+    return OUI_VENDORS.get(_oui_of_mac(mac))
+
+
+def oui_guess(mac) -> "str | None":
+    """'likely Google/Nest gear' phrasing for a learnable MAC, else None."""
+    vendor = oui_vendor(mac)
+    if not vendor:
+        return None
+    return f"likely {vendor} gear"
+
+
 # ── VLAN awareness + the NO-FLAT guardrail (netopt-vlan-awareness) ────────
 # The scan understands VLANs and subnetting: every port's native/tagged
 # assignment carries meaning, recommendations respect the multi-VLAN design,
@@ -947,25 +1050,27 @@ def _hyg_unnamed_uplink_port(snap, dev):
       "{port_label}: no assigned network")
 def _hyg_port_no_profile(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
-        if (p.get("up") and p.get("native_vlan") is None
-                and not (p.get("tagged_vlans") or [])):
-            vlan_map = snapshot_vlan_map(snap)
-            action = port_profile_action(dev, p, vlan_map)
-            net = suggested_network((dev.get("device_type") or "unknown").lower(),
-                                    vlan_map)
-            label = port_label(dev, p)
-            ev = {"port": p.get("port_idx"), "name": p.get("name"),
-                  "port_label": label,
-                  "detail": _fmt("{port_label} is up with no network profile "
-                                 "assigned — traffic lands on the default network.",
-                                 {"port_label": label})}
-            if net:
-                ev["suggested_network"] = {"name": net.get("name"),
-                                            "vlan": net.get("vlan"),
-                                            "subnet": net.get("subnet")}
-            if action:
-                ev["suggested_action"] = action
-            return ev
+        if not (p.get("up") and not port_has_profile(p)):
+            continue
+        vlan_map = snapshot_vlan_map(snap)
+        action = port_profile_action(dev, p, vlan_map)
+        arch = classify_archetype(p)
+        net = None
+        if arch not in ("router_ap", "unknown"):
+            net = suggested_network(_port_device_class(dev, p, arch), vlan_map)
+        label = port_label(dev, p)
+        ev = {"port": p.get("port_idx"), "name": p.get("name"),
+              "port_label": label,
+              "detail": _fmt("{port_label} is up with no network profile "
+                             "assigned — traffic lands on the default network.",
+                             {"port_label": label})}
+        if net:
+            ev["suggested_network"] = {"name": net.get("name"),
+                                        "vlan": net.get("vlan"),
+                                        "subnet": net.get("subnet")}
+        if action:
+            ev["suggested_action"] = action
+        return ev
 
 
 @rule("hyg.dead_end_port", "hygiene", "warning",
@@ -1283,10 +1388,14 @@ def suggested_network(device_class, vlan_map) -> "dict | None":
 
 
 def port_profile_action(dev, port, vlan_map) -> "str | None":
-    """The VLAN-aware suggested_action for a port with no assigned network:
-    names the CORRECT network for the device class (or the full VLAN trunk for
-    an uplink) — never a generic flatten / never the catch-all. Returns None
-    when no network resolves (the caller falls back to the static action)."""
+    """The suggested_action for a port with no assigned network.
+
+    Conservative first: a port classified router/AP-like (edge device) or
+    UNKNOWN is NEVER told to change networks — the action says verify before
+    any change (the 08-19 HouseSwitch port 7 incident: a Google/Nest router's
+    WAN was inferred as 'switch' and told to move to Management, which would
+    have stranded it). Only a confidently classified host/switch gets a
+    network suggestion, and an uplink always gets the full VLAN trunk."""
     vlan_map = vlan_map or {}
     dev = dev or {}
     port = port or {}
@@ -1294,6 +1403,10 @@ def port_profile_action(dev, port, vlan_map) -> "str | None":
     desc = str(port.get("name") or "").strip()
     if desc and not desc.startswith("Port "):
         label = f"{label} ({desc})"
+    arch = classify_archetype(port)
+    conservative = conservative_port_action(arch)
+    if conservative:
+        return conservative
     if port.get("is_uplink"):
         vlans = sorted((int(k) for k, e in vlan_map.items()
                         if k != DEFAULT_NETWORK_KEY and e.get("enabled", True)
@@ -1305,7 +1418,7 @@ def port_profile_action(dev, port, vlan_map) -> "str | None":
                     f"collapse the VLANs onto a single network.")
         return (f"Assign the appropriate VLAN trunk to {label} (all segments tagged, "
                 f"native Management) — never collapse the VLANs onto a single network.")
-    dclass = (dev.get("device_type") or "unknown").lower()
+    dclass = _port_device_class(dev, port, arch)
     net = suggested_network(dclass, vlan_map)
     if not net:
         return None
@@ -1344,6 +1457,25 @@ def _as_int(v) -> int:
         return 0
 
 
+def port_has_profile(p) -> bool:
+    """True when a port has a working network profile: an effective native
+    (including the untagged/corporate Default — whose ``native_vlan`` is None
+    but whose ``native_network`` is 'Default') or a tagged set.
+
+    The 08-19 HouseSwitch port 7 regression: the override set native=Default,
+    but the collector only read the port_table (native_vlan=None, no tagged)
+    so the 'no profile' rule fired on a CONFIGURED port."""
+    p = p or {}
+    if p.get("native_vlan") is not None:
+        return True
+    if p.get("native_network") is not None:
+        return True
+    tagged = [v for v in (p.get("tagged_vlans") or []) if v is not None]
+    if tagged:
+        return True
+    return False
+
+
 def classify_port(port) -> str:
     """Best-effort classification of a UniFi per-port snapshot — one of
     'down', 'dead_end', 'unused', 'connected'.
@@ -1375,12 +1507,86 @@ def classify_port(port) -> str:
     return "connected"
 
 
+def classify_archetype(port) -> str:
+    """Traffic archetype of what is ON a port (device identification without
+    packet capture) — one of 'down', 'dead_end', 'unused', 'switch',
+    'router_ap', 'host', or 'unknown'.
+
+    * router_ap — 1 learned MAC + heavy bidirectional traffic (or a high
+      multicast rate): a router/AP-like edge device (the 08-19 HouseSwitch
+      port 7 Google/Nest WAN).
+    * switch    — many learned MACs (a downstream switch/trunk).
+    * host      — 1 learned MAC, modest traffic.
+    * unknown   — anything we cannot classify confidently. NEVER guessed.
+    """
+    base = classify_port(port)
+    if base in ("down", "dead_end", "unused"):
+        return base
+    mac = _as_int((port or {}).get("mac_table_count"))
+    rx = _as_int((port or {}).get("rx_packets"))
+    tx = _as_int((port or {}).get("tx_packets"))
+    tx_mc = _as_int((port or {}).get("tx_multicast"))
+    if mac >= PORT_SWITCH_MIN_MACS:
+        return "switch"
+    if mac == 1:
+        heavy_bidirectional = (rx >= PORT_EDGE_MIN_RX_PACKETS
+                               and tx >= PORT_EDGE_MIN_TX_PACKETS)
+        if heavy_bidirectional or tx_mc >= PORT_EDGE_MIN_TX_MULTICAST:
+            return "router_ap"
+        return "host"
+    return "unknown"
+
+
+def conservative_port_action(archetype) -> "str | None":
+    """The conservative 'never suggest a network change' action for a
+    router/AP-like or unknown port. None for confidently classified ports
+    (their change guidance, if any, comes from the port-profile rule)."""
+    if archetype == "router_ap":
+        return CONSERVATIVE_ROUTER_AP_ACTION
+    if archetype == "unknown":
+        return CONSERVATIVE_UNKNOWN_ACTION
+    return None
+
+
+def _port_device_class(dev, port, archetype) -> str:
+    """The effective device class for a port's connected device: the traffic
+    archetype when it names a class (switch/host), else the scanned device's
+    own type (covers an AP's own port with no traffic counters)."""
+    cls = {"switch": "switch", "host": "host"}.get(archetype)
+    if cls:
+        return cls
+    return (dev.get("device_type") or "unknown").lower()
+
+
+def _port_connected_mac(p) -> str:
+    """The port's best single connected MAC (client-list correlation first,
+    then the port's learned-MAC table) — '' when not learnable. The firmware
+    hides port→MAC on some builds; this fails soft."""
+    p = p or {}
+    for field in ("connected_mac",):
+        v = str(p.get(field) or "").strip()
+        if v:
+            return v
+    for field in ("client_macs", "learned_macs"):
+        seq = p.get(field) or []
+        if isinstance(seq, (list, tuple)) and seq:
+            v = str(seq[0]).strip()
+            if v:
+                return v
+    return ""
+
+
 def port_discovery(dev, p) -> dict:
-    """The per-port discovery story: classification + counters + what's on the
-    port (the known AP/switch uplinking here, else the MAC count)."""
+    """The per-port discovery story: classification + traffic archetype +
+    counters + device identity (OUI/DHCP, best-effort) + the conservative
+    no-change action for router/AP-like and unknown ports."""
     cls = classify_port(p)
+    arch = classify_archetype(p)
     mac = _as_int(p.get("mac_table_count"))
     uplinks = [str(x) for x in (p.get("uplink_devices") or []) if x]
+    connected_mac = _port_connected_mac(p)
+    device_guess = oui_guess(connected_mac) if connected_mac else None
+    dhcp_hostname = str(p.get("dhcp_hostname") or "").strip()
     if cls == "connected":
         if uplinks:
             what = "known device: " + ", ".join(uplinks)
@@ -1410,7 +1616,12 @@ def port_discovery(dev, p) -> dict:
         "tx_packets": _as_int(p.get("tx_packets")),
         "tx_multicast": _as_int(p.get("tx_multicast")),
         "classification": cls,
+        "archetype": arch,
         "uplink_devices": uplinks,
+        "connected_mac": connected_mac or None,
+        "device_guess": device_guess,
+        "dhcp_hostname": dhcp_hostname or None,
+        "suggested_action": conservative_port_action(arch) or "",
         "what": what,
     }
 

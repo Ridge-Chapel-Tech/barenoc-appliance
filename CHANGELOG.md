@@ -15,6 +15,38 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.19.d] — 2026-08-19
+
+### Added
+- **NetOpt device identification WITHOUT packet capture** (`feat/netopt-device-id`):
+  the scan now identifies what is on each switch port from the signals the
+  controller already exposes — no mirror/native tcpdump needed (packet capture
+  moves to the future SOC appliance).
+  - **Traffic archetype** per port: `router_ap` (1 learned MAC + heavy
+    bidirectional traffic/multicast — an edge router/AP), `switch` (many MACs),
+    `host` (1 MAC, modest), `dead_end`, `unused`, `down`, and a conservative
+    `unknown` that is never guessed.
+  - **Conservative rule:** a `router_ap` or `unknown` port is NEVER told to
+    change networks — its suggested action is "likely a router/AP — left on the
+    default network; verify before any change" (the 08-19 HouseSwitch port 7
+    Google/Nest WAN regression, which previously guessed "switch" → Management).
+  - **OUI best-effort:** a small embedded vendor table (Google/Nest, Apple,
+    Ubiquiti, + common top OUIs) maps a learnable port MAC to "likely X gear",
+    failing gracefully when the firmware hides port→MAC.
+  - **DHCP hostname attempt:** surfaces a connected client's hostname from the
+    client list (rest/user + stat/sta; `stat/dhcpd_lease` 404s on this build) —
+    fail-soft.
+  - **Capability declaration (light):** the run summary declares the
+    capture/mirror capability state (`packet_capture.available: false` on this
+    gear) for the future SOC-appliance integration.
+
+### Fixed
+- **False "no assigned network" on an overridden port** — the UniFi collector
+  now reads each port's EFFECTIVE native/tagged/name from its `port_overrides`
+  entry when set (HouseSwitch port 7 has native=Default via its override), and
+  the no-profile rule treats a native (including the untagged Default) or a
+  tagged set as a working profile — configured ports are no longer findings.
+
 ## [2026.08.19.c] — 2026-08-19
 
 ### Added

@@ -791,6 +791,10 @@ async function doSubmitReport(comment, flagged) {
     vet.className = 'mt-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700';
     var link = d.thread_url ? (' <a class="underline font-medium" href="' + esc(d.thread_url) + '" target="_blank" rel="noopener">View thread ↗</a>') : '';
     vet.innerHTML = '✅ Report submitted' + (flagged ? ' (flagged for review)' : '') + ' — thread created' + link + '.';
+    // Clear the (now mandatory) comment field + reset the clarity prompt state
+    // so a fresh report starts clean (08-19: the field kept its text after submit).
+    document.getElementById('bug-desc').value = '';
+    _reportUnclear = false;
   } catch (e) {
     vet.classList.remove('hidden');
     vet.className = 'mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700';
