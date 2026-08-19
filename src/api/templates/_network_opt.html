@@ -402,8 +402,43 @@
   }
 
   // The run-detail panel (score line + the Optimize controls + per-finding
-  // checkboxes/comments). Shared by the history-click AND the auto-load of the
-  // latest run — the Optimize controls must be visible without hunting.
+  // checkboxes/comments + the VLAN/subnet map + per-port context). Shared by
+  // the history-click AND the auto-load of the latest run.
+  function netoptVlanHtml(d) {
+    var map = d.network_map || {};
+    var ctx = d.vlan_context || [];
+    var html = '';
+    if (Object.keys(map).length || ctx.length) {
+      html += '<div class="mt-3 border-t pt-3">' +
+        '<div class="text-xs font-semibold text-gray-500 uppercase mb-1">Network map (VLAN / subnet)</div>';
+      if (Object.keys(map).length) {
+        html += '<div class="flex flex-wrap gap-1 mb-2">';
+        Object.keys(map).forEach(function (k) {
+          var n = map[k];
+          html += '<span class="px-2 py-0.5 text-xs rounded-full ' + (n.enabled === false ? 'bg-gray-100 text-gray-400' : 'bg-indigo-50 text-indigo-700') + '">' +
+            esc(n.name) + (n.vlan != null ? ' · vlan' + esc(n.vlan) : '') +
+            (n.subnet ? ' · ' + esc(n.subnet) : '') +
+            (n.purpose ? ' · ' + esc(n.purpose) : '') + '</span>';
+        });
+        html += '</div>';
+      }
+      ctx.forEach(function (d) {
+        html += '<div class="mb-2">' +
+          '<div class="text-xs font-medium text-gray-700">' + esc(d.name) + (d.ip ? ' <span class="font-mono text-gray-400">' + esc(d.ip) + '</span>' : '') + '</div>' +
+          '<div class="space-y-1 mt-1">';
+        (d.ports || []).forEach(function (p) {
+          html += '<div class="text-xs text-gray-600 flex items-baseline gap-2">' +
+            '<span class="font-mono text-gray-500 shrink-0">' + esc(p.port_idx != null ? 'Port ' + p.port_idx : '—') + (p.is_uplink ? ' ↥' : '') + (p.up ? '' : ' (down)') + '</span>' +
+            '<span>' + esc(p.story || '') + '</span>' +
+          '</div>';
+        });
+        html += '</div></div>';
+      });
+      html += '</div>';
+    }
+    return html;
+  }
+
   function netoptRenderDetail(d) {
     var el = document.getElementById('netopt-detail');
     el.classList.remove('hidden');
@@ -423,12 +458,15 @@
         '<button onclick="document.getElementById(\'netopt-detail\').classList.add(\'hidden\')" class="text-sm text-gray-400 hover:text-gray-600">✕ close</button>' +
       '</div>' +
       '<div class="mt-2 text-xs text-gray-500">Score ' + (d.score != null ? d.score : '—') + ' · ' + d.findings.length + ' findings · ' + fmtTz(d.started_at) + ' → ' + fmtTz(d.finished_at) + '</div>' +
+      netoptVlanHtml(d) +
       controls +
       '<div id="netopt-detail-findings" class="mt-3"></div>' +
+      '<div id="netopt-detail-ports" class="mt-4"></div>' +
       '</div>';
       var inner = document.createElement('div');
       netoptRenderFindingsInto(d.findings, inner);
       el.querySelector('#netopt-detail-findings').innerHTML = inner.innerHTML;
+      netoptRenderPorts(d.port_discovery || (d.summary && d.summary.port_discovery) || []);
       el.scrollIntoView({ behavior: 'smooth' });
   }
   function netoptRenderFindingsInto(findings, el) {
@@ -459,6 +497,7 @@
             '</div>' +
             (f.detail ? '<div class="mt-1 text-xs text-gray-500">' + esc(f.detail) + '</div>' : '') +
             (f.suggested_action ? '<div class="mt-1 text-xs text-gray-600"><span class="font-medium">Suggested:</span> ' + esc(f.suggested_action) + '</div>' : '') +
+            (f.guardrail_flag ? '<div class="mt-1 text-xs text-red-500">' + esc(f.guardrail_flag) + '</div>' : '') +
             '<div class="mt-1 text-xs font-mono text-gray-400">' + esc(f.finding_key) + '</div>' +
             (fixable
               ? '<input type="text" class="netopt-comment mt-1 w-full rounded-md border-gray-300 border px-2 py-1 text-xs" placeholder="Optional comment for the technician…" data-id="' + f.id + '">'
@@ -472,6 +511,42 @@
   }
   function netoptSelectedCount() {
     return document.querySelectorAll('#netopt-detail .netopt-fix:checked').length;
+  }
+  var PORTCLS = {
+    connected: ['bg-green-100 text-green-700', 'connected'],
+    dead_end: ['bg-orange-100 text-orange-700', 'dead-end / loop'],
+    unused: ['bg-gray-100 text-gray-600', 'unused'],
+    down: ['bg-gray-50 text-gray-400', 'down']
+  };
+  function netoptRenderPorts(ports) {
+    var el = document.getElementById('netopt-detail-ports');
+    if (!el) return;
+    if (!ports || !ports.length) { el.innerHTML = ''; return; }
+    var byDev = {};
+    ports.forEach(function (p) {
+      (byDev[p.device || 'unknown'] = byDev[p.device || 'unknown'] || []).push(p);
+    });
+    var html = '<h4 class="text-xs font-medium text-gray-500 uppercase mt-2">Per-port discovery</h4>';
+    Object.keys(byDev).forEach(function (dev) {
+      html += '<div class="mt-2 text-sm font-medium text-gray-900">' + esc(dev) + '</div>';
+      html += '<div class="mt-1 space-y-1">';
+      byDev[dev].forEach(function (p) {
+        var cls = PORTCLS[p.classification] || PORTCLS.connected;
+        html += '<div class="flex items-start gap-2 text-xs border rounded p-1.5 bg-gray-50">' +
+          '<span class="px-1.5 py-0.5 rounded-full whitespace-nowrap ' + cls[0] + '">' + cls[1] + '</span>' +
+          '<span class="font-medium whitespace-nowrap">' + esc(p.label || ('Port ' + p.port_idx)) + '</span>' +
+          '<span class="text-gray-500">' + esc(p.what || '') + '</span>' +
+          '<span class="font-mono text-gray-400 ml-auto whitespace-nowrap">' +
+            (p.speed_mbps != null ? p.speed_mbps + ' Mbps' : '') +
+            (p.stp_state ? ' · ' + esc(p.stp_state) : '') +
+            ' · ' + (p.mac_table_count || 0) + ' MAC · rx ' + (p.rx_packets || 0) +
+            ' / tx ' + (p.tx_packets || 0) + ' / mc ' + (p.tx_multicast || 0) +
+          '</span>' +
+        '</div>';
+      });
+      html += '</div>';
+    });
+    el.innerHTML = html;
   }
   function netoptMode() {
     var checked = document.querySelector('#netopt-detail .netopt-mode:checked');

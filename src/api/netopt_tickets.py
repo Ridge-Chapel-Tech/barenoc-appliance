@@ -18,7 +18,7 @@ import json
 
 from models import Ticket
 from worknotes import add_note
-from network_opt_rules import fixability, risk_meta
+from network_opt_rules import risk_meta, suggested_action_for
 
 ADMIN_CONTEXT_NOTE = ("This ticket has admin context/instructions — read them "
                       "fully before any action.")
@@ -53,6 +53,11 @@ VERIFICATION_STEPS = {
     "hyg.default_vlan1": "Confirm each moved network's devices still respond after the port re-assignment.",
     "hyg.disabled_network": ("Confirm the network is removed and no port/SSID that "
                              "referenced it is now un-profiled."),
+    "hyg.dead_end_port": ("Re-read the port table and confirm the multicast flood stops "
+                          "AND the rest of the network stays up (no other port becomes "
+                          "blocked/down)."),
+    "hyg.unused_port_up": ("Confirm the port is disabled and no device was actually "
+                           "depending on it (re-read the port table)."),
 }
 
 ROLLBACK_STEPS = {
@@ -66,6 +71,10 @@ ROLLBACK_STEPS = {
     "hyg.default_vlan1": "Restore the captured port memberships from the checkpoint and confirm reachability.",
     "hyg.disabled_network": ("Re-create the network from the checkpoint (or re-apply the "
                              "captured port profiles)."),
+    "hyg.dead_end_port": ("Re-enable the port from the checkpoint (re-apply the captured "
+                          "port state) and confirm the network forwards again."),
+    "hyg.unused_port_up": ("Re-enable the port from the checkpoint if a device turns out "
+                           "to be using it."),
 }
 
 SEVERITY_PRIORITY = {"critical": "P1", "warning": "P2", "info": "P3"}
@@ -148,14 +157,20 @@ def change_plan(finding) -> dict:
     carries this PRE-THOUGHT so the executing agent never improvises a
     port/VLAN/network change (the 08-19 half-applied port_overrides incident)."""
     key = _get(finding, "finding_key", "")
-    fx = fixability(key)
     risk = risk_meta(key)
     current = (_get(finding, "detail", "") or "").strip()
     if not current:
-        current = _evidence_text(finding) or "(see evidence)"
+        # Port findings carry the canonical '<dev> Port <idx> (<desc>)' label
+        # in evidence['port_label'] — surface it so the change plan names the
+        # port even when no detail text was persisted.
+        ev = _get(finding, "evidence", None)
+        if isinstance(ev, dict) and ev.get("port_label"):
+            current = str(ev["port_label"])
+        else:
+            current = _evidence_text(finding) or "(see evidence)"
     return {
         "current_state": current,
-        "proposed_change": (fx.get("suggested_action", "") or "").strip(),
+        "proposed_change": (suggested_action_for(key, _get(finding, "evidence", None)) or "").strip(),
         "blast_radius": (risk.get("blast_radius", "") or "").strip(),
         "verification": _verification_step(key),
         "rollback": _rollback_step(key),
@@ -177,7 +192,7 @@ def change_plan_text(finding) -> str:
 
 
 def _finding_block(finding, run_id, comment="", index=None) -> str:
-    fx = fixability(_get(finding, "finding_key", ""))
+    key = _get(finding, "finding_key", "")
     lines = []
     if index is not None:
         lines.append(f"--- Finding {index}: {_get(finding, 'title', '')} ---")
@@ -185,11 +200,16 @@ def _finding_block(finding, run_id, comment="", index=None) -> str:
         lines.append(f"Finding: {_get(finding, 'title', '')}")
     lines.append(f"Severity: {_get(finding, 'severity', '')} · "
                  f"Category: {_get(finding, 'category', '')} · "
-                 f"Key: {_get(finding, 'finding_key', '')}")
+                 f"Key: {key}")
     detail = _get(finding, "detail", "")
     if detail:
         lines.append(str(detail))
-    lines.append(f"Suggested action: {fx.get('suggested_action', '')}")
+    action = suggested_action_for(key, _get(finding, "evidence", None))
+    if action:
+        lines.append(f"Suggested action: {action}")
+    elif (dict(_get(finding, "evidence", None) or {})).get("guardrail_flag"):
+        lines.append(f"Suggested action: suppressed — "
+                     f"{dict(_get(finding, 'evidence', None) or {}).get('guardrail_flag')}")
     if comment:
         lines.append(f"Admin comment: {comment}")
     ev = _evidence_text(finding)

@@ -643,6 +643,28 @@ def set_port_vlans(switch_mac: str, port_idx: int, body: dict,
     return preview
 
 
+@router.post("/ports/{switch_mac}/{port_idx}/disabled")
+def set_port_disabled(switch_mac: str, port_idx: int, body: dict,
+                      user: User = Depends(require_any_role("admin", "agent"))):
+    """Enable/disable a switch port (the dead-end/loop fix path).
+
+    body: {"disabled": true|false}. Merge-safe: the client reads the FULL
+    port_overrides array and only toggles the ``disabled`` flag on this port —
+    every other port's override is preserved (STANDING PROCEDURE #4).
+    """
+    disabled = bool((body or {}).get("disabled", True))
+    cfg = _get_unifi_config()
+    if not _auth_ready(cfg):
+        raise HTTPException(status_code=400, detail="UniFi authentication not configured")
+    client = _unifi_client(cfg)
+    if not client.login():
+        raise HTTPException(status_code=502, detail=f"Could not log in to UniFi controller: {client.last_error or 'unknown'}")
+    result = client.set_port_disabled(switch_mac, port_idx, disabled)
+    if not result.get("applied"):
+        raise HTTPException(status_code=502, detail=result.get("error", "disable failed"))
+    return result
+
+
 @router.post("/sync")
 def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_any_role("admin", "agent"))):
     """Pull devices from UniFi and upsert into inventory."""

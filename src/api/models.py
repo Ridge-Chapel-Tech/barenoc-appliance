@@ -209,6 +209,34 @@ class LinkEpisode(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 
+class StarlinkEpisode(Base):
+    """In-flight Starlink link-health episode — one row per dish device.
+
+    The ticket is the user-facing record; this table is the Starlink health
+    monitor's state-machine memory (state, degradation/outage/recovery timers,
+    current ticket) so a container restart resumes an open episode instead of
+    losing it. Rows are deleted when the episode auto-closes.
+    """
+
+    __tablename__ = "starlink_episodes"
+    __table_args__ = (
+        UniqueConstraint("device_id", name="uq_starlink_episodes_device"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), index=True, nullable=False)
+    state = Column(String(16), default="healthy")     # healthy | degraded | outage
+    degraded_since = Column(DateTime, nullable=True)   # when sustained degradation began
+    outage_since = Column(DateTime, nullable=True)     # when the link-down window began
+    recovered_since = Column(DateTime, nullable=True)  # start of the current healthy streak
+    last_event_at = Column(DateTime, default=datetime.datetime.utcnow)
+    escalated = Column(String(4), nullable=True)       # current ticket priority (P2 | P1)
+    escalation_reason = Column(String(32), nullable=True)  # degraded | outage
+    ticket_id = Column(String(32), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class ScanRun(Base):
     """One Network Optimization scan (P1: read-only audit/report).
 

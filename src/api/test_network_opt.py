@@ -24,6 +24,7 @@ from database import SessionLocal, init_db
 from models import User, Device, ScanRun, Finding, Ticket
 import network_opt_rules as rules
 import network_opt
+import netopt_tickets
 from routes import network_opt as routes
 
 
@@ -278,6 +279,189 @@ class HygieneRulesTest(unittest.TestCase):
         self.assertIn("hyg.default_vlan1", keys(rules.evaluate(s)))
 
 
+class PortDiscoveryTest(unittest.TestCase):
+    """Per-port classification (connected/dead_end/unused) + the 08-19 Mini
+    Rack port 4 flood signature (must classify dead_end)."""
+
+    def _port(self, **kw):
+        p = {
+            "port_idx": 4, "name": "Port 4", "up": True, "speed_mbps": 1000,
+            "mac_table_count": 0, "rx_packets": 0, "tx_packets": 0,
+            "tx_multicast": 0, "stp_state": "forwarding", "uplink_devices": [],
+        }
+        p.update(kw)
+        return p
+
+    def test_down_port(self):
+        self.assertEqual(rules.classify_port(self._port(up=False)), "down")
+
+    def test_connected_by_macs(self):
+        self.assertEqual(rules.classify_port(self._port(mac_table_count=3)), "connected")
+
+    def test_connected_by_real_traffic(self):
+        self.assertEqual(rules.classify_port(self._port(rx_packets=500)), "connected")
+        self.assertEqual(rules.classify_port(self._port(tx_packets=500)), "connected")
+
+    def test_unused_zero_traffic(self):
+        self.assertEqual(rules.classify_port(self._port()), "unused")
+        # negligible counters below the thresholds still count as unused
+        self.assertEqual(rules.classify_port(self._port(rx_packets=3, tx_packets=3,
+                                                        tx_multicast=3)), "unused")
+
+    def test_dead_end_flood_signature(self):
+        # the 08-19 Mini Rack port 4: UP @1G, 0 MACs, rx≈1, tx_multicast≈1.4M
+        p = self._port(mac_table_count=0, rx_packets=1, tx_multicast=1400000)
+        self.assertEqual(rules.classify_port(p), "dead_end")
+
+    def test_dead_end_requires_flood(self):
+        # moderate multicast is NOT the flood signature
+        self.assertNotEqual(rules.classify_port(self._port(tx_multicast=50)), "dead_end")
+        self.assertNotEqual(rules.classify_port(self._port(tx_multicast=5)), "dead_end")
+
+    def test_rule_dead_end_port(self):
+        d = dev_snap(name="Mini Rack", unifi={"version": "7", "upgradable": False,
+                                              "uplink_mac": "", "fixed_ip": None,
+                                              "wan": None, "ports": [
+            self._port(mac_table_count=0, rx_packets=1, tx_multicast=1400000)]})
+        fs = rules.evaluate(snap([d]))
+        f = by_key(fs, "hyg.dead_end_port")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "warning")
+        self.assertIn("Mini Rack Port 4", f[0]["title"])
+        self.assertIn("dead-end cable", f[0]["title"])
+        fx = rules.fixability("hyg.dead_end_port")
+        self.assertTrue(fx["high_risk"])
+        self.assertIn("Disable the port", fx["suggested_action"])
+        self.assertIn("PLAN FIRST", fx["suggested_action"])
+
+    def test_rule_unused_port_up(self):
+        d = dev_snap(name="HouseSwitch", unifi={"version": "7", "upgradable": False,
+                                                "uplink_mac": "", "fixed_ip": None,
+                                                "wan": None, "ports": [
+            self._port(port_idx=8, name="Port 8")]})
+        fs = rules.evaluate(snap([d]))
+        f = by_key(fs, "hyg.unused_port_up")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "info")
+        self.assertIn("HouseSwitch Port 8", f[0]["title"])
+        fx = rules.fixability("hyg.unused_port_up")
+        self.assertEqual(fx["suggested_action"], "Disable the unused port.")
+        self.assertFalse(fx["high_risk"])
+
+    def test_port_discovery_story(self):
+        dev = {"name": "Mini Rack"}
+        p = self._port(rx_packets=1, tx_multicast=1400000)
+        pd = rules.port_discovery(dev, p)
+        self.assertEqual(pd["classification"], "dead_end")
+        self.assertEqual(pd["label"], "Mini Rack Port 4")
+        self.assertEqual(pd["mac_table_count"], 0)
+        self.assertEqual(pd["tx_multicast"], 1400000)
+
+    def test_port_discovery_known_uplink(self):
+        dev = {"name": "HouseSwitch"}
+        p = self._port(mac_table_count=3, uplink_devices=["U6 Mesh"])
+        pd = rules.port_discovery(dev, p)
+        self.assertEqual(pd["classification"], "connected")
+        self.assertIn("U6 Mesh", pd["what"])
+
+    def test_build_port_discovery(self):
+        s = snap([dev_snap(name="Mini Rack", unifi={"version": "7", "upgradable": False,
+                                                    "uplink_mac": "", "fixed_ip": None,
+                                                    "wan": None, "ports": [
+            self._port(rx_packets=1, tx_multicast=1400000)]})])
+        pd = rules.build_port_discovery(s)
+        self.assertEqual(len(pd), 1)
+        self.assertEqual(pd[0]["classification"], "dead_end")
+class PortNamingTest(unittest.TestCase):
+    """Port findings use the canonical '<dev.name> Port <idx> (<desc>)' naming
+    (display-only — finding keys stay stable)."""
+
+    def _uni(self, ports):
+        return {"version": "7", "upgradable": False, "uplink_mac": "",
+                "fixed_ip": None, "wan": None, "ports": ports}
+
+    def test_title_with_port_description(self):
+        d = dev_snap(name="HouseSwitch", unifi=self._uni([
+            {"port_idx": 7, "name": "Google WAN", "up": True, "speed_mbps": 1000,
+             "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+             "link_down_count": 0, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]))
+        f = by_key(rules.evaluate(snap([d])), "hyg.port_no_profile")[0]
+        self.assertEqual(f["title"], "HouseSwitch Port 7 (Google WAN): no assigned network")
+        self.assertIn("HouseSwitch Port 7 (Google WAN) is up with no", f["detail"])
+        # display-only — the key and the interface (port idx) are unchanged
+        self.assertEqual(f["finding_key"], "hyg.port_no_profile")
+        self.assertEqual(f["interface"], "7")
+
+    def test_title_without_port_description(self):
+        d = dev_snap(name="HouseSwitch", unifi=self._uni([
+            {"port_idx": 8, "name": "Port 8", "up": True, "speed_mbps": 1000,
+             "max_speed_mbps": 1000, "native_vlan": 10, "tagged_vlans": [],
+             "link_down_count": 0, "tx_errors": 0, "rx_errors": 0, "is_uplink": True}]))
+        f = by_key(rules.evaluate(snap([d])), "hyg.unnamed_uplink_port")[0]
+        self.assertEqual(f["title"], "HouseSwitch Port 8: unnamed uplink port")
+        self.assertNotIn("(", f["title"])
+        self.assertEqual(f["finding_key"], "hyg.unnamed_uplink_port")
+
+    def test_uplink_title_with_description(self):
+        d = dev_snap(name="HouseSwitch", unifi=self._uni([
+            {"port_idx": 8, "name": "Uplink", "up": True, "speed_mbps": 1000,
+             "max_speed_mbps": 1000, "native_vlan": 1, "tagged_vlans": [],
+             "link_down_count": 0, "tx_errors": 0, "rx_errors": 0, "is_uplink": True}]))
+        f = by_key(rules.evaluate(snap([d])), "sec.mgmt_vlan_on_uplink")[0]
+        self.assertEqual(f["title"], "HouseSwitch Port 8 (Uplink): management VLAN on uplink")
+        self.assertIn("HouseSwitch Port 8 (Uplink) carries the management VLAN", f["detail"])
+
+    def test_link_flap_and_speed_titles(self):
+        # link flap + a down-negotiated speed use the same naming
+        d = dev_snap(name="HouseSwitch", unifi=self._uni([
+            {"port_idx": 3, "name": "Downlink", "up": True, "speed_mbps": 100,
+             "max_speed_mbps": 1000, "native_vlan": 10, "tagged_vlans": [],
+             "link_down_count": 4, "tx_errors": 0, "rx_errors": 0, "is_uplink": False}]))
+        fs = rules.evaluate(snap([d]))
+        self.assertEqual(by_key(fs, "perf.link_speed_100")[0]["title"],
+                         "HouseSwitch Port 3 (Downlink): link negotiated down to 100 Mbps")
+        self.assertEqual(by_key(fs, "rel.link_down_count")[0]["title"],
+                         "HouseSwitch Port 3 (Downlink): link has flapped")
+
+
+class TicketNamingTest(unittest.TestCase):
+    """Optimize ticket descriptions + change plans echo the port label."""
+
+    def _finding(self, **kw):
+        f = {
+            "finding_key": "hyg.port_no_profile",
+            "category": "hygiene",
+            "severity": "info",
+            "title": "HouseSwitch Port 7 (Google WAN): no assigned network",
+            "detail": "HouseSwitch Port 7 (Google WAN) is up with no network profile "
+                      "assigned — traffic lands on the default network.",
+            "evidence": {"port": 7, "name": "Google WAN",
+                         "port_label": "HouseSwitch Port 7 (Google WAN)"},
+        }
+        f.update(kw)
+        return f
+
+    def test_per_item_description_uses_port_label(self):
+        desc = netopt_tickets.finding_description(self._finding(), 42)
+        self.assertIn("HouseSwitch Port 7 (Google WAN)", desc)
+        self.assertIn("HouseSwitch Port 7 (Google WAN): no assigned network", desc)
+
+    def test_batched_description_uses_port_label(self):
+        desc = netopt_tickets.batched_description([self._finding()], 42)
+        self.assertIn("Finding 1: HouseSwitch Port 7 (Google WAN): no assigned network",
+                      desc)
+
+    def test_change_plan_current_state_uses_port_label(self):
+        p = netopt_tickets.change_plan(self._finding())
+        self.assertIn("HouseSwitch Port 7 (Google WAN)", p["current_state"])
+
+    def test_change_plan_falls_back_to_port_label_without_detail(self):
+        f = self._finding(detail="")
+        p = netopt_tickets.change_plan(f)
+        self.assertEqual(p["current_state"], "HouseSwitch Port 7 (Google WAN)")
+
+
+
 class ScoringTest(unittest.TestCase):
     def test_clean_snapshot_scores_100(self):
         self.assertEqual(rules.score([])["overall"], 100)
@@ -364,6 +548,33 @@ class CollectorParseTest(unittest.TestCase):
         self.assertIn("network device", network_opt.guess_os([161, 443], None).lower())
         self.assertIn("windows", network_opt.guess_os([445], None).lower())
         self.assertIn("unix", network_opt.guess_os([22], 64).lower())
+
+
+class PortCollectorTest(unittest.TestCase):
+    """UniFi per-port snapshot extension: MAC/table counters + the controller
+    uplink mapping (port -> known AP/switch name)."""
+
+    def test_uplinks_by_port(self):
+        raw = [
+            {"mac": "aa:bb:cc:00:00:02", "name": "HouseSwitch", "type": "usw"},
+            {"mac": "aa:bb:cc:00:00:77", "name": "U6 Mesh", "type": "uap",
+             "uplink": {"uplink_mac": "aa:bb:cc:00:00:02", "uplink_remote_port": 4}},
+            {"mac": "aa:bb:cc:00:00:78", "name": "U6 Lite", "type": "uap",
+             "uplink": {"uplink_mac": "AA:BB:CC:00:00:02", "uplink_remote_port": "4"}},
+        ]
+        up = network_opt._uplinks_by_port(raw)
+        self.assertEqual(up[("aa:bb:cc:00:00:02", 4)], ["U6 Mesh", "U6 Lite"])
+
+    def test_uplinks_ignores_missing(self):
+        raw = [{"mac": "aa:bb:cc:00:00:77", "name": "U6 Mesh", "type": "uap",
+                "uplink": {"uplink_mac": "", "uplink_remote_port": None}}]
+        self.assertEqual(network_opt._uplinks_by_port(raw), {})
+
+    def test_port_mac_table_count(self):
+        self.assertEqual(network_opt._port_mac_table_count({"mac_table_count": "3"}), 3)
+        self.assertEqual(network_opt._port_mac_table_count({"mac_table": ["a", "b"]}), 2)
+        self.assertEqual(network_opt._port_mac_table_count({}), 0)
+        self.assertEqual(network_opt._port_mac_table_count({"mac_table_count": "x"}), 0)
 
 
 # ═══════════════════════════ SNMP OID pinning ══════════════════════════════
@@ -1135,6 +1346,153 @@ class OptimizeApiTest(unittest.TestCase):
                         json={"finding_ids": self.fixable_ids, "mode": "per_item"},
                         headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(r.status_code, 404)
+
+
+# ═══════════════════════ VLAN awareness + NO-FLAT guardrail ════════════════
+
+VLAN_FIXTURE = [
+    {"name": "Default", "vlan": None, "subnet": "192.168.1.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+    {"name": "WiFi", "vlan": 5, "subnet": "192.168.5.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+    {"name": "Production", "vlan": 4, "subnet": "192.168.4.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+    {"name": "Management", "vlan": 8, "subnet": "192.168.8.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+    {"name": "Kids", "vlan": 9, "subnet": "192.168.9.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+    {"name": "RCTF", "vlan": 10, "subnet": "192.168.10.1/24",
+     "purpose": "corporate", "enabled": True, "dhcp": True,
+     "dhcp_start": "", "dhcp_stop": ""},
+]
+
+
+def _unprofiled_port(**kw):
+    p = {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+         "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+         "link_down_count": 0, "tx_errors": 0, "rx_errors": 0,
+         "is_uplink": False}
+    p.update(kw)
+    return p
+
+
+def _dev_with_port(device_type, name, port):
+    return dev_snap(name=name, device_type=device_type,
+                    unifi={"version": "x", "upgradable": False, "uplink_mac": "",
+                           "fixed_ip": None, "ports": [port]})
+
+
+class VlanAwarenessTest(unittest.TestCase):
+    def test_network_map_builds_from_fixture(self):
+        m = rules.build_vlan_map(VLAN_FIXTURE)
+        self.assertIn("5", m)
+        self.assertEqual(m["5"]["name"], "WiFi")
+        self.assertEqual(m["5"]["subnet"], "192.168.5.1/24")
+        self.assertEqual(m["5"]["purpose"], "corporate")
+        self.assertTrue(m["5"]["enabled"])
+        # the untagged default network keys under DEFAULT_NETWORK_KEY, vlan=None
+        self.assertIn(rules.DEFAULT_NETWORK_KEY, m)
+        self.assertIsNone(m[rules.DEFAULT_NETWORK_KEY]["vlan"])
+        self.assertEqual(m[rules.DEFAULT_NETWORK_KEY]["name"], "Default")
+
+    def test_vlan_story_native_default_plus_tagged(self):
+        m = rules.build_vlan_map(VLAN_FIXTURE)
+        story = rules.vlan_story(
+            {"native_network": "Default", "native_vlan": None,
+             "tagged_vlans": [9, 10]}, m)
+        self.assertEqual(story, "native Default (.1.1/24), tagged Kids(9)/RCTF(10)")
+
+    def test_vlan_story_unassigned(self):
+        m = rules.build_vlan_map(VLAN_FIXTURE)
+        self.assertEqual(rules.vlan_story({"native_vlan": None, "tagged_vlans": []}, m),
+                         "native (unassigned)")
+
+    def test_suggested_network_by_device_class(self):
+        m = rules.build_vlan_map(VLAN_FIXTURE)
+        self.assertEqual(rules.suggested_network("ap", m)["name"], "WiFi")
+        self.assertEqual(rules.suggested_network("switch", m)["name"], "Management")
+        self.assertEqual(rules.suggested_network("server", m)["name"], "Production")
+        # the catch-all default is never a recommendation
+        self.assertIsNone(rules.suggested_network("ap",
+                                                  rules.build_vlan_map([VLAN_FIXTURE[0]])))
+
+    def test_port_no_profile_names_wifi_for_ap(self):
+        d = _dev_with_port("ap", "U6 Mesh", _unprofiled_port())
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "hyg.port_no_profile")[0]
+        self.assertEqual(f["evidence"]["suggested_network"]["name"], "WiFi")
+        self.assertIn("WiFi vlan5", f["evidence"]["suggested_action"])
+        self.assertIn("access point", f["evidence"]["suggested_action"])
+
+    def test_port_no_profile_names_management_for_switch(self):
+        d = _dev_with_port("switch", "HouseSwitch", _unprofiled_port())
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "hyg.port_no_profile")[0]
+        self.assertEqual(f["evidence"]["suggested_network"]["name"], "Management")
+        self.assertIn("Management vlan8", f["evidence"]["suggested_action"])
+
+    def test_uplink_port_suggests_trunk_not_single_network(self):
+        d = _dev_with_port("switch", "HouseSwitch",
+                           _unprofiled_port(is_uplink=True, port_idx=8))
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "hyg.port_no_profile")[0]
+        self.assertIn("trunk", f["evidence"]["suggested_action"].lower())
+
+    def test_suggested_action_for_appends_risk_and_respects_guardrail(self):
+        action = rules.suggested_action_for(
+            "hyg.port_no_profile",
+            {"suggested_action": "Assign WiFi vlan5 (.5.1/24) as the native network "
+                                "for U6 Mesh Port 1."})
+        # high-risk port change -> blast radius + plan-first note appended
+        self.assertIn("PLAN FIRST", action)
+        # an adversarial flattening candidate is suppressed, never recommended
+        self.assertEqual(rules.suggested_action_for(
+            "hyg.port_no_profile",
+            {"suggested_action": "just put everything on one network"}), "")
+
+    def test_no_flat_guardrail_suppresses_flattening_candidates(self):
+        adversarial = "just put everything on one network and remove all VLAN tags"
+        self.assertTrue(rules.is_flattening(adversarial))
+        cleaned = rules.apply_no_flat_guardrail([
+            {"finding_key": "hyg.port_no_profile", "category": "hygiene",
+             "severity": "info", "device_id": None, "interface": "1",
+             "title": "t", "detail": "d",
+             "evidence": {"suggested_action": adversarial}}])
+        self.assertEqual(cleaned[0]["evidence"]["suggested_action"], "")
+        self.assertIn("design change", cleaned[0]["evidence"]["guardrail_flag"].lower())
+
+    def test_normal_port_fixes_still_fire(self):
+        d = _dev_with_port("ap", "U6 Mesh", _unprofiled_port())
+        fs = rules.evaluate(snap([d], networks=VLAN_FIXTURE))
+        f = by_key(fs, "hyg.port_no_profile")[0]
+        self.assertTrue(f["evidence"].get("suggested_action"))
+        self.assertIn("WiFi", f["evidence"]["suggested_action"])
+
+    def test_anti_flatten_phrasing_not_flagged(self):
+        # our own 'never collapse the VLANs' wording is the ANTI-flatten
+        # statement — it must not trip the guardrail
+        self.assertFalse(rules.is_flattening(
+            "Assign the VLAN trunk to the port — never collapse the VLANs "
+            "onto a single network."))
+
+    def test_build_vlan_context_story(self):
+        # the handoff example: port 7 on the Google AP shows native Default +
+        # its tagged context
+        d = _dev_with_port("ap", "Google AP", _unprofiled_port(
+            port_idx=7, name="Google WAN", native_vlan=None,
+            native_network="Default", tagged_vlans=[9, 10],
+            tagged_networks=["Kids", "RCTF"]))
+        ctx = network_opt.build_vlan_context(snap([d], networks=VLAN_FIXTURE))
+        self.assertEqual(len(ctx), 1)
+        port = ctx[0]["ports"][0]
+        self.assertEqual(port["port_idx"], 7)
+        self.assertEqual(port["story"],
+                         "native Default (.1.1/24), tagged Kids(9)/RCTF(10)")
 
 
 if __name__ == "__main__":

@@ -44,6 +44,8 @@ collection (e.g. UniFi down, SNMP blocked) never crashes the scan — it just
 yields fewer findings and the collector error is recorded in ``meta``.
 """
 
+import re
+
 SCHEMA_VERSION = 1
 
 CATEGORIES = ("performance", "security", "reliability", "hygiene")
@@ -81,6 +83,60 @@ DEFAULT_SNMP_COMMUNITIES = {"public", "private", "snmp", "admin", "publicro"}
 SNMP_LOW_SPEED_MBPS = 100
 MGMT_VLAN_KEYWORDS = ("mgmt", "management", "admin")
 MGMT_VLAN_ID = 1
+
+# ── per-port discovery + classification (08-19 dead-end/loop detection) ──
+# Best-effort: FDB/LLDP are 404 on this firmware, so the port_table counters
+# (mac_table_count + rx/tx packet + multicast counters) are the signal. The
+# thresholds below are tests-pinnable — the 08-19 Mini Rack port 4 flood
+# (up @1G, 0 MACs, rx≈1, tx_multicast≈1.4M) must classify as dead_end.
+PORT_DEAD_END_MAX_RX_PACKETS = 10      # rx below this = "no real received traffic"
+PORT_DEAD_END_MIN_TX_MULTICAST = 1000  # tx_multicast above this = a multicast flood
+PORT_DEAD_END_MULTICAST_RATIO = 50.0   # tx_multicast >= max(1, rx) * this = "significantly above rx"
+PORT_UNUSED_MAX_RX_PACKETS = 10        # ~zero traffic both ways
+PORT_UNUSED_MAX_TX_PACKETS = 10
+PORT_UNUSED_MAX_TX_MULTICAST = 10
+PORT_CONNECTED_MIN_PACKETS = 10        # real RX/TX above this = a device is here
+# ── VLAN awareness + the NO-FLAT guardrail (netopt-vlan-awareness) ────────
+# The scan understands VLANs and subnetting: every port's native/tagged
+# assignment carries meaning, recommendations respect the multi-VLAN design,
+# and no recommendation may collapse VLANs/subnets (never flatten).
+
+DEFAULT_NETWORK_KEY = "default"   # the untagged/corporate network (vlan_enabled=False)
+
+# Device class -> network name keywords it belongs on (the 9-VLAN standard).
+# APs belong on the WiFi segment; the management plane of gateways/routers/
+# switches belongs on Management; hosts/servers belong on Production. These
+# are resolved against the LIVE VLAN map by name keyword — the catch-all
+# default network is NEVER the recommendation.
+CLASS_NETWORK_KEYWORDS = {
+    "ap": ("wifi", "wireless", "wlan"),
+    "gateway": ("management", "mgmt"),
+    "router": ("management", "mgmt"),
+    "switch": ("management", "mgmt"),
+    "host": ("production", "prod"),
+    "server": ("production", "prod"),
+}
+
+GUARDRAIL_FLAG = ("design change — not recommended (would collapse VLAN/subnet "
+                  "segmentation)")
+
+# NO-FLAT guardrail: a candidate suggested_action matching any of these would
+# collapse VLANs/subnets (assign everything to one network, remove VLAN tags,
+# flatten the design) — it is suppressed, never recommended.
+FLATTEN_PATTERNS = (
+    re.compile(r"everything\s+(on|to|onto)\s+(one|a single|the same)\s+network", re.I),
+    re.compile(r"put\s+(everything|all\s+(devices|traffic))\s+(on|onto)\s+one", re.I),
+    re.compile(r"(assign|move)\s+everything\s+(to|onto)\s+(one\s+)?(network|vlan)", re.I),
+    re.compile(r"one\s+flat\s+network", re.I),
+    re.compile(r"single\s+flat\s+network", re.I),
+    re.compile(r"collapse\s+(the\s+)?(vlans?|subnets?|networks?)", re.I),
+    re.compile(r"remove\s+(all\s+)?vlan\s+tags?", re.I),
+    re.compile(r"untag\s+everything", re.I),
+    re.compile(r"flatten(ing)?\s+(the\s+)?(network|design|vlans?|subnets?)", re.I),
+    re.compile(r"simplify\s+.*(vlan|subnet|network|tag)", re.I),
+)
+
+
 
 # Legacy / weak WPA security markers (UniFi rest/wlanconf `security`).
 WEAK_WPA_SECURITY = {"open", "wep", "wpaeap"}       # wpaeap=WPA Enterprise (context)
@@ -188,6 +244,9 @@ SUGGESTED_ACTIONS = {
     "hyg.unnamed_uplink_port": "Name the port in the controller so future changes are safe.",
     "hyg.port_no_profile": "Assign a network profile to the port so traffic doesn't land "
                            "on the default network.",
+    "hyg.dead_end_port": "Disable the port (stops the multicast flood); trace the cable "
+                         "before re-enabling.",
+    "hyg.unused_port_up": "Disable the unused port.",
     "sec.open_ssid": "Enable WPA2/WPA3 encryption (or disable the SSID).",
     "sec.legacy_wpa": "Upgrade the SSID to WPA2/WPA3.",
     "sec.wpa2_tkip": "Switch the SSID to AES/CCMP encryption.",
@@ -213,6 +272,7 @@ HIGH_RISK_KEYS = frozenset({
     "sec.mgmt_vlan_on_uplink",   # re-homing the management VLAN on an uplink
     "perf.uplink_congestion",    # re-cable/renegotiate the uplink path
     "hyg.unnamed_uplink_port",   # the uplink port — rename only, never re-assign
+    "hyg.dead_end_port",         # disabling a port drops whatever is (or isn't) behind it
     "hyg.default_vlan1",         # moving traffic off VLAN 1 (port re-assignment)
     "hyg.disabled_network",      # deleting a network (VLAN) definition
 })
@@ -254,6 +314,17 @@ RISK_META = {
         "plan_note": ("PLAN FIRST / DO NOT CHANGE THE UPLINK: rename the port only. Never "
                       "re-assign the native/tagged VLANs on an uplink port as part of a "
                       "hygiene fix."),
+    },
+    "hyg.dead_end_port": {
+        "high_risk": True,
+        "blast_radius": ("Disabling a port drops everything behind it. If the port really "
+                         "is a loop/dead-end it only stops the multicast flood, but if it "
+                         "actually carries a downstream switch/AP (or the management path) "
+                         "those devices strand until the port is re-enabled."),
+        "plan_note": ("PLAN FIRST: confirm the port has learned no MACs and is NOT an "
+                      "uplink/trunk; capture the full port state, disable the port, verify "
+                      "the flood stops AND the rest of the network stays up; keep the "
+                      "re-enable rollback ready."),
     },
     "hyg.default_vlan1": {
         "high_risk": True,
@@ -309,6 +380,19 @@ def risk_meta(key: str) -> dict:
             "plan_note": DEFAULT_PLAN_NOTE}
 
 
+def _base_action(key: str) -> str:
+    """The bare suggested action for a finding key (no risk metadata)."""
+    return SUGGESTED_ACTIONS.get((key or "").strip(), DEFAULT_SUGGESTED_ACTION)
+
+
+def _with_risk(key: str, action: str) -> str:
+    """Append the risk blast radius + plan-first note for high-risk keys."""
+    risk = risk_meta(key)
+    if risk["high_risk"]:
+        return f"{action} {risk['blast_radius']} {risk['plan_note']}"
+    return action
+
+
 def fixability(key: str) -> dict:
     """{fixable, suggested_action, high_risk, blast_radius, plan_note} for a
     finding key — the stable public shape the run-detail API and the ticket
@@ -319,12 +403,78 @@ def fixability(key: str) -> dict:
         return {"key": key, "fixable": False, "suggested_action": NON_FIXABLE_LABEL,
                 "high_risk": False, "blast_radius": "", "plan_note": ""}
     risk = risk_meta(key)
-    suggested = SUGGESTED_ACTIONS.get(key, DEFAULT_SUGGESTED_ACTION)
-    if risk["high_risk"]:
-        suggested = f"{suggested} {risk['blast_radius']} {risk['plan_note']}"
+    suggested = _with_risk(key, _base_action(key))
     return {"key": key, "fixable": True, "suggested_action": suggested,
             "high_risk": risk["high_risk"], "blast_radius": risk["blast_radius"],
             "plan_note": risk["plan_note"]}
+
+
+def is_flattening(text) -> bool:
+    """True when a candidate suggested_action would collapse VLANs/subnets
+    (the NO-FLAT guardrail): assign everything to one network, remove VLAN
+    tags, flatten the design, etc. Negated mentions ('never collapse the
+    VLANs…') are the anti-flatten statement, not a recommendation — they are
+    NOT flagged."""
+    if not text:
+        return False
+    text = str(text)
+    negation = ("never", "do not", "don't", "dont", "avoid", "not ")
+    for p in FLATTEN_PATTERNS:
+        for m in p.finditer(text):
+            prefix = text[max(0, m.start() - 32):m.start()].lower()
+            if any(w in prefix for w in negation):
+                continue
+            return True
+    return False
+
+
+def guardrail_verdict(text) -> dict:
+    """Apply the NO-FLAT guardrail to a candidate suggested_action.
+    Returns {allowed, action, flag} — flattening candidates are suppressed
+    (action becomes '') and explicitly flagged 'design change — not recommended'."""
+    text = (text or "").strip()
+    if is_flattening(text):
+        return {"allowed": False, "action": "", "flag": GUARDRAIL_FLAG}
+    return {"allowed": True, "action": text, "flag": ""}
+
+
+def suggested_action_for(key: str, evidence=None) -> str:
+    """The VLAN-aware suggested action for a finding — the single accessor
+    the run-detail API + optimize ticket helper must use.
+
+    A finding may carry a DYNAMIC suggested_action in its evidence (the
+    ``hyg.port_no_profile`` rule names the CORRECT network for the device
+    class). The NO-FLAT guardrail is applied on every path: a flattening
+    candidate (dynamic or static) is suppressed and never recommended."""
+    key = (key or "").strip()
+    ev = dict(evidence or {})
+    dynamic = str(ev.get("suggested_action") or "").strip()
+    if dynamic:
+        verdict = guardrail_verdict(dynamic)
+        if not verdict["allowed"]:
+            return ""
+        return _with_risk(key, verdict["action"])
+    static = fixability(key)["suggested_action"]
+    verdict = guardrail_verdict(static)
+    return verdict["action"]
+
+
+def apply_no_flat_guardrail(findings) -> list:
+    """The NO-FLAT guardrail as an analysis-layer rule: scan every finding's
+    (dynamic or static) suggested action and suppress any that would flatten,
+    stamping ``guardrail_flag`` on the evidence so the UI can show WHY.
+    Non-flattening findings pass through untouched."""
+    out = []
+    for f in (findings or []):
+        f = dict(f)
+        ev = dict(f.get("evidence") or {})
+        candidate = str(ev.get("suggested_action") or _base_action(f.get("finding_key", "")) or "")
+        if is_flattening(candidate):
+            ev["suggested_action"] = ""
+            ev["guardrail_flag"] = GUARDRAIL_FLAG
+            f["evidence"] = ev
+        out.append(f)
+    return out
 
 
 def _annotate_fixability():
@@ -359,28 +509,31 @@ def _perf_duplex_half(snap, dev):
 
 
 @rule("perf.link_speed_100", "performance", "warning",
-      "Link negotiated down to 100 Mbps on {name}")
+      "{port_label}: link negotiated down to 100 Mbps")
 def _perf_link_speed_100(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if p.get("up") and p.get("speed_mbps") == 100 and (p.get("max_speed_mbps") or 0) >= 1000:
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "speed_mbps": 100, "max_speed_mbps": p.get("max_speed_mbps"),
-                    "detail": _fmt("Port {name} (idx {port}) is up at 100 Mbps on a "
+                    "detail": _fmt("{port_label} is up at 100 Mbps on a "
                                    "gigabit-capable port — check the cable/patch and the "
-                                   "peer's negotiation.",
-                                   {"name": p.get("name"), "port": p.get("port_idx")})}
+                                   "peer's negotiation.", {"port_label": label})}
 
 
 @rule("perf.link_speed_10", "performance", "warning",
-      "Link negotiated down to 10 Mbps on {name}")
+      "{port_label}: link negotiated down to 10 Mbps")
 def _perf_link_speed_10(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if p.get("up") and p.get("speed_mbps") is not None and p.get("speed_mbps") <= 10:
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "speed_mbps": p.get("speed_mbps"),
-                    "detail": _fmt("Port {name} (idx {port}) is up at {speed} Mbps — a "
+                    "detail": _fmt("{port_label} is up at {speed} Mbps — a "
                                    "hardware/negotiation fault that will bottleneck "
-                                   "traffic.", {"name": p.get("name"), "port": p.get("port_idx"),
+                                   "traffic.", {"port_label": label,
                                                 "speed": p.get("speed_mbps")})}
 
 
@@ -458,31 +611,34 @@ def _perf_high_memory(snap, dev):
 
 
 @rule("perf.port_errors_unifi", "performance", "warning",
-      "Port errors on {name}")
+      "{port_label}: port errors")
 def _perf_port_errors_unifi(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         total = (p.get("tx_errors") or 0) + (p.get("rx_errors") or 0)
         if p.get("up") and total > 0:
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "tx_errors": p.get("tx_errors"), "rx_errors": p.get("rx_errors"),
-                    "detail": _fmt("Port {name} (idx {port}) reports {total} TX/RX "
+                    "detail": _fmt("{port_label} reports {total} TX/RX "
                                    "errors — physical-layer problem (cable/transceiver).",
-                                   {"name": p.get("name"), "port": p.get("port_idx"),
-                                    "total": total})}
+                                   {"port_label": label, "total": total})}
 
 
 @rule("perf.uplink_congestion", "performance", "info",
-      "Uplink negotiated below capacity on {name}")
+      "{port_label}: uplink negotiated below capacity")
 def _perf_uplink_congestion(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if (p.get("is_uplink") and p.get("up") and p.get("speed_mbps") is not None
                 and p.get("speed_mbps") <= SNMP_LOW_SPEED_MBPS):
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "speed_mbps": p.get("speed_mbps"),
-                    "detail": _fmt("Uplink port {name} (idx {port}) is carrying a "
+                    "detail": _fmt("{port_label} is carrying a "
                                    "downlink at only {speed} Mbps — a congestion "
                                    "bottleneck for everything behind it.",
-                                   {"name": p.get("name"), "port": p.get("port_idx"),
+                                   {"port_label": label,
                                     "speed": p.get("speed_mbps")})}
 
 
@@ -564,7 +720,7 @@ def _sec_firmware_outdated(snap, dev):
 
 
 @rule("sec.mgmt_vlan_on_uplink", "security", "warning",
-      "Management VLAN on an uplink port of {name}")
+      "{port_label}: management VLAN on uplink")
 def _sec_mgmt_vlan_on_uplink(snap, dev):
     mgmt = _mgmt_vlans(snap)
     for p in (dev.get("unifi") or {}).get("ports") or []:
@@ -573,12 +729,13 @@ def _sec_mgmt_vlan_on_uplink(snap, dev):
         vlans = set(p.get("tagged_vlans") or [])
         native = p.get("native_vlan")
         if native in mgmt or (vlans & mgmt):
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "native_vlan": native, "mgmt_vlans": sorted(vlans & mgmt) or [native],
-                    "detail": _fmt("Uplink port {name} (idx {port}) carries the "
+                    "detail": _fmt("{port_label} carries the "
                                    "management VLAN — keep the management plane on a "
-                                   "dedicated, restricted VLAN.", {"name": p.get("name"),
-                                                                   "port": p.get("port_idx")})}
+                                   "dedicated, restricted VLAN.", {"port_label": label})}
 
 
 # ── SSID security (snapshot-level — one finding per offending SSID) ───────
@@ -657,15 +814,17 @@ def _rel_single_wan(snap, dev):
 
 
 @rule("rel.link_down_count", "reliability", "warning",
-      "Link has flapped on {name}")
+      "{port_label}: link has flapped")
 def _rel_link_down_count(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if (p.get("link_down_count") or 0) >= LINK_DOWN_COUNT_WARN:
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
                     "link_down_count": p.get("link_down_count"),
-                    "detail": _fmt("Port {name} (idx {port}) has recorded {n} link-down "
+                    "detail": _fmt("{port_label} has recorded {n} link-down "
                                    "transition(s) — repeated flapping / intermittent cable.",
-                                   {"name": p.get("name"), "port": p.get("port_idx"),
+                                   {"port_label": label,
                                     "n": p.get("link_down_count")})}
 
 
@@ -771,29 +930,88 @@ def _hyg_stale_device(snap, dev):
 
 
 @rule("hyg.unnamed_uplink_port", "hygiene", "info",
-      "Unnamed uplink port on {name}")
+      "{port_label}: unnamed uplink port")
 def _hyg_unnamed_uplink_port(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         nm = (p.get("name") or "").strip()
         if p.get("is_uplink") and p.get("up") and (not nm or nm.startswith("Port ")):
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": nm,
-                    "detail": _fmt("Uplink port idx {port} on {name} has no meaningful "
+                    "port_label": label,
+                    "detail": _fmt("{port_label} has no meaningful "
                                    "label — name it so future changes are safe.",
-                                   {"port": p.get("port_idx"), "name": dev.get("name")})}
+                                   {"port_label": label})}
 
 
 @rule("hyg.port_no_profile", "hygiene", "info",
-      "Port with no assigned network on {name}")
+      "{port_label}: no assigned network")
 def _hyg_port_no_profile(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if (p.get("up") and p.get("native_vlan") is None
                 and not (p.get("tagged_vlans") or [])):
+            vlan_map = snapshot_vlan_map(snap)
+            action = port_profile_action(dev, p, vlan_map)
+            net = suggested_network((dev.get("device_type") or "unknown").lower(),
+                                    vlan_map)
+            label = port_label(dev, p)
+            ev = {"port": p.get("port_idx"), "name": p.get("name"),
+                  "port_label": label,
+                  "detail": _fmt("{port_label} is up with no network profile "
+                                 "assigned — traffic lands on the default network.",
+                                 {"port_label": label})}
+            if net:
+                ev["suggested_network"] = {"name": net.get("name"),
+                                            "vlan": net.get("vlan"),
+                                            "subnet": net.get("subnet")}
+            if action:
+                ev["suggested_action"] = action
+            return ev
+
+
+@rule("hyg.dead_end_port", "hygiene", "warning",
+      "{port_label}: no devices learned + multicast flooding — looks like a loop or dead-end cable")
+def _hyg_dead_end_port(snap, dev):
+    for p in (dev.get("unifi") or {}).get("ports") or []:
+        if classify_port(p) == "dead_end":
+            label = port_label(dev, p)
             return {"port": p.get("port_idx"), "name": p.get("name"),
-                    "detail": _fmt("Port {name} (idx {port}) on {name} is up with no "
-                                   "network profile assigned — traffic lands on the "
-                                   "default network.",
-                                   {"name": p.get("name"), "port": p.get("port_idx"),
-                                    "dev": dev.get("name")})}
+                    "port_label": label,
+                    "mac_table_count": _as_int(p.get("mac_table_count")),
+                    "rx_packets": _as_int(p.get("rx_packets")),
+                    "tx_packets": _as_int(p.get("tx_packets")),
+                    "tx_multicast": _as_int(p.get("tx_multicast")),
+                    "stp_state": p.get("stp_state"),
+                    "speed_mbps": p.get("speed_mbps"),
+                    "uplink_devices": [str(x) for x in (p.get("uplink_devices") or []) if x],
+                    "detail": _fmt("{port_label} is UP at {speed} Mbps but has learned no "
+                                   "devices ({mac} MACs) and is flooding {tx_mc} multicast "
+                                   "packets while receiving ~{rx} — the signature of a loop "
+                                   "or a dead-end cable (STP {stp}).",
+                                   {"port_label": label, "speed": p.get("speed_mbps"),
+                                    "mac": _as_int(p.get("mac_table_count")),
+                                    "tx_mc": _as_int(p.get("tx_multicast")),
+                                    "rx": _as_int(p.get("rx_packets")),
+                                    "stp": p.get("stp_state") or "unknown"})}
+
+
+@rule("hyg.unused_port_up", "hygiene", "info",
+      "{port_label}: link up but no devices — disable for hygiene/safety")
+def _hyg_unused_port_up(snap, dev):
+    for p in (dev.get("unifi") or {}).get("ports") or []:
+        if classify_port(p) == "unused":
+            label = port_label(dev, p)
+            return {"port": p.get("port_idx"), "name": p.get("name"),
+                    "port_label": label,
+                    "mac_table_count": _as_int(p.get("mac_table_count")),
+                    "rx_packets": _as_int(p.get("rx_packets")),
+                    "tx_packets": _as_int(p.get("tx_packets")),
+                    "tx_multicast": _as_int(p.get("tx_multicast")),
+                    "stp_state": p.get("stp_state"),
+                    "speed_mbps": p.get("speed_mbps"),
+                    "uplink_devices": [str(x) for x in (p.get("uplink_devices") or []) if x],
+                    "detail": _fmt("{port_label} is UP but has learned no devices and "
+                                   "carries ~no traffic — disable it for hygiene/safety.",
+                                   {"port_label": label})}
 
 
 # ── snapshot-level rules ───────────────────────────────────────────────────
@@ -938,6 +1156,277 @@ def _is_ubiquiti(dev) -> bool:
     return "ubiquiti" in blob or "unifi" in blob
 
 
+
+# ── VLAN map + device-class→network + story text (netopt-vlan-awareness) ──
+
+def build_vlan_map(networks) -> dict:
+    """Build the scan's NETWORK MAP from a ``rest/networkconf``-shaped
+    ``networks`` list: {key: {name, vlan, subnet, purpose, enabled}}.
+
+    Tagged networks key by ``str(vlan_id)``; the untagged/corporate network
+    (vlan_enabled=False -> vlan is None) keys by DEFAULT_NETWORK_KEY so the
+    map never loses the 'native Default' story."""
+    m = {}
+    for n in (networks or []):
+        if not isinstance(n, dict):
+            continue
+        vlan = n.get("vlan")
+        key = DEFAULT_NETWORK_KEY if vlan is None else str(vlan)
+        m[key] = {
+            "name": n.get("name") or ("Default" if vlan is None else f"VLAN {vlan}"),
+            "vlan": vlan,
+            "subnet": n.get("subnet") or "",
+            "purpose": n.get("purpose") or "",
+            "enabled": bool(n.get("enabled", True)),
+        }
+    return m
+
+
+def subnet_short(subnet) -> str:
+    """'192.168.5.1/24' -> '.5.1/24' (the story's compact form — the third
+    octet onward, matching the site's 'WiFi vlan5 .5.x' convention)."""
+    s = str(subnet or "").strip()
+    if not s:
+        return ""
+    octets = s.split(".")
+    if len(octets) >= 3:
+        return "." + ".".join(octets[2:])
+    return s
+
+
+def _find_map_entry(vlan_map, vlan=None, name=None) -> "dict | None":
+    """Look up a VLAN map entry by vlan id, then (case-insensitive) name."""
+    vlan_map = vlan_map or {}
+    if vlan is not None and str(vlan) in vlan_map:
+        return vlan_map[str(vlan)]
+    if name:
+        for e in vlan_map.values():
+            if (e.get("name") or "").lower() == str(name).lower():
+                return e
+    if vlan is None:
+        return vlan_map.get(DEFAULT_NETWORK_KEY)
+    return None
+
+
+def network_entry_str(entry) -> str:
+    """'WiFi vlan5 (.5.1/24)' / 'Default (.1.1/24)' — a map entry as prose."""
+    entry = entry or {}
+    name = entry.get("name") or "network"
+    vlan = entry.get("vlan")
+    short = subnet_short(entry.get("subnet"))
+    if vlan is not None:
+        s = f"{name} vlan{vlan}"
+    else:
+        s = name
+    if short:
+        s = f"{s} ({short})"
+    return s
+
+
+def network_label(vlan, vlan_map) -> str:
+    """'Kids(9)' — name + vlan id for the tagged-list story."""
+    entry = _find_map_entry(vlan_map, vlan=vlan)
+    name = (entry or {}).get("name") or (f"VLAN {vlan}" if vlan is not None else "Default")
+    if vlan is not None:
+        return f"{name}({vlan})"
+    return name
+
+
+def vlan_story(port, vlan_map) -> str:
+    """The port's VLAN context as prose — 'native WiFi vlan5 (.5.1/24),
+    tagged Kids(9)/RCTF(10)'. ``port`` carries the collector's enriched
+    ``native_network``/``native_vlan``/``tagged_vlans`` fields."""
+    vlan_map = vlan_map or {}
+    port = port or {}
+    native_name = port.get("native_network")
+    native_vlan = port.get("native_vlan")
+    parts = []
+    if native_name is None and native_vlan is None:
+        parts.append("native (unassigned)")
+    else:
+        entry = _find_map_entry(vlan_map, vlan=native_vlan, name=native_name)
+        parts.append("native " + (network_entry_str(entry) if entry
+                                  else (native_name or f"vlan {native_vlan}")))
+    tagged = [v for v in (port.get("tagged_vlans") or []) if v is not None]
+    if tagged:
+        parts.append("tagged " + "/".join(network_label(v, vlan_map) for v in tagged))
+    return ", ".join(parts)
+
+
+def snapshot_vlan_map(snap) -> dict:
+    """The VLAN map for a snapshot — ``snap['vlan_map']`` when the collector
+    pre-built it, else built on the fly from ``snap['networks']`` (so rule
+    unit tests work with a bare networks list)."""
+    return snap.get("vlan_map") or build_vlan_map(snap.get("networks") or [])
+
+
+def _device_class_label(device_class) -> str:
+    return {"ap": "access point", "switch": "switch", "gateway": "gateway",
+            "router": "router", "host": "host", "server": "server"}.get(
+                (device_class or "").lower(), "device")
+
+
+def suggested_network(device_class, vlan_map) -> "dict | None":
+    """The network a device of this class SHOULD live on (the 9-VLAN standard):
+    AP -> WiFi, gateway/router/switch management -> Management, host/server ->
+    Production. Resolved from the LIVE map by name keyword; NEVER the catch-all
+    default network."""
+    vlan_map = vlan_map or {}
+    for kw in CLASS_NETWORK_KEYWORDS.get((device_class or "").lower(), ()):
+        for e in vlan_map.values():
+            if not e.get("enabled", True):
+                continue
+            nm = (e.get("name") or "").lower()
+            if kw in nm and e.get("vlan") is not None:
+                return e
+    return None
+
+
+def port_profile_action(dev, port, vlan_map) -> "str | None":
+    """The VLAN-aware suggested_action for a port with no assigned network:
+    names the CORRECT network for the device class (or the full VLAN trunk for
+    an uplink) — never a generic flatten / never the catch-all. Returns None
+    when no network resolves (the caller falls back to the static action)."""
+    vlan_map = vlan_map or {}
+    dev = dev or {}
+    port = port or {}
+    label = f"{dev.get('name') or 'device'} Port {port.get('port_idx')}"
+    desc = str(port.get("name") or "").strip()
+    if desc and not desc.startswith("Port "):
+        label = f"{label} ({desc})"
+    if port.get("is_uplink"):
+        vlans = sorted((int(k) for k, e in vlan_map.items()
+                        if k != DEFAULT_NETWORK_KEY and e.get("enabled", True)
+                        and e.get("vlan") is not None))
+        if vlans:
+            names = ", ".join(network_label(v, vlan_map) for v in vlans)
+            return (f"Assign the full VLAN trunk to {label}: tag {names} (native "
+                    f"Management) so every segment reaches downstream gear — never "
+                    f"collapse the VLANs onto a single network.")
+        return (f"Assign the appropriate VLAN trunk to {label} (all segments tagged, "
+                f"native Management) — never collapse the VLANs onto a single network.")
+    dclass = (dev.get("device_type") or "unknown").lower()
+    net = suggested_network(dclass, vlan_map)
+    if not net:
+        return None
+    return (f"Assign {network_entry_str(net)} as the native network for {label} — "
+            f"{net['name']} is the correct segment for a {_device_class_label(dclass)}, "
+            f"not the default/catch-all network.")
+
+def _port_desc(p) -> str:
+    """The port's user description (the UniFi port ``name`` field) or '' when
+    the port is unnamed. UniFi auto-names an unnamed port 'Port <idx>' — that
+    placeholder is NOT a description."""
+    nm = str(p.get("name") or "").strip()
+    if not nm or nm.startswith("Port "):
+        return ""
+    return nm
+
+
+def port_label(dev, p) -> str:
+    """Canonical port naming for findings and tickets: '<dev.name> Port <idx>'
+    with the port's description in parentheses when one exists — e.g.
+    'HouseSwitch Port 7 (Google WAN)'. Display-only: the finding key is
+    unchanged."""
+    label = f"{dev.get('name') or 'unknown'} Port {p.get('port_idx')}"
+    desc = _port_desc(p)
+    if desc:
+        label = f"{label} ({desc})"
+    return label
+
+
+
+def _as_int(v) -> int:
+    """Coerce a counter/value to int, tolerating None/missing/string forms."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def classify_port(port) -> str:
+    """Best-effort classification of a UniFi per-port snapshot — one of
+    'down', 'dead_end', 'unused', 'connected'.
+
+    * ``dead_end`` — UP + no learned MACs + negligible RX + a multicast flood
+      (the 08-19 Mini Rack port 4 loop/dead-end signature).
+    * ``unused``   — UP + no learned MACs + ~zero traffic both ways.
+    * ``connected``— a device is here (learned MACs and/or real RX/TX), or we
+      cannot rule it out (conservative default).
+    * ``down``     — link down (or admin-disabled).
+    """
+    p = port or {}
+    if not p.get("up"):
+        return "down"
+    mac = _as_int(p.get("mac_table_count"))
+    rx = _as_int(p.get("rx_packets"))
+    tx = _as_int(p.get("tx_packets"))
+    tx_mc = _as_int(p.get("tx_multicast"))
+    if (mac == 0 and rx <= PORT_DEAD_END_MAX_RX_PACKETS
+            and tx_mc >= PORT_DEAD_END_MIN_TX_MULTICAST
+            and tx_mc >= max(1, rx) * PORT_DEAD_END_MULTICAST_RATIO):
+        return "dead_end"
+    if (mac == 0 and rx <= PORT_UNUSED_MAX_RX_PACKETS
+            and tx <= PORT_UNUSED_MAX_TX_PACKETS
+            and tx_mc <= PORT_UNUSED_MAX_TX_MULTICAST):
+        return "unused"
+    if mac > 0 or rx >= PORT_CONNECTED_MIN_PACKETS or tx >= PORT_CONNECTED_MIN_PACKETS:
+        return "connected"
+    return "connected"
+
+
+def port_discovery(dev, p) -> dict:
+    """The per-port discovery story: classification + counters + what's on the
+    port (the known AP/switch uplinking here, else the MAC count)."""
+    cls = classify_port(p)
+    mac = _as_int(p.get("mac_table_count"))
+    uplinks = [str(x) for x in (p.get("uplink_devices") or []) if x]
+    if cls == "connected":
+        if uplinks:
+            what = "known device: " + ", ".join(uplinks)
+        elif mac:
+            what = f"{mac} MAC(s) learned"
+        else:
+            what = "traffic present, no MACs learned"
+    elif cls == "dead_end":
+        what = "no devices learned + multicast flooding"
+    elif cls == "unused":
+        what = "link up, no devices, no traffic"
+    elif cls == "down":
+        what = "link down" + (" (admin-disabled)" if p.get("disabled") else "")
+    else:
+        what = cls
+    return {
+        "device": dev.get("name"),
+        "port_idx": p.get("port_idx"),
+        "label": port_label(dev, p),
+        "description": _port_desc(p),
+        "up": bool(p.get("up")),
+        "disabled": bool(p.get("disabled")),
+        "speed_mbps": p.get("speed_mbps"),
+        "stp_state": p.get("stp_state"),
+        "mac_table_count": mac,
+        "rx_packets": _as_int(p.get("rx_packets")),
+        "tx_packets": _as_int(p.get("tx_packets")),
+        "tx_multicast": _as_int(p.get("tx_multicast")),
+        "classification": cls,
+        "uplink_devices": uplinks,
+        "what": what,
+    }
+
+
+def build_port_discovery(snapshot) -> list:
+    """Per-port discovery for every UniFi-managed device in a snapshot (the
+    run detail shows this alongside the findings so the optimize/report tells
+    the story, not just the score)."""
+    out = []
+    for dev in snapshot.get("devices") or []:
+        uni = dev.get("unifi") or {}
+        for p in uni.get("ports") or []:
+            out.append(port_discovery(dev, p))
+    return out
+
+
 # ── evaluation + scoring ───────────────────────────────────────────────────
 
 def _mk_finding(rule, dev, evidence) -> dict:
@@ -977,7 +1466,8 @@ def evaluate(snapshot) -> list:
     """Run every rule over a scan snapshot. Returns a list of finding dicts.
 
     Never raises: a buggy rule is caught and skipped (a finding is advisory —
-    it must not crash the scan)."""
+    it must not crash the scan). The NO-FLAT guardrail runs as the final
+    analysis-layer pass (any flattening recommendation is suppressed)."""
     snapshot = snapshot or {}
     findings = []
     devices = snapshot.get("devices") or []
@@ -997,7 +1487,7 @@ def evaluate(snapshot) -> list:
         for ev in (evs or []):
             if ev:
                 findings.append(_mk_snapshot_finding(rule, ev))
-    return findings
+    return apply_no_flat_guardrail(findings)
 
 
 def score(findings) -> dict:

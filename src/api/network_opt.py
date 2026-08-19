@@ -31,6 +31,9 @@ from database import SessionLocal
 from models import Device, ScanRun, Finding
 from network_opt_rules import (
     SCHEMA_VERSION, GEAR_TYPES, evaluate, score, count_rules,
+    build_port_discovery,
+    build_vlan_map, vlan_story,
+
 )
 
 logger = logging.getLogger("barenoc.netopt")
@@ -512,6 +515,52 @@ def _snmp_walk_highspeed(ip, community, version) -> dict:
 
 # ── UniFi collector (ONE long-lived session for the whole run) ────────────
 
+def _as_int(value) -> int:
+    """Coerce a port_table counter/value to int, tolerating None/str forms."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _port_mac_table_count(pt: dict) -> int:
+    """Learned-MAC count for a port: ``mac_table_count`` when present, else
+    the length of the ``mac_table`` list (older firmware spells)."""
+    count = pt.get("mac_table_count")
+    if count is not None:
+        try:
+            return int(count)
+        except (TypeError, ValueError):
+            pass
+    mac_table = pt.get("mac_table")
+    if isinstance(mac_table, list):
+        return len(mac_table)
+    return 0
+
+
+def _uplinks_by_port(raw_devices) -> dict:
+    """Map (switch_mac, port_idx) -> list of KNOWN managed device names that
+    report their uplink on that switch port (the controller's uplink data)."""
+    out = {}
+    for d in raw_devices or []:
+        up = d.get("uplink") or {}
+        sw_mac = (up.get("uplink_mac") or "").strip().lower()
+        if not sw_mac:
+            continue
+        port = up.get("uplink_remote_port")
+        if port is None:
+            continue
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        name = d.get("name") or d.get("mac") or "unknown"
+        out.setdefault((sw_mac, port), [])
+        if name not in out[(sw_mac, port)]:
+            out[(sw_mac, port)].append(name)
+    return out
+
+
 def collect_unifi(config: dict, client=None) -> dict:
     """Collect networks/wlans/device health + ports over one controller
     session. ``client`` is an already-logged-in UniFiClient (or None to
@@ -531,9 +580,15 @@ def collect_unifi(config: dict, client=None) -> dict:
     # raw wlanconf for wpa_enc + networkconf_id (get_wlans omits wpa_enc)
     wlans_raw = (client._stat("rest/wlanconf") or {}).get("data", []) or []
     nets_by_id = _networks_by_id(client)
+    # port -> KNOWN managed devices that uplink on it (the controller's uplink data)
+    uplinks = _uplinks_by_port(raw)
 
     def _vlan(network_id):
         return nets_by_id.get(network_id, {}).get("vlan")
+
+    def _name(network_id):
+        rec = nets_by_id.get(network_id, {})
+        return rec.get("name") or None
 
     devices_by_mac = {}
     for d in raw:
@@ -546,21 +601,36 @@ def collect_unifi(config: dict, client=None) -> dict:
             health = client.get_wan_health(d.get("mac"))
             wan = {"status": (health or {}).get("status") or "",
                    "wan_count": wan_count or 1}
+        overrides = {_as_int(o.get("port_idx")): o for o in (d.get("port_overrides") or [])}
         ports = []
         for pt in (d.get("port_table") or []):
+            port_idx = pt.get("port_idx")
+            ov = overrides.get(_as_int(port_idx)) or {}
+            native_id = pt.get("native_networkconf_id")
+
             ports.append({
-                "port_idx": pt.get("port_idx"),
-                "name": pt.get("name") or f"Port {pt.get('port_idx')}",
+                "port_idx": port_idx,
+                "name": pt.get("name") or f"Port {port_idx}",
                 "up": bool(pt.get("up")),
+                "disabled": bool(ov.get("disabled", False)),
                 "speed_mbps": pt.get("speed"),
                 "max_speed_mbps": pt.get("max_speed"),
-                "native_vlan": _vlan(pt.get("native_networkconf_id")),
+                "native_vlan": _vlan(native_id),
+                "native_network": _name(native_id),
                 "tagged_vlans": [_vlan(x) for x in
                                  (pt.get("tagged_networkconf_id") or "").split(",") if x],
+                "tagged_networks": [n for n in (
+                    _name(x) for x in (pt.get("tagged_networkconf_id") or "").split(",") if x) if n],
                 "link_down_count": pt.get("link_down_count") or 0,
                 "tx_errors": pt.get("tx_errors") or 0,
                 "rx_errors": pt.get("rx_errors") or 0,
                 "is_uplink": bool(pt.get("is_uplink")),
+                "mac_table_count": _port_mac_table_count(pt),
+                "rx_packets": _as_int(pt.get("rx_packets")),
+                "tx_packets": _as_int(pt.get("tx_packets")),
+                "tx_multicast": _as_int(pt.get("tx_multicast")),
+                "stp_state": pt.get("stp_state"),
+                "uplink_devices": uplinks.get((mac, _as_int(port_idx)), []),
             })
         devices_by_mac[mac] = {
             "name": d.get("name") or mac,
@@ -617,6 +687,9 @@ def _networks_by_id(client) -> dict:
             nets[n.get("_id", "")] = {
                 "name": n.get("name", ""),
                 "vlan": (n.get("vlan") if n.get("vlan_enabled") else None),
+                "subnet": n.get("ip_subnet", ""),
+                "purpose": n.get("purpose", ""),
+                "enabled": bool(n.get("enabled", True)),
             }
     except Exception:
         pass
@@ -758,6 +831,7 @@ def execute_scan(db, run_id: int, config: dict = None, cancel_event=None,
         "devices": [],
         "networks": [],
         "wlans": [],
+        "vlan_map": {},
         "meta": {"collector_errors": [], "hosts_scanned": 0,
                  "profile": config["profile"]},
     }
@@ -771,6 +845,7 @@ def execute_scan(db, run_id: int, config: dict = None, cancel_event=None,
                 {"channel": "unifi", "error": unifi_data["error"]})
         snapshot["networks"] = unifi_data.get("networks") or []
         snapshot["wlans"] = unifi_data.get("wlans") or []
+        snapshot["vlan_map"] = build_vlan_map(snapshot["networks"])
         by_mac = unifi_data.get("devices_by_mac") or {}
 
         device_snaps = []
@@ -826,6 +901,38 @@ def execute_scan(db, run_id: int, config: dict = None, cancel_event=None,
         progress["stage"] = "done" if progress.get("stage") != "cancelled" else "cancelled"
 
 
+def build_vlan_context(snapshot: dict) -> list:
+    """Per-device, per-port VLAN context for the run detail — the STORY
+    ('native WiFi vlan5 (.5.1/24), tagged Kids(9)/RCTF(10)') beside the
+    discovery + findings so the optimize flow is visibly subnet-aware."""
+    vlan_map = snapshot.get("vlan_map") or build_vlan_map(snapshot.get("networks") or [])
+    out = []
+    for d in snapshot.get("devices") or []:
+        ports = (d.get("unifi") or {}).get("ports") or []
+        if not ports:
+            continue
+        entries = []
+        for p in ports:
+            entries.append({
+                "port_idx": p.get("port_idx"),
+                "name": p.get("name"),
+                "up": bool(p.get("up")),
+                "is_uplink": bool(p.get("is_uplink")),
+                "native_vlan": p.get("native_vlan"),
+                "native_network": p.get("native_network"),
+                "tagged_vlans": p.get("tagged_vlans"),
+                "tagged_networks": p.get("tagged_networks"),
+                "story": vlan_story(p, vlan_map),
+            })
+        out.append({
+            "device_id": d.get("device_id"),
+            "name": d.get("name"),
+            "ip": d.get("ip"),
+            "ports": entries,
+        })
+    return out
+
+
 def _finalize(db, run: ScanRun, snapshot: dict, findings: list) -> dict:
     """Score + persist findings + finalize the run. Exposed for tests."""
     sc = score(findings)
@@ -842,6 +949,10 @@ def _finalize(db, run: ScanRun, snapshot: dict, findings: list) -> dict:
         "total": sc["total"],
         "rules_evaluated": count_rules(),
         "meta": snapshot.get("meta") or {},
+        "port_discovery": build_port_discovery(snapshot),
+        "network_map": snapshot.get("vlan_map") or {},
+        "vlan_context": build_vlan_context(snapshot),
+
     })
     for f in findings:
         db.add(Finding(

@@ -291,6 +291,7 @@ class UniFiClient:
                 "name": n.get("name", ""),
                 "vlan": n.get("vlan_enabled") and n.get("vlan") or None,
                 "subnet": n.get("ip_subnet", ""),
+                "purpose": n.get("purpose", ""),
                 "enabled": n.get("enabled", True),
                 "dhcp": n.get("dhcpd_enabled", False),
                 "dhcp_start": n.get("dhcpd_start", ""),
@@ -358,6 +359,7 @@ class UniFiClient:
                 "name": n.get("name", ""),
                 "vlan": n.get("vlan_enabled") and n.get("vlan") or None,
                 "subnet": n.get("ip_subnet", ""),
+                "purpose": n.get("purpose", ""),
             }
         return out
 
@@ -428,18 +430,26 @@ class UniFiClient:
         return []
 
     def get_switch_ports(self, mac: str) -> list:
-        """Port table for one switch (native/tagged networks per port)."""
+        """Port table for one switch (native/tagged networks per port, plus
+        the effective ``disabled`` state from port_overrides)."""
         rd = self._request("GET", f"/proxy/network/api/s/{self.site}/stat/device")
-        for d in (rd or {}).get("data", []):
-            if (d.get("mac") or "").lower() == mac.lower():
-                return [{
-                    "port_idx": pt.get("port_idx"),
-                    "name": pt.get("name") or f"Port {pt.get('port_idx')}",
-                    "native_network_id": pt.get("native_networkconf_id", ""),
-                    "tagged_network_ids": [x for x in (pt.get("tagged_networkconf_id") or "").split(",") if x],
-                    "up": bool(pt.get("up")),
-                } for pt in (d.get("port_table") or [])]
-        return []
+        dev = next((d for d in (rd or {}).get("data", [])
+                    if (d.get("mac") or "").lower() == mac.lower()), None)
+        if not dev:
+            return []
+        overrides = {o.get("port_idx"): o for o in (dev.get("port_overrides") or [])}
+        ports = []
+        for pt in (dev.get("port_table") or []):
+            ov = overrides.get(pt.get("port_idx")) or {}
+            ports.append({
+                "port_idx": pt.get("port_idx"),
+                "name": ov.get("name") or pt.get("name") or f"Port {pt.get('port_idx')}",
+                "native_network_id": pt.get("native_networkconf_id", ""),
+                "tagged_network_ids": [x for x in (pt.get("tagged_networkconf_id") or "").split(",") if x],
+                "up": bool(pt.get("up")),
+                "disabled": bool(ov.get("disabled", False)),
+            })
+        return ports
 
     def set_port_name(self, switch_mac: str, port_idx: int, name: str) -> dict:
         """Rename a switch port via port_overrides (PUT /rest/device/{mac})."""
@@ -675,6 +685,45 @@ class UniFiClient:
         if result and result.get("meta", {}).get("rc") == "ok":
             return {"applied": True, "port_idx": port_idx,
                     "native": native_network_id, "tagged": tagged}
+        return {"applied": False,
+                "error": f"device update failed: {self.last_error or result}"}
+
+    def set_port_disabled(self, switch_mac: str, port_idx: int,
+                          disabled: bool = True) -> dict:
+        """Enable/disable a switch port (the dead-end/loop fix path).
+
+        Merge-safe: PUT /rest/device REPLACES the whole port_overrides array,
+        so this reads the FULL current array and only adds the ``disabled``
+        flag to the target port — every other port's override is preserved
+        verbatim (STANDING PROCEDURE #4). Returns {applied, port_idx,
+        disabled} or an error dict.
+        """
+        path = self._device_path(switch_mac)
+        if not path:
+            return {"applied": False,
+                    "error": f"device {switch_mac} not found on the controller"}
+        rd = self._request("GET", f"/proxy/network/api/s/{self.site}/stat/device")
+        dev = next((d for d in (rd or {}).get("data", [])
+                    if (d.get("mac") or "").lower() == (switch_mac or "").lower()), None)
+        if not dev:
+            return {"applied": False,
+                    "error": f"device {switch_mac} not found on the controller"}
+        overrides = [dict(o) for o in (dev.get("port_overrides") or [])]
+        port_table = {p.get("port_idx"): p for p in (dev.get("port_table") or [])}
+        if port_idx not in port_table and not any(o.get("port_idx") == port_idx for o in overrides):
+            return {"applied": False,
+                    "error": f"port {port_idx} not found on {switch_mac}"}
+        cur = next((o for o in overrides if o.get("port_idx") == port_idx),
+                   dict(port_table.get(port_idx) or {}))
+        cur["port_idx"] = port_idx
+        cur["disabled"] = bool(disabled)
+        cur.setdefault("name", (port_table.get(port_idx) or {}).get("name")
+                       or f"Port {port_idx}")
+        overrides = [o for o in overrides if o.get("port_idx") != port_idx] + [cur]
+        result = self._request("PUT", path, {"port_overrides": overrides})
+        if result and result.get("meta", {}).get("rc") == "ok":
+            return {"applied": True, "port_idx": port_idx,
+                    "disabled": bool(disabled)}
         return {"applied": False,
                 "error": f"device update failed: {self.last_error or result}"}
 

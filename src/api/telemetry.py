@@ -10,6 +10,7 @@ Cadences are modest + configurable (.env, hot-reloaded each cycle):
   TELEMETRY_SNMP_INTERVAL_S    300   — ifOperStatus/bytes -> rate, CPU/RAM/uptime
   TELEMETRY_PING_INTERVAL_S    60    — latency + packet loss, capped
   TELEMETRY_PING_MAX_DEVICES   50    — light ping cap (never hammer a big fleet)
+  STARLINK_INTERVAL_S          60    — Starlink dish gRPC poll (see starlink.py)
   TELEMETRY_RETENTION_DAYS     30    — store retention (pruned by the scheduler)
   TELEMETRY_DISK_MIN_FREE_PCT  10    — disk-aware prune floor
 
@@ -30,6 +31,7 @@ from database import SessionLocal
 from models import Device
 import metrics_store
 import network_opt
+import starlink
 
 logger = logging.getLogger("barenoc.telemetry")
 
@@ -41,6 +43,7 @@ DEFAULTS = {
     "snmp_interval": 300,
     "ping_interval": 60,
     "ping_max_devices": 50,
+    "starlink_interval": 60,
     "retention_days": metrics_store.DEFAULT_RETENTION_DAYS,
     "disk_min_free_pct": metrics_store.DEFAULT_MIN_FREE_PCT,
 }
@@ -108,6 +111,8 @@ def telemetry_config(env: dict = None) -> dict:
                                           DEFAULTS["ping_interval"])),
         "ping_max_devices": max(1, min(_env_int(env.get("TELEMETRY_PING_MAX_DEVICES"),
                                                 DEFAULTS["ping_max_devices"]), 500)),
+        "starlink_interval": max(15, _env_int(env.get("STARLINK_INTERVAL_S"),
+                                              DEFAULTS["starlink_interval"])),
         "retention_days": max(1, _env_int(env.get("TELEMETRY_RETENTION_DAYS"),
                                           DEFAULTS["retention_days"])),
         "disk_min_free_pct": max(1, min(_env_int(env.get("TELEMETRY_DISK_MIN_FREE_PCT"),
@@ -388,16 +393,17 @@ def collect_once(cfg: dict = None, db=None, channels=None) -> dict:
     Uses its own DB session when ``db`` is None. Testable via injectable
     collectors (tests patch telemetry.collect_unifi_metrics etc.)."""
     cfg = cfg or telemetry_config()
-    channels = set(channels) if channels else {"unifi", "snmp", "ping"}
+    channels = set(channels) if channels else {"unifi", "snmp", "ping", "starlink"}
     own = db is None
     if own:
         db = SessionLocal()
     try:
         mac_map, pingable, snmp_devs = _device_maps(db)
-        summary = {"unifi": 0, "snmp": 0, "ping": 0, "samples": 0}
+        summary = {"unifi": 0, "snmp": 0, "ping": 0, "starlink": 0, "samples": 0}
         unifi_samples = []
         snmp_samples = []
         ping_samples = []
+        starlink_samples = []
 
         if "unifi" in channels:
             client = _unifi_client()
@@ -428,7 +434,15 @@ def collect_once(cfg: dict = None, db=None, channels=None) -> dict:
                     logger.warning("ping telemetry failed for %s: %s", d.name, e)
             summary["ping"] = len(ping_samples)
 
-        summary["samples"] = _persist(unifi_samples + snmp_samples + ping_samples, db)
+        if "starlink" in channels:
+            try:
+                starlink_samples += starlink.collect_starlink_telemetry(cfg, db)
+            except Exception as e:
+                logger.warning("starlink telemetry failed: %s", e)
+            summary["starlink"] = len(starlink_samples)
+
+        summary["samples"] = _persist(
+            unifi_samples + snmp_samples + ping_samples + starlink_samples, db)
         return summary
     finally:
         if own:
@@ -437,7 +451,7 @@ def collect_once(cfg: dict = None, db=None, channels=None) -> dict:
 
 def _engine_loop():
     logger.info("Telemetry engine starting")
-    last = {"unifi": 0, "snmp": 0, "ping": 0}
+    last = {"unifi": 0, "snmp": 0, "ping": 0, "starlink": 0}
     while True:
         try:
             cfg = telemetry_config()
@@ -454,6 +468,9 @@ def _engine_loop():
             if now - last["ping"] >= cfg["ping_interval"]:
                 collect_once(cfg, channels={"ping"})
                 last["ping"] = now
+            if now - last["starlink"] >= cfg["starlink_interval"]:
+                collect_once(cfg, channels={"starlink"})
+                last["starlink"] = now
         except Exception:
             logger.exception("telemetry engine cycle error")
         time.sleep(10)

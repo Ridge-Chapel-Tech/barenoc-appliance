@@ -87,14 +87,16 @@ def login():
 
 
 def _port_state(p):
-    """The restore-relevant before-state of one port: port_idx, name, and the
+    """The restore-relevant before-state of one port: port_idx, name, the
     native/tagged network IDs (kept as IDs so restore can pass them straight
-    back to the merge-safe vlans endpoint)."""
+    back to the merge-safe vlans endpoint), and the ``disabled`` state so a
+    port-disable fix rolls back to re-enable."""
     return {
         "port_idx": p.get("port_idx"),
         "name": p.get("name"),
         "native_network_id": p.get("native_network_id"),
         "tagged_network_ids": list(p.get("tagged_network_ids") or []),
+        "disabled": bool(p.get("disabled", False)),
     }
 
 
@@ -162,10 +164,18 @@ def restore(checkpoint_path):
                         body, token=tok)
         if err:
             results.append({"port_idx": idx, "ok": False, "error": err})
+            continue
+        # Restore the captured disabled state too — the rollback of a
+        # dead-end/loop port-disable fix is a re-enable.
+        dres, derr = call("POST", f"/api/v1/unifi/ports/{mac}/{idx}/disabled",
+                          {"disabled": bool(p.get("disabled", False))}, token=tok)
+        if derr:
+            results.append({"port_idx": idx, "ok": False, "error": derr})
         else:
             results.append({"port_idx": idx, "ok": True,
                             "after": (res or {}).get("after"),
-                            "applied": (res or {}).get("applied")})
+                            "applied": (res or {}).get("applied"),
+                            "disabled": (dres or {}).get("disabled")})
     ok = all(r.get("ok") for r in results)
     print(json.dumps({"ok": ok, "switch_mac": mac,
                       "restored": len(results),

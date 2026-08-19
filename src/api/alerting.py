@@ -26,6 +26,7 @@ from models import Device, Ticket, AuditLog
 from emailer import send_email, get_recipients, smtp_configured, alert_html
 from audit import log_event
 from link_monitor import LinkMonitor, find_open_wan_episode, promote_wan_ticket
+from starlink import StarlinkHealthMonitor
 
 logger = logging.getLogger("barenoc-alerts")
 
@@ -310,6 +311,7 @@ class AlertEngine(threading.Thread):
         self._seen_ids = set()
         self._internet = InternetMonitor()
         self._link = LinkMonitor()
+        self._starlink = StarlinkHealthMonitor()
 
     def _check_ticket_lifecycle(self) -> None:
         """Ticket auto-close + human-handoff check-ins (Settings → Tickets).
@@ -384,6 +386,9 @@ class AlertEngine(threading.Thread):
                 # Link-stability monitor (flap/outage tickets) — the TICKET is
                 # the record, so this runs regardless of SMTP too.
                 self._link.check()
+                # Starlink link-health monitor (degraded->P2 / outage->P1 /
+                # recovery->close) — also ticket-driven, SMTP-independent.
+                self._starlink.check()
                 if smtp_configured():
                     self._check_devices()
                     self._maybe_digest(now)

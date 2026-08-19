@@ -15,9 +15,72 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.19.b] — 2026-08-19
+
+### Added
+- **Per-port discovery + dead-end/loop detection** (`feat/netopt-port-discovery`):
+  the UniFi per-port snapshot now carries `mac_table_count`, `rx_packets`,
+  `tx_packets`, `tx_multicast`, `stp_state`, `disabled`, and the controller's
+  uplink mapping (port → known AP/switch name). Each port is classified
+  best-effort as connected / dead_end / unused / down, and two new rules fire:
+  `hyg.dead_end_port` (warning, high-risk — no devices learned + multicast
+  flooding, the 08-19 Mini Rack port 4 loop/dead-end signature) and
+  `hyg.unused_port_up` (info — link up but no devices; disable for hygiene).
+  The run detail now shows the per-port discovery alongside the findings.
+- **Merge-safe port disable** — `UniFiClient.set_port_disabled` + the
+  `/api/v1/unifi/ports/{mac}/{port}/disabled` endpoint + `unifi_port_disable.sh`
+  / `unifi_port_enable.sh` scripts (the dead-end/loop fix path).
+  `infra_checkpoint.py` now captures/restores the `disabled` state so a
+  port-disable fix rolls back to re-enable.
+- **VLAN/subnet-aware Network Optimization + NO-FLAT guardrail**
+  (`feat/netopt-vlan-awareness`): the scan now UNDERSTANDS VLANs and
+  subnetting and never recommends a flat network.
+  - `unifi.py`: `get_networks()`/`get_networks_map()` surface the network
+    `purpose` field alongside vlan/subnet/enabled (rest/networkconf).
+  - `network_opt.py`: the UniFi collector enriches every port with
+    `native_network`/`tagged_networks` names, builds a **network map**
+    (`{vlan_id: subnet, purpose, enabled}`, untagged default keyed `default`),
+    and the run detail persists `network_map` + per-port `vlan_context`
+    ("native WiFi vlan5 (.5.1/24), tagged Kids(9)/RCTF(10)").
+  - `network_opt_rules.py`: device-class→network mapping (AP→WiFi,
+    gateway/router/switch→Management, host/server→Production) so the
+    "port with no assigned network" finding names the CORRECT network for the
+    device class (uplinks get the full trunk, never a flatten); plus the
+    **NO-FLAT guardrail** — any suggested_action that would collapse VLANs/
+    subnets (assign everything to one network, remove VLAN tags, flatten) is
+    suppressed and flagged "design change — not recommended".
+  - `routes/network_opt.py` + `netopt_tickets.py`: the run detail and Optimize
+    tickets use the VLAN-aware `suggested_action_for()` accessor (dynamic
+    per-finding action + guardrail applied on every path).
+  - `_network_opt.html`: the run detail renders the network map + per-port
+    VLAN context beside the findings.
+### Changed
+- **Port finding naming** (`feat/netopt-findings-naming`): port-related findings
+  now use the canonical `<device> Port <idx> (<description>)` naming — the device
+  name plus the UniFi port `name` field (its description) in parentheses when one
+  exists — across finding titles/details and the Optimize ticket change-plan
+  (e.g. "HouseSwitch Port 7 (Google WAN): no assigned network" instead of
+  "Port with no assigned network on Port 1"). Display-only: finding keys and the
+  `interface` (port idx) field are unchanged.
+
+
+
 ## [2026.08.19.a] — 2026-08-19
 
 ### Added
+- **Starlink dish gRPC telemetry + link-health monitor (P0)** — a new collector
+  in the telemetry family polls the dish's local unauthenticated gRPC API at
+  `192.168.100.1:9200` (~60s, configurable via `STARLINK_*`) and writes
+  `starlink.*` metrics (ping_ms, link_up, down/up_mbps, snr, obstructed,
+  obstruction_fraction, uptime_seconds, ping_drop_rate) into the metrics store
+  (device = the dish). A graduated-ticket health monitor complements the
+  port-level link-flap monitor: sustained degradation → P2 "Starlink link
+  degraded" (kept open), dish-reported link-down → same ticket escalates to P1
+  "Starlink link outage", sustained recovery → auto-close. A lean Starlink
+  link-health block (latest ping/signal/throughput + mini trend) lands on the
+  System page. gRPC client = `starlink-grpc-core` (reflection client only —
+  grpcio/protobuf/yagrc, no influxdb/mqtt/prometheus deps); unreachable-dish
+  gaps are recorded honestly (no fabricated samples).
 - **Agent foresight for infra changes** (the 08-19 Optimize-rollout incident fix):
   risk-aware recommendations + an execution contract + checkpoint/rollback so a
   port/VLAN/network change is planned and verified, never half-applied.
@@ -39,6 +102,7 @@ Categories per release:
     command instead of a half-applied mystery.
   - `src/scripts/infra_checkpoint.py` (new): capture/restore the full before-state
     of a UniFi switch's port table via the merge-safe appliance API.
+
 - **Three-tier roles + requester-owned close-loop (P1)** — `user` (customer) /
   `technician` / `admin` roles with additive migration on the existing
   `profiles.role` column (`operator` stays a legacy alias for technician,

@@ -183,6 +183,38 @@ def init_db():
             ))
     except OperationalError:
         pass  # Table/index already exists
+    # Migration: starlink_episodes (Starlink link-health monitor state machine).
+    # A NEW table — create_all above already creates it, so this guarded CREATE
+    # is an idempotent belt-and-suspenders no-op. KEEP IN SYNC with
+    # models.StarlinkEpisode.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS starlink_episodes ("
+                " id INTEGER PRIMARY KEY,"
+                " device_id INTEGER NOT NULL,"
+                " state VARCHAR(16) DEFAULT 'healthy',"
+                " degraded_since DATETIME,"
+                " outage_since DATETIME,"
+                " recovered_since DATETIME,"
+                " last_event_at DATETIME,"
+                " escalated VARCHAR(4),"
+                " escalation_reason VARCHAR(32),"
+                " ticket_id VARCHAR(32),"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_starlink_episodes_device "
+                "ON starlink_episodes(device_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_starlink_episodes_ticket_id "
+                "ON starlink_episodes(ticket_id)"
+            ))
+    except OperationalError:
+        pass  # Table/index already exists
     # Migration: scan_runs + findings (Network Optimization, P1). NEW tables —
     # create_all above already creates them; the guarded CREATEs are idempotent
     # belt-and-suspenders no-ops. KEEP IN SYNC with models.ScanRun/Finding.

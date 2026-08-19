@@ -30,7 +30,7 @@ from database import get_db
 from models import User, ScanRun, Finding
 from routes.updates import _local_now, _parse_local_dt, _appliance_tz
 import network_opt
-from network_opt_rules import SCHEMA_VERSION, CATEGORIES, SEVERITIES, fixability
+from network_opt_rules import SCHEMA_VERSION, CATEGORIES, SEVERITIES, fixability, suggested_action_for
 from netopt_tickets import spawn_optimize_tickets, PER_ITEM_CAP
 
 router = APIRouter(prefix="/api/v1/netopt", tags=["network-optimization"])
@@ -224,6 +224,10 @@ def run_detail(run_id: int, db: Session = Depends(get_db),
         "schema_version": run.schema_version,
         "scope": run.scope or {},
         "summary": summary,
+        "port_discovery": summary.get("port_discovery") or [],
+        "network_map": summary.get("network_map") or {},
+        "vlan_context": summary.get("vlan_context") or [],
+
         "findings": [{
             "id": f.id,
             "finding_key": f.finding_key,
@@ -235,7 +239,8 @@ def run_detail(run_id: int, db: Session = Depends(get_db),
             "detail": f.detail,
             "evidence": f.evidence or {},
             "fixable": fixability(f.finding_key)["fixable"],
-            "suggested_action": fixability(f.finding_key)["suggested_action"],
+            "suggested_action": suggested_action_for(f.finding_key, f.evidence),
+            "guardrail_flag": (f.evidence or {}).get("guardrail_flag") or "",
             "high_risk": fixability(f.finding_key)["high_risk"],
             "fix_ticket_id": f.fix_ticket_id,
         } for f in findings],
