@@ -82,12 +82,12 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
 
 @router.post("/register")
 def register(request: RegisterRequest, response: Response, db: Session = Depends(get_db)):
-    """Tenant self-registration — "first login = admin, everyone after = tenant".
+    """Self-registration — "first login = admin, everyone after = user".
 
     Gated by TENANT_REGISTRATION_ENABLED (default true for hospitality):
     the admin can turn self-signup off and create users by hand instead.
-    New accounts are ALWAYS role=tenant; the admin promotes them later
-    (Settings → Users).
+    New accounts are ALWAYS role=user (the customer tier); the admin promotes
+    them to technician/admin later (Settings → Users).
     """
     try:
         from llm_providers import read_env_file
@@ -118,7 +118,7 @@ def register(request: RegisterRequest, response: Response, db: Session = Depends
         email=email,
         display_name=None,
         hashed_password=hash_password(request.password),
-        role="tenant",
+        role="user",
         is_active=True,
         must_change_password=False,
     )
@@ -147,7 +147,7 @@ def register(request: RegisterRequest, response: Response, db: Session = Depends
         "token_type": "bearer",
         "expires_in": 3600,
         "password_change_required": False,
-        "user": {"username": username, "role": "tenant"},
+        "user": {"username": username, "role": "user"},
     }
 
 

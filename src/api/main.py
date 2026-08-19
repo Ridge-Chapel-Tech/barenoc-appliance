@@ -409,7 +409,7 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 def chat_page(request: Request):
     """Mobile chat front door — home users & tenants talk to the Queue
     Manager here. Public page: the client JS handles login/register; new
-    self-registered accounts are role=tenant (see /api/v1/auth/register)."""
+    self-registered accounts are role=user (see /api/v1/auth/register)."""
     site = ""
     try:
         from llm_providers import read_env_file

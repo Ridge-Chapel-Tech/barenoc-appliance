@@ -7,11 +7,6 @@ import os
 import time
 import unittest
 
-os.environ["RATE_LIMIT_ENABLED"] = "true"
-os.environ["RATE_LIMIT_LOGIN"] = "3/minute"   # small, testable limits
-os.environ["RATE_LIMIT_CHAT"] = "5/minute"
-os.environ["RATE_LIMIT_API"] = "10/minute"
-
 import ratelimit  # noqa: E402
 from ratelimit import RateLimiter, client_ip  # noqa: E402
 
@@ -49,12 +44,31 @@ class ClientIpTest(unittest.TestCase):
         self.assertEqual(client_ip(scope), "9.9.9.9")
 
 
+def _set_test_limits():
+    """Scope the small test limits to this module's own tests. Setting them at
+    import time poisoned the WHOLE suite (the limiter is enabled + capped at
+    10/min for every other test file — 08-19, 429s in test_network_opt)."""
+    os.environ["RATE_LIMIT_ENABLED"] = "true"
+    os.environ["RATE_LIMIT_LOGIN"] = "3/minute"
+    os.environ["RATE_LIMIT_CHAT"] = "5/minute"
+    os.environ["RATE_LIMIT_API"] = "10/minute"
+    _reset_cfg()
+
+
+def _clear_test_limits():
+    for k in ("RATE_LIMIT_ENABLED", "RATE_LIMIT_LOGIN", "RATE_LIMIT_CHAT", "RATE_LIMIT_API"):
+        os.environ.pop(k, None)
+    _reset_cfg()
+
 class RateLimiterTest(unittest.TestCase):
     def setUp(self):
-        _reset_cfg()
+        _set_test_limits()
         self.limiter = RateLimiter()
         self.path = "/api/v1/auth/login"
         self.ip = "10.0.0.1"
+
+    def tearDown(self):
+        _clear_test_limits()
 
     def test_allows_up_to_limit(self):
         results = [self.limiter.check(self.path, self.ip)[0] for _ in range(3)]
@@ -102,7 +116,7 @@ class MiddlewareTest(unittest.TestCase):
     """End-to-end 429 via a minimal app wrapped in the middleware."""
 
     def setUp(self):
-        _reset_cfg()
+        _set_test_limits()
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from ratelimit import RateLimitMiddleware

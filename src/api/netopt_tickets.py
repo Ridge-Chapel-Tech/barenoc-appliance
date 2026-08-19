@@ -18,11 +18,55 @@ import json
 
 from models import Ticket
 from worknotes import add_note
-from network_opt_rules import fixability
+from network_opt_rules import fixability, risk_meta
 
 ADMIN_CONTEXT_NOTE = ("This ticket has admin context/instructions — read them "
                       "fully before any action.")
 ADMIN_CONTEXT_BANNER = "⚠️ ADMIN CONTEXT — READ FULLY BEFORE ANY ACTION"
+
+# The change-plan artifact: every optimize ticket arrives PRE-THOUGHT. The
+# executing agent must follow the plan in order — never improvise a
+# port/VLAN/network change (the 08-19 half-applied port_overrides incident).
+CHANGE_PLAN_HEADER = "CHANGE PLAN (pre-thought — follow this order)"
+CHANGE_PLAN_NOTE = ("A pre-thought CHANGE PLAN is embedded in the description — "
+                    "execute it in order; do not improvise port/VLAN/network changes.")
+
+DEFAULT_VERIFICATION = ("After the change, re-read the device state (the port's "
+                        "native/tagged assignment and link status) and confirm the "
+                        "change took effect AND the path/device stays up (it re-informs "
+                        "/ answers) before proceeding to the next step.")
+DEFAULT_ROLLBACK = ("Restore the captured before state from the checkpoint file (the "
+                    "full port_overrides array + native/tagged assignments) and "
+                    "re-verify the path is back up.")
+
+VERIFICATION_STEPS = {
+    "hyg.port_no_profile": ("Re-read the port table and confirm the new native network "
+                            "is active AND the connected device still responds (ping/SSH) "
+                            "before the next change."),
+    "sec.mgmt_vlan_on_uplink": ("Confirm management reachability (SSH/UI to the gear, and "
+                                "the appliance can still reach the device) after the VLAN move."),
+    "perf.uplink_congestion": ("Confirm the uplink re-negotiates at full capacity and "
+                               "downstream devices re-inform."),
+    "hyg.unnamed_uplink_port": ("Confirm the port is renamed and its native/tagged "
+                                "assignment is UNCHANGED (read-back matches the captured "
+                                "before state)."),
+    "hyg.default_vlan1": "Confirm each moved network's devices still respond after the port re-assignment.",
+    "hyg.disabled_network": ("Confirm the network is removed and no port/SSID that "
+                             "referenced it is now un-profiled."),
+}
+
+ROLLBACK_STEPS = {
+    "hyg.port_no_profile": ("Re-apply the port's original native/tagged from the checkpoint "
+                            "(captured before) and confirm the device reconnects."),
+    "sec.mgmt_vlan_on_uplink": ("Re-apply the captured uplink VLAN assignment from the "
+                                "checkpoint and confirm management reachability returns."),
+    "perf.uplink_congestion": "Re-apply the captured port state from the checkpoint and confirm the link returns.",
+    "hyg.unnamed_uplink_port": ("Re-apply the captured port name/assignment from the checkpoint "
+                                "(the uplink must remain an uplink)."),
+    "hyg.default_vlan1": "Restore the captured port memberships from the checkpoint and confirm reachability.",
+    "hyg.disabled_network": ("Re-create the network from the checkpoint (or re-apply the "
+                             "captured port profiles)."),
+}
 
 SEVERITY_PRIORITY = {"critical": "P1", "warning": "P2", "info": "P3"}
 _PRIORITY_ORDER = {"P1": 3, "P2": 2, "P3": 1, "P4": 0}
@@ -90,6 +134,48 @@ def _comment_for(finding, comments) -> str:
     return (c or "").strip()
 
 
+def _verification_step(key: str) -> str:
+    return VERIFICATION_STEPS.get((key or "").strip(), DEFAULT_VERIFICATION)
+
+
+def _rollback_step(key: str) -> str:
+    return ROLLBACK_STEPS.get((key or "").strip(), DEFAULT_ROLLBACK)
+
+
+def change_plan(finding) -> dict:
+    """The per-finding CHANGE PLAN artifact: current state -> proposed change
+    -> blast radius -> verification step -> rollback step. The optimize ticket
+    carries this PRE-THOUGHT so the executing agent never improvises a
+    port/VLAN/network change (the 08-19 half-applied port_overrides incident)."""
+    key = _get(finding, "finding_key", "")
+    fx = fixability(key)
+    risk = risk_meta(key)
+    current = (_get(finding, "detail", "") or "").strip()
+    if not current:
+        current = _evidence_text(finding) or "(see evidence)"
+    return {
+        "current_state": current,
+        "proposed_change": (fx.get("suggested_action", "") or "").strip(),
+        "blast_radius": (risk.get("blast_radius", "") or "").strip(),
+        "verification": _verification_step(key),
+        "rollback": _rollback_step(key),
+        "high_risk": bool(risk.get("high_risk")),
+    }
+
+
+def change_plan_text(finding) -> str:
+    """Render the change plan as a multi-line block for the ticket description."""
+    p = change_plan(finding)
+    return (
+        f"{CHANGE_PLAN_HEADER}:\n"
+        f"1. Current state: {p['current_state']}\n"
+        f"2. Proposed change: {p['proposed_change']}\n"
+        f"3. Blast radius: {p['blast_radius']}\n"
+        f"4. Verification step: {p['verification']}\n"
+        f"5. Rollback step: {p['rollback']}"
+    )
+
+
 def _finding_block(finding, run_id, comment="", index=None) -> str:
     fx = fixability(_get(finding, "finding_key", ""))
     lines = []
@@ -110,6 +196,9 @@ def _finding_block(finding, run_id, comment="", index=None) -> str:
     if ev:
         lines.append("Evidence:")
         lines.append(ev)
+    plan = change_plan_text(finding)
+    if plan:
+        lines.append(plan)
     if index is None:
         lines.append(f"Network Optimization run reference: #{run_id}")
     return "\n".join(lines)
@@ -174,6 +263,11 @@ def spawn_optimize_tickets(db, run_id, findings, mode="per_item", comments=None,
             db, title, batched_description(findings, run_id, comments),
             priority, submitter_id)
         add_note(ticket, "admin_context", ADMIN_CONTEXT_NOTE, actor="admin")
+        add_note(ticket, "change_plan", CHANGE_PLAN_NOTE, actor="admin")
+        # Link the findings back to the ticket so the run detail stops showing
+        # them as actionable (the 08-19 'still actionable after batch' bug).
+        for f in findings:
+            f.fix_ticket_id = ticket.ticket_id
         created.append({"ticket_id": ticket.ticket_id, "priority": ticket.priority,
                         "finding_ids": [_get(f, "id") for f in findings]})
     else:
@@ -185,6 +279,8 @@ def spawn_optimize_tickets(db, run_id, findings, mode="per_item", comments=None,
                 db, title, finding_description(f, run_id, comment=comment),
                 priority, submitter_id)
             add_note(ticket, "admin_context", ADMIN_CONTEXT_NOTE, actor="admin")
+            add_note(ticket, "change_plan", CHANGE_PLAN_NOTE, actor="admin")
+            f.fix_ticket_id = ticket.ticket_id
             created.append({"ticket_id": ticket.ticket_id, "priority": ticket.priority,
                             "finding_ids": [_get(f, "id")]})
 

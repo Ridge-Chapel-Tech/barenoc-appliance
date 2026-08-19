@@ -29,11 +29,11 @@ import logging
 import datetime
 import threading
 
-from models import User, ChatMessage, Ticket
+from models import User, ChatMessage, Ticket, PendingAction, is_tech, is_customer
 from schemas import generate_ticket_id
 from worknotes import add_note
 from audit import log_event
-from queue_status import derive_status, is_paused, list_notes
+from queue_status import derive_status, is_paused, list_notes, last_meaningful_note
 
 logger = logging.getLogger("barenoc-worker.juniper")
 
@@ -288,10 +288,17 @@ def ack_intent(text: str) -> bool:
 # ── authorization ───────────────────────────────────────────────────────────
 
 def can_direct(ticket, user) -> bool:
-    """Only the ticket owner (tenant) or an operator/admin may direct a ticket."""
-    if user.role in ("admin", "operator"):
+    """Only the ticket owner (requester) or the technician tier/admin may
+    direct a ticket."""
+    if is_tech(user):
         return True
     return ticket.submitter_id == user.id
+
+
+def _requester_name(db, ticket) -> str:
+    """Human name for the ticket's requester (the close-loop owner)."""
+    sub = db.query(User).filter(User.id == ticket.submitter_id).first() if ticket.submitter_id else None
+    return (sub.username or "the requester") if sub else "the requester"
 
 
 _ACTIVE_TICKET_STATUSES = ("open", "in_progress", "awaiting_approval", "escalated", "customer_action")
@@ -414,7 +421,7 @@ def queue_snapshot(db, user) -> str:
     else:
         lines.append("You have no active tickets.")
 
-    if user.role in ("admin", "operator"):
+    if is_tech(user):
         active = (db.query(Ticket)
                   .filter(Ticket.status.in_(("open", "in_progress", "awaiting_approval", "escalated")))
                   .order_by(Ticket.priority.asc(), Ticket.created_at.desc())
@@ -426,6 +433,202 @@ def queue_snapshot(db, user) -> str:
                 paused = " · ⏸ paused" if is_paused(t) else ""
                 lines.append(f"  {t.ticket_id} [{t.priority}] {t.title[:60]} — {st['label']}{paused}")
     return "\n".join(lines)
+
+
+# ── pending-items context (role-aware, per-user) ────────────────────────────
+# The Juniper front desk surfaces each user's OWN pending items. Customers see
+# only their own tickets awaiting verification; the technician tier/admin
+# additionally see escalations + firmware pending actions (gateway approvals
+# admin-only; technician visibility gated by FIRMWARE_TECH_VISIBILITY).
+
+_PENDING_MARKERS = (
+    "pending", "my pending", "pending items", "needs my attention",
+    "need my attention", "what do i need to do", "what needs to be done",
+    "my approvals", "awaiting my", "awaiting verification",
+    "what's waiting", "whats waiting", "escalations", "firmware approvals",
+    "what should i do",
+)
+_GREETING_RE = re.compile(
+    r"^(hi|hello|hey|yo|hiya|howdy|hola|sup|good\s+(morning|afternoon|evening))"
+    r"([,.!?\s]*)$", re.I)
+_APPROVE_RE = re.compile(r"\b(approve|confirm)\s+(?:firmware\s+|approval\s+|#)?(\d+)\b", re.I)
+_RESOLVE_RE = re.compile(r"\b(resolve|clear|dismiss)\s+(?:escalation\s+|#)?(\d+)\b", re.I)
+
+
+def _tech_visibility() -> bool:
+    """FIRMWARE_TECH_VISIBILITY (default off) — mirrors firmware.py."""
+    try:
+        from llm_providers import read_env_file
+        raw = (read_env_file().get("FIRMWARE_TECH_VISIBILITY") or "").strip().lower()
+        return raw in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def _pending_visible(user, a) -> bool:
+    """Role visibility for a PendingAction (mirrors routes/firmware._can_see)."""
+    if user.role == "admin":
+        return True
+    if (a.required_role or "") == "admin":
+        return False  # gateway approval admin-only regardless
+    if user.role in ("technician", "operator") and _tech_visibility():
+        return True
+    return False
+
+
+def pending_items(db, user) -> dict:
+    """Role-aware pending items for the user. Never leaks another user's items."""
+    out = {"tickets_awaiting_verification": [], "escalations": [], "firmware_approvals": []}
+
+    # 1. The requester's own tickets awaiting THEIR verification (the ball is
+    #    in the customer's court).
+    own = (db.query(Ticket)
+           .filter(Ticket.submitter_id == user.id,
+                   Ticket.status.in_(("customer_action", "awaiting_approval")))
+           .order_by(Ticket.priority.asc(), Ticket.created_at.desc()).all())
+    own_ids = {t.id for t in own}
+    # Also catch answered tickets whose last meaningful note is an
+    # ai_tech_feedback ("Answered — awaiting your confirmation").
+    for t in (db.query(Ticket)
+              .filter(Ticket.submitter_id == user.id,
+                      Ticket.status.in_(("open", "in_progress", "completed")))
+              .all()):
+        if t.id in own_ids:
+            continue
+        if (last_meaningful_note(t) or {}).get("event") == "ai_tech_feedback":
+            own.append(t)
+    out["tickets_awaiting_verification"] = own
+
+    if is_tech(user):
+        # 2. Escalations requiring review (ticket escalations + firmware
+        #    escalation pending-actions in scope).
+        esc = (db.query(Ticket)
+               .filter(Ticket.status == "escalated")
+               .order_by(Ticket.priority.asc(), Ticket.created_at.desc()).all())
+        out["escalations"] = list(esc)
+
+        # 3. Firmware pending approvals in scope.
+        rows = (db.query(PendingAction)
+                .filter(PendingAction.status.in_(("pending", "deferred")))
+                .order_by(PendingAction.created_at.desc()).all())
+        for a in rows:
+            if not _pending_visible(user, a):
+                continue
+            if a.kind == "approval":
+                out["firmware_approvals"].append(a)
+            else:
+                out["escalations"].append(a)
+    return out
+
+
+def pending_context(db, user) -> str:
+    """Detailed pending-items listing for the front-desk discussion."""
+    p = pending_items(db, user)
+    lines = []
+    tv = p["tickets_awaiting_verification"]
+    if tv:
+        lines.append(f"Tickets awaiting your verification ({len(tv)}):")
+        for t in tv[:10]:
+            st = derive_status(t)
+            lines.append(f"  {t.ticket_id} [{t.priority}] {t.title[:60]} — {st['label']}")
+    if is_tech(user):
+        esc = p["escalations"]
+        if esc:
+            lines.append(f"Escalations requiring review ({len(esc)}):")
+            for e in esc[:10]:
+                if isinstance(e, Ticket):
+                    lines.append(f"  {e.ticket_id} [{e.priority}] {e.title[:60]}")
+                else:
+                    lines.append(f"  pending #{e.id} {e.device_name or e.mac_address or 'device'} — {e.title[:60]}")
+        fw = p["firmware_approvals"]
+        if fw:
+            lines.append(f"Firmware approvals in your scope ({len(fw)}):")
+            for a in fw[:10]:
+                ver = f" {a.firmware_from}→{a.firmware_to}" if a.firmware_from else ""
+                lines.append(f"  #{a.id} {a.device_name or a.mac_address or 'device'}{ver} — {a.title[:60]}")
+    has_any = bool(tv) or (is_tech(user) and bool(p["escalations"] or p["firmware_approvals"]))
+    if not has_any:
+        lines.append("Nothing is waiting on you right now.")
+    lines.append(
+        "Reply \"approve #<id>\" to approve a firmware action, \"resolve #<id>\" "
+        "to clear an escalation, or \"close TKT-…\" to close a ticket.")
+    return "\n".join(lines)
+
+
+def front_desk_greeting(db, user) -> str:
+    """Role-aware greeting with the pending-items summary line(s)."""
+    p = pending_items(db, user)
+    lines = ["Hi! I'm Juniper, your front desk. 👋"]
+    tv = p["tickets_awaiting_verification"]
+    if tv:
+        lines.append(f"You have {len(tv)} ticket(s) awaiting your verification.")
+    if is_tech(user):
+        esc_n = len(p["escalations"])
+        if esc_n:
+            lines.append(f"{esc_n} escalation(s) requiring review.")
+        fw_n = len(p["firmware_approvals"])
+        if fw_n:
+            lines.append(f"{fw_n} pending action approval(s) in your scope.")
+    lines.append("What can I help with? (say \"pending\" for the details)")
+    return "\n".join(lines)
+
+
+def looks_like_pending(text: str) -> bool:
+    t = " ".join((text or "").lower().split())
+    return any(m in t for m in _PENDING_MARKERS)
+
+
+def _handle_pending_action(db, bot, msg, sender, text: str):
+    """Approve/resolve a firmware pending item via chat, per role. Returns a
+    reply ChatMessage, or None when the message isn't a pending-action command."""
+    m = _APPROVE_RE.search(text)
+    if m:
+        item_id = int(m.group(2))
+        a = db.query(PendingAction).get(item_id)
+        if not a:
+            return reply(db, bot, msg, f"I can't find pending item #{item_id}.")
+        if not _pending_visible(sender, a):
+            return reply(db, bot, msg, f"I can't see pending item #{item_id} — it's outside your scope.")
+        if a.kind != "approval":
+            return reply(db, bot, msg, f"#{item_id} is an escalation, not an approval — use \"resolve #{item_id}\".")
+        if a.status not in ("pending", "deferred"):
+            return reply(db, bot, msg, f"#{item_id} is already {a.status}.")
+        a.status = "approved"
+        a.resolved_by = sender.username
+        a.resolved_at = datetime.datetime.utcnow()
+        a.resolved_note = "approved via Juniper chat"
+        db.commit()
+        try:
+            log_event(db, "firmware_approval_approved", sender.username,
+                      {"item_id": a.id, "device": a.device_name, "via": "juniper"})
+        except Exception:
+            logger.exception("Juniper approval audit failed (non-fatal)")
+        return reply(db, bot, msg,
+                     f"Approved #{item_id} — {a.device_name or a.mac_address or 'device'}. "
+                     f"The upgrade engine will pick it up.")
+
+    m = _RESOLVE_RE.search(text)
+    if m:
+        item_id = int(m.group(2))
+        a = db.query(PendingAction).get(item_id)
+        if not a:
+            return reply(db, bot, msg, f"I can't find pending item #{item_id}.")
+        if not _pending_visible(sender, a):
+            return reply(db, bot, msg, f"I can't see pending item #{item_id} — it's outside your scope.")
+        if a.status == "resolved":
+            return reply(db, bot, msg, f"#{item_id} is already resolved.")
+        a.status = "resolved"
+        a.resolved_by = sender.username
+        a.resolved_at = datetime.datetime.utcnow()
+        a.resolved_note = "resolved via Juniper chat"
+        db.commit()
+        try:
+            log_event(db, "firmware_pending_resolved", sender.username,
+                      {"item_id": a.id, "device": a.device_name, "kind": a.kind, "via": "juniper"})
+        except Exception:
+            logger.exception("Juniper resolve audit failed (non-fatal)")
+        return reply(db, bot, msg, f"Resolved #{item_id} — {a.device_name or a.mac_address or 'device'}.")
+    return None
 
 
 # ── replies ─────────────────────────────────────────────────────────────────
@@ -442,10 +645,12 @@ def help_text() -> str:
     return (
         "I'm Juniper, your queue manager. Here's what I can do:\n"
         "• \"what's happening?\" — queue depth + your tickets\n"
+        "• \"pending\" — list what's waiting on you\n"
         "• \"summarize TKT-…\" — a short summary of a ticket\n"
         "• \"I need Doom installed on my laptop\" — open a ticket (I judge the priority)\n"
         "• \"pause TKT-… until 8 PM\" / \"resume TKT-…\" — hold or release a ticket\n"
         "• \"close TKT-…\" / \"close the ticket\" — close a ticket\n"
+        "• \"approve #<id>\" / \"resolve #<id>\" — act on a pending firmware item\n"
         "• \"note to technician: …\" — pass a message to the tech on your active ticket"
     )
 
@@ -529,7 +734,7 @@ def _handle_directive(db, bot, msg, sender, directive: dict) -> ChatMessage:
         return reply(db, bot, msg, f"I can't find {tkt_id}.")
     if not can_direct(ticket, sender):
         return reply(db, bot, msg,
-                     f"I can't change {tkt_id} — only the ticket owner or an operator can direct that ticket.")
+                     f"I can't change {tkt_id} — only the ticket owner or a technician can direct that ticket.")
 
     if kind == "pause":
         if "error" in directive:
@@ -556,7 +761,7 @@ def _handle_note(db, bot, msg, sender, directive: dict) -> ChatMessage:
             return reply(db, bot, msg, f"I can't find {tkt_id}.")
         if not can_direct(ticket, sender):
             return reply(db, bot, msg,
-                         f"I can't pass a note on {tkt_id} — only the ticket owner or an operator can direct that ticket.")
+                         f"I can't pass a note on {tkt_id} — only the ticket owner or a technician can direct that ticket.")
     else:
         ticket = _most_recent_active_ticket(db, sender)
         if not ticket:
@@ -588,8 +793,15 @@ def _handle_close(db, bot, msg, sender, directive: dict) -> ChatMessage:
         tkt_id = ticket.ticket_id
 
     if not can_direct(ticket, sender):
+        # A non-requester customer confirm is routed to "waiting on <requester>"
+        # — it NEVER closes the ticket (requester-owned close-loop).
+        if is_customer(sender):
+            req = _requester_name(db, ticket)
+            return reply(db, bot, msg,
+                         f"I can't close {tkt_id} — that ticket belongs to {req}. "
+                         f"Waiting on {req} to verify.")
         return reply(db, bot, msg,
-                     f"I can't close {tkt_id} — only the ticket owner or an operator can close that ticket.")
+                     f"I can't close {tkt_id} — only the ticket owner or a technician can close that ticket.")
     if ticket.status == "closed":
         return reply(db, bot, msg, f"{tkt_id} is already closed.")
 
@@ -609,7 +821,7 @@ def _handle_close(db, bot, msg, sender, directive: dict) -> ChatMessage:
 
 def _handle_summary(db, bot, msg, sender, tkt_id: str) -> ChatMessage:
     ticket = db.query(Ticket).filter(Ticket.ticket_id == tkt_id).first()
-    if not ticket or (sender.role == "tenant" and ticket.submitter_id != sender.id):
+    if not ticket or (is_customer(sender) and ticket.submitter_id != sender.id):
         return reply(db, bot, msg, f"I can't find {tkt_id}.")
     return reply(db, bot, msg, summarize_ticket(db, ticket))
 
@@ -621,10 +833,23 @@ def handle_message(db, bot, msg, sender) -> ChatMessage:
     if not text:
         return reply(db, bot, msg, help_text())
 
-    # 1. directives (pause/resume/note) — highest precedence
+    # 0. bare greeting -> role-aware front-desk greeting + pending summary
+    if _GREETING_RE.match(text):
+        return reply(db, bot, msg, front_desk_greeting(db, sender))
+
+    # 0.5 pending-items listing
+    if looks_like_pending(text):
+        return reply(db, bot, msg, pending_context(db, sender))
+
+    # 1. directives (pause/resume/note/close) — highest precedence
     directive = parse_directive(text)
     if directive:
         return _handle_directive(db, bot, msg, sender, directive)
+
+    # 1.5 firmware pending-item actions (approve/resolve)
+    acted = _handle_pending_action(db, bot, msg, sender, text)
+    if acted is not None:
+        return acted
 
     # 2. explicit ticket reference -> summary
     m = TKT_RE.search(text)

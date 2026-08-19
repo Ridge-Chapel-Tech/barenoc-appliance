@@ -247,7 +247,7 @@ def _run_check() -> dict:
 
 
 @router.get("/status")
-def update_status(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def update_status(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     status = _read_status()
     live = _current_version()
     # The live installed version ALWAYS wins — a stale check result (status.json
@@ -280,12 +280,12 @@ def update_status(user: User = Depends(require_any_role("operator", "admin", "ag
 
 
 @router.post("/check")
-def update_check(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def update_check(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     return _run_check()
 
 
 @router.post("/now")
-def update_now(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def update_now(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     status = _read_status() or _run_check()
     if not status.get("available"):
         raise HTTPException(400, "already up to date (or the manifest is unreachable)")
@@ -303,7 +303,7 @@ def update_now(user: User = Depends(require_any_role("operator", "admin", "agent
 
 
 @router.post("/rollback")
-def update_rollback(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def update_rollback(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     try:
         os.makedirs(STATUS_DIR, exist_ok=True)
         with open(ROLLBACK_REQ, "w") as f:
@@ -370,7 +370,7 @@ def _write_schedule(conf: dict):
 
 @router.post("/notify")
 def update_notify(body: dict = None,
-                  user: User = Depends(require_any_role("operator", "admin", "agent"))):
+                  user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     """Email the terminal update state (called by the scheduler when the
     host service's progress flips to done/failed). Best-effort; never raises.
     Reuses the alert channel (ALERT_RECIPIENTS) with a rendered HTML table.
@@ -406,13 +406,13 @@ def update_notify(body: dict = None,
 
 
 @router.get("/schedule")
-def get_schedule(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def get_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     return _read_schedule()
 
 
 @router.post("/schedule")
 def set_schedule(body: ScheduleBody,
-                 user: User = Depends(require_any_role("operator", "admin", "agent"))):
+                 user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     mode = (body.mode or "recurring").strip().lower()
     if mode not in ("recurring", "onetime"):
         raise HTTPException(422, "mode must be 'recurring' or 'onetime'")
@@ -453,7 +453,7 @@ def set_schedule(body: ScheduleBody,
 
 
 @router.post("/schedule/complete")
-def complete_schedule(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def complete_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     """Mark a one-time schedule as fired and disable it (persisted — survives
     restart). Called by the scheduler AFTER it has actually queued the update."""
     conf = _read_schedule()
@@ -465,7 +465,7 @@ def complete_schedule(user: User = Depends(require_any_role("operator", "admin",
 
 
 @router.post("/schedule/cancel")
-def cancel_schedule(user: User = Depends(require_any_role("operator", "admin", "agent"))):
+def cancel_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     """Cancel the current schedule: disable it and clear any one-time when/fired."""
     conf = _read_schedule()
     conf["enabled"] = False

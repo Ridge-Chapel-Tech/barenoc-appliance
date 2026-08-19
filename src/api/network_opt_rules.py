@@ -200,24 +200,145 @@ SUGGESTED_ACTIONS = {
 }
 
 
+# ── risk metadata (agent-foresight — foresight BEFORE recommending) ──────
+# The 08-19 incident: a batched Optimize turned port/VLAN findings into a
+# ticket, autonomous Lily applied the port/VLAN writes, pi timed out
+# mid-execution, and half-applied port_overrides stranded the .4.x segment.
+# The fix is a smarter agent — the recommendation itself now carries the BLAST
+# RADIUS + a plan-first note, and every port/VLAN/uplink-changing rule is
+# flagged high_risk so the optimize ticket arrives PRE-THOUGHT.
+
+HIGH_RISK_KEYS = frozenset({
+    "hyg.port_no_profile",       # assigning a native network moves connected devices
+    "sec.mgmt_vlan_on_uplink",   # re-homing the management VLAN on an uplink
+    "perf.uplink_congestion",    # re-cable/renegotiate the uplink path
+    "hyg.unnamed_uplink_port",   # the uplink port — rename only, never re-assign
+    "hyg.default_vlan1",         # moving traffic off VLAN 1 (port re-assignment)
+    "hyg.disabled_network",      # deleting a network (VLAN) definition
+})
+
+RISK_META = {
+    "hyg.port_no_profile": {
+        "high_risk": True,
+        "blast_radius": ("Assigning a native network to an un-profiled port moves every "
+                         "device on that port (PCs, downstream switches/APs, cameras) off "
+                         "the default network — any of them, and any management traffic "
+                         "riding that port, can lose connectivity until the change is verified."),
+        "plan_note": ("PLAN FIRST: enumerate what is connected to this port and confirm it "
+                      "is not an uplink and does not carry the appliance or management. "
+                      "Capture the full before state, assign the native network, then verify "
+                      "the port still forwards before the next change."),
+    },
+    "sec.mgmt_vlan_on_uplink": {
+        "high_risk": True,
+        "blast_radius": ("Re-homing the management VLAN off an uplink touches the port that "
+                         "carries the management plane — get it wrong and you lose management "
+                         "access to the gear (including the appliance's own path)."),
+        "plan_note": ("PLAN FIRST: confirm which VLANs are management, capture the uplink's "
+                      "full before state, move the management VLAN in one step, then verify "
+                      "management reachability before anything else."),
+    },
+    "perf.uplink_congestion": {
+        "high_risk": True,
+        "blast_radius": ("Re-cabling/renegotiating an uplink disrupts every device behind it "
+                         "(downstream switches, APs, and all their clients)."),
+        "plan_note": ("PLAN FIRST: identify everything downstream of the uplink, capture the "
+                      "before state, change one side, verify the link comes back at full "
+                      "capacity, and have the rollback ready."),
+    },
+    "hyg.unnamed_uplink_port": {
+        "high_risk": True,
+        "blast_radius": ("This is an UPLINK — the trunk carrying downstream devices and "
+                         "possibly the management plane. Do NOT change its VLAN assignment; "
+                         "only its label is being fixed."),
+        "plan_note": ("PLAN FIRST / DO NOT CHANGE THE UPLINK: rename the port only. Never "
+                      "re-assign the native/tagged VLANs on an uplink port as part of a "
+                      "hygiene fix."),
+    },
+    "hyg.default_vlan1": {
+        "high_risk": True,
+        "blast_radius": ("Moving traffic off VLAN 1 re-assigns port memberships network-wide — "
+                         "every affected port's devices can drop until the change is verified."),
+        "plan_note": ("PLAN FIRST: capture the full port_overrides before starting, move one "
+                      "network at a time, verify each, and roll back to the captured state on "
+                      "any failure."),
+    },
+    "hyg.disabled_network": {
+        "high_risk": True,
+        "blast_radius": ("Deleting a network (VLAN) definition removes it from every port/SSID "
+                         "that references it — if the 'disabled' network is actually referenced, "
+                         "those ports lose their profile."),
+        "plan_note": ("PLAN FIRST: confirm no port or SSID references the network before "
+                      "removing it, and capture the before state so the network can be re-created."),
+    },
+    # ssh/http/telnet fixes are SAFE — they change no port/VLAN/uplink assignment.
+    "sec.ssh_exposed": {
+        "high_risk": False,
+        "blast_radius": "Safe: this changes only the management channel (SSH), not any port/VLAN/uplink.",
+        "plan_note": "Safe fix — no connectivity blast radius.",
+    },
+    "sec.http_mgmt_plaintext": {
+        "high_risk": False,
+        "blast_radius": "Safe: this changes only the management channel (HTTP), not any port/VLAN/uplink.",
+        "plan_note": "Safe fix — no connectivity blast radius.",
+    },
+    "sec.telnet_exposed": {
+        "high_risk": False,
+        "blast_radius": "Safe: this changes only the management channel (Telnet), not any port/VLAN/uplink.",
+        "plan_note": "Safe fix — no connectivity blast radius.",
+    },
+}
+
+DEFAULT_BLAST_RADIUS = ("This fix does not change any port/VLAN/uplink assignment; "
+                        "it touches the device's own configuration only.")
+DEFAULT_PLAN_NOTE = ("Plan the change, capture the current state, apply it, and verify "
+                     "the device is still reachable.")
+
+
+def risk_meta(key: str) -> dict:
+    """{high_risk, blast_radius, plan_note} for a finding key — the stable
+    foresight metadata the ticket helper embeds into the change plan."""
+    key = (key or "").strip()
+    m = RISK_META.get(key)
+    if m is not None:
+        out = dict(m)
+        out.setdefault("high_risk", key in HIGH_RISK_KEYS)
+        return out
+    return {"high_risk": key in HIGH_RISK_KEYS,
+            "blast_radius": DEFAULT_BLAST_RADIUS,
+            "plan_note": DEFAULT_PLAN_NOTE}
+
+
 def fixability(key: str) -> dict:
-    """{fixable, suggested_action} for a finding key — the stable public
-    shape the run-detail API and the ticket helper consume."""
+    """{fixable, suggested_action, high_risk, blast_radius, plan_note} for a
+    finding key — the stable public shape the run-detail API and the ticket
+    helper consume. Port/VLAN/uplink-changing rules are high_risk and their
+    suggested_action carries the blast radius + a plan-first note."""
     key = (key or "").strip()
     if key in NON_FIXABLE_RULES:
-        return {"key": key, "fixable": False, "suggested_action": NON_FIXABLE_LABEL}
-    return {"key": key, "fixable": True,
-            "suggested_action": SUGGESTED_ACTIONS.get(key, DEFAULT_SUGGESTED_ACTION)}
+        return {"key": key, "fixable": False, "suggested_action": NON_FIXABLE_LABEL,
+                "high_risk": False, "blast_radius": "", "plan_note": ""}
+    risk = risk_meta(key)
+    suggested = SUGGESTED_ACTIONS.get(key, DEFAULT_SUGGESTED_ACTION)
+    if risk["high_risk"]:
+        suggested = f"{suggested} {risk['blast_radius']} {risk['plan_note']}"
+    return {"key": key, "fixable": True, "suggested_action": suggested,
+            "high_risk": risk["high_risk"], "blast_radius": risk["blast_radius"],
+            "plan_note": risk["plan_note"]}
 
 
 def _annotate_fixability():
-    """Attach fixable + suggested_action to every registered rule so the
-    registry itself carries the annotation (each rule *gains* the fields)."""
+    """Attach fixable + suggested_action + risk metadata to every registered
+    rule so the registry itself carries the annotation (each rule *gains* the
+    fields)."""
     for coll in (RULES, SNAPSHOT_RULES):
         for r in coll:
             fx = fixability(r["key"])
             r["fixable"] = fx["fixable"]
             r["suggested_action"] = fx["suggested_action"]
+            r["high_risk"] = fx["high_risk"]
+            r["blast_radius"] = fx["blast_radius"]
+            r["plan_note"] = fx["plan_note"]
 
 
 # ══════════════════════════════ PERFORMANCE ═══════════════════════════════

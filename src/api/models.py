@@ -4,6 +4,36 @@ from sqlalchemy.orm import relationship
 from database import Base
 
 
+# ── Role tiers (2026-08-18) ────────────────────────────────────────────────
+# Three customer-facing tiers: user (customer) < technician < admin.
+# Legacy roles map additively: operator == technician, tenant == user;
+# readonly = read-only staff (above user, below technician); agent = a
+# service identity that only ever uses exact-match require_any_role (never
+# the hierarchy). Single source of truth — BOTH the API and the worker import
+# models.py, so keep this dependency-free.
+ROLE_LEVELS = {
+    "admin": 4,
+    "technician": 3,
+    "operator": 3,     # legacy alias for technician
+    "readonly": 2,     # read-only staff view
+    "user": 1,         # customer
+    "tenant": 1,       # legacy alias for user
+    "agent": 0,        # service identity (exact-match only)
+}
+TECH_ROLES = ("admin", "technician", "operator")
+CUSTOMER_ROLES = ("user", "tenant")
+
+
+def is_tech(user) -> bool:
+    """True for the technician tier (technician + legacy operator) and admin."""
+    return getattr(user, "role", "") in TECH_ROLES
+
+
+def is_customer(user) -> bool:
+    """True for the customer tier (user + legacy tenant)."""
+    return getattr(user, "role", "") in CUSTOMER_ROLES
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -12,7 +42,7 @@ class User(Base):
     email = Column(String(128), unique=True, nullable=True)
     display_name = Column(String(128), nullable=True)
     hashed_password = Column(String(256), nullable=False)
-    role = Column(String(16), default="admin")  # admin | operator | readonly | tenant
+    role = Column(String(16), default="admin")  # admin | technician | user (+ legacy operator | readonly | tenant)
     is_active = Column(Boolean, default=True)
     is_bot = Column(Boolean, default=False)  # True for bot users (Juniper Queue Manager) — chat participants, not humans
     must_change_password = Column(Boolean, default=False)
@@ -247,6 +277,7 @@ class Finding(Base):
     finding_key = Column(String(64), index=True, nullable=False)
     category = Column(String(16), index=True, nullable=False)   # performance|security|reliability|hygiene
     severity = Column(String(12), index=True, nullable=False)   # critical|warning|info
+    fix_ticket_id = Column(String(32), nullable=True, index=True)  # admin fix ticket (optimize → ticket linkage, 08-19)
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
     interface = Column(String(128), nullable=True)
     title = Column(String(256), nullable=False)

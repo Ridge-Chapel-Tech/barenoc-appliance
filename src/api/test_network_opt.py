@@ -863,6 +863,43 @@ class FixabilityTest(unittest.TestCase):
         self.assertTrue(fx["fixable"])
         self.assertTrue(fx["suggested_action"])
 
+    # ── agent-foresight: risk-aware recommendations ─────────────────────
+
+    def test_high_risk_flag_on_port_vlan_uplink_rules(self):
+        for key in rules.HIGH_RISK_KEYS:
+            self.assertTrue(rules.fixability(key)["high_risk"], key)
+        # ssh/http/telnet management-plane fixes are safe (the brief's case)
+        for key in ("sec.ssh_exposed", "sec.http_mgmt_plaintext", "sec.telnet_exposed"):
+            self.assertFalse(rules.fixability(key)["high_risk"], key)
+
+    def test_high_risk_rules_carry_blast_radius_and_plan_note(self):
+        for key in rules.HIGH_RISK_KEYS:
+            fx = rules.fixability(key)
+            self.assertTrue((fx["blast_radius"] or "").strip(), key)
+            self.assertTrue((fx["plan_note"] or "").strip(), key)
+            # the suggested_action is risk-aware: blast radius + plan-first note
+            self.assertIn("PLAN FIRST", fx["suggested_action"], key)
+
+    def test_unnamed_uplink_never_changes_uplink(self):
+        fx = rules.fixability("hyg.unnamed_uplink_port")
+        self.assertIn("DO NOT CHANGE THE UPLINK", fx["suggested_action"].upper())
+
+    def test_port_no_profile_blast_radius_mentions_connected_devices(self):
+        fx = rules.fixability("hyg.port_no_profile")
+        self.assertIn("move", fx["blast_radius"].lower())
+        self.assertIn("verify", fx["suggested_action"].lower())
+
+    def test_ssh_http_rules_marked_safe(self):
+        for key in ("sec.ssh_exposed", "sec.http_mgmt_plaintext", "sec.telnet_exposed"):
+            fx = rules.fixability(key)
+            self.assertTrue(fx["blast_radius"].lower().startswith("safe"), key)
+
+    def test_registry_annotated_with_risk(self):
+        for r in rules.RULES + rules.SNAPSHOT_RULES:
+            self.assertIn("high_risk", r, r["key"])
+            self.assertIn("blast_radius", r, r["key"])
+            self.assertIn("plan_note", r, r["key"])
+
 
 # ═══════════════════════════════ optimize API ═════════════════════════════
 
@@ -943,6 +980,20 @@ class OptimizeApiTest(unittest.TestCase):
         self.assertEqual({t.priority for t in tickets}, {"P2", "P3"})  # warning->P2, info->P3
         db.close()
 
+
+    def test_findings_linked_to_ticket_after_optimize(self):
+        """Optimize must write fix_ticket_id back to the findings (the 08-19
+        'still actionable after batch' bug) so the run detail stops offering
+        them."""
+        from models import Finding
+        r = self._post({"finding_ids": self.fixable_ids, "mode": "batched"})
+        self.assertEqual(r.status_code, 200, r.text)
+        db = SessionLocal()
+        ticket = db.query(Ticket).filter(Ticket.source == "optimize").first()
+        linked = db.query(Finding).filter(Finding.id.in_(self.fixable_ids)).all()
+        self.assertTrue(all(f.fix_ticket_id == ticket.ticket_id for f in linked))
+        db.close()
+
     def test_comment_embedded_and_run_ref_and_priority(self):
         r = self._post({"finding_ids": [self.fixable_ids[0]], "mode": "per_item",
                         "comments": {str(self.fixable_ids[0]): "Do it after hours"}})
@@ -976,6 +1027,40 @@ class OptimizeApiTest(unittest.TestCase):
         self.assertIn("Finding 2:", t.description)
         self.assertIn(f"#{self.run_id}", t.description)
         self.assertEqual(t.priority, "P2")   # highest selected severity wins
+        db.close()
+
+    def test_change_plan_artifact_in_ticket_description(self):
+        # f2 = hyg.unnamed_uplink_port (high-risk) — the ticket carries the
+        # pre-thought CHANGE PLAN: current -> proposed -> blast radius ->
+        # verification -> rollback (the 08-19 incident fix).
+        r = self._post({"finding_ids": [self.fixable_ids[1]], "mode": "per_item"})
+        self.assertEqual(r.status_code, 200, r.text)
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.source == "optimize").first()
+        desc = t.description or ""
+        self.assertIn("CHANGE PLAN", desc)
+        self.assertIn("Current state:", desc)
+        self.assertIn("Proposed change:", desc)
+        self.assertIn("Blast radius:", desc)
+        self.assertIn("Verification step:", desc)
+        self.assertIn("Rollback step:", desc)
+        # the high-risk blast radius for an unnamed uplink is explicit
+        self.assertIn("DO NOT CHANGE THE UPLINK", desc.upper())
+        notes = json.loads(t.work_notes or "[]")
+        self.assertTrue(any(n.get("event") == "change_plan" for n in notes))
+        db.close()
+
+    def test_safe_rule_blast_radius_still_has_plan(self):
+        # f1 = sec.firmware_outdated (not high-risk) — the change plan is still
+        # present, with the default "no port/VLAN/uplink" blast radius.
+        r = self._post({"finding_ids": [self.fixable_ids[0]], "mode": "per_item"})
+        self.assertEqual(r.status_code, 200, r.text)
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.source == "optimize").first()
+        desc = t.description or ""
+        self.assertIn("CHANGE PLAN", desc)
+        self.assertIn("Blast radius:", desc)
+        self.assertIn("does not change any port/VLAN/uplink", desc)
         db.close()
 
     def test_nonfixable_rejected(self):

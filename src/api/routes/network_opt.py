@@ -236,6 +236,8 @@ def run_detail(run_id: int, db: Session = Depends(get_db),
             "evidence": f.evidence or {},
             "fixable": fixability(f.finding_key)["fixable"],
             "suggested_action": fixability(f.finding_key)["suggested_action"],
+            "high_risk": fixability(f.finding_key)["high_risk"],
+            "fix_ticket_id": f.fix_ticket_id,
         } for f in findings],
     }
 

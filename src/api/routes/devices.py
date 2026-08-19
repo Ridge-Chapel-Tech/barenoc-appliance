@@ -7,7 +7,7 @@ from sqlalchemy import or_, and_
 from typing import Optional
 from datetime import datetime
 from database import get_db
-from models import Device, User
+from models import Device, User, is_customer
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
@@ -87,7 +87,7 @@ def device_control_key(ctx: dict = Depends(get_access_context)):
     what the Credentials modal stores so the runner can SSH in.
     """
     from auth import require_any_role
-    require_any_role("operator", "admin")(ctx["user"])
+    require_any_role("technician", "operator", "admin")(ctx["user"])
     from control_key import ensure_control_key
     return ensure_control_key()
 
@@ -163,7 +163,7 @@ def list_devices(
     ctx: dict = Depends(get_access_context),
 ):
     q = db.query(Device)
-    if ctx["user"].role == "tenant":
+    if is_customer(ctx["user"]):
         # Tenants see only the devices they own (adopted themselves).
         q = q.filter(Device.owner_id == ctx["user"].id)
     if device_type:
@@ -246,7 +246,7 @@ def _get_checked(db: Session, device_id: int, ctx: dict) -> Device:
     device = db.query(Device).filter(Device.id == device_id).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-    if ctx["user"].role == "tenant" and device.owner_id != ctx["user"].id:
+    if is_customer(ctx["user"]) and device.owner_id != ctx["user"].id:
         raise HTTPException(status_code=404, detail="Device not found")
     if not _group_ok(ctx, device.device_group):
         raise HTTPException(
@@ -286,7 +286,7 @@ def create_device(
         status="pending",
         claimed=device_data.claimed if device_data.claimed is not None else True,
         device_group=group,
-        owner_id=ctx["user"].id if ctx["user"].role == "tenant" else None,
+        owner_id=ctx["user"].id if is_customer(ctx["user"]) else None,
     )
     db.add(device)
     # Encrypt credentials before storing
@@ -331,7 +331,7 @@ def claim_device(
     device.device_group = group
     if config.channels:
         device.channels = _normalize_channels(config.channels)
-    if ctx["user"].role == "tenant":
+    if is_customer(ctx["user"]):
         # Tenant adoption: the device belongs to them (their view only).
         device.owner_id = ctx["user"].id
     device.updated_at = datetime.utcnow()
@@ -653,7 +653,7 @@ def device_adoption_status(device_id: int, db: Session = Depends(get_db),
                            ctx: dict = Depends(get_access_context)):
     """Adoption status for a device (none/enrolling/linked/revoked + method)."""
     from auth import require_any_role
-    require_any_role("operator", "admin", "agent")(ctx["user"])
+    require_any_role("technician", "operator", "admin", "agent")(ctx["user"])
     device = _get_checked(db, device_id, ctx)
     return _adoption_brief(device)
 
@@ -668,8 +668,8 @@ def adopt_with_cert(device_id: int, body: dict = None, db: Session = Depends(get
     (adoption completes). Body: {"ttl": 600 (seconds, optional)}.
     """
     from auth import require_any_role
-    if ctx["user"].role != "tenant":
-        require_any_role("operator", "admin", "agent")(ctx["user"])
+    if not is_customer(ctx["user"]):
+        require_any_role("technician", "operator", "admin", "agent")(ctx["user"])
     # Tenants adopt their own devices only — _get_checked enforces ownership.
     from audit import log_event
     device = _get_checked(db, device_id, ctx)
@@ -703,8 +703,8 @@ def revoke_adoption(device_id: int, db: Session = Depends(get_db),
     """Revoke adoption: the device is de-trusted immediately at the API layer
     (its report calls 403) and its short-TTL cert expires shortly after."""
     from auth import require_any_role
-    if ctx["user"].role != "tenant":
-        require_any_role("operator", "admin", "agent")(ctx["user"])
+    if not is_customer(ctx["user"]):
+        require_any_role("technician", "operator", "admin", "agent")(ctx["user"])
     from audit import log_event
     device = _get_checked(db, device_id, ctx)
     device.adoption_status = "revoked"

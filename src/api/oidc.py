@@ -145,12 +145,12 @@ def fetch_userinfo(cfg: dict, access_token: str) -> dict:
 
 
 def role_from_groups(cfg: dict, claims: dict) -> str:
-    """Map Pocket ID groups to a BareNOC role (admin > operator > readonly)."""
+    """Map Pocket ID groups to a BareNOC role (admin > technician > user)."""
     groups = claims.get("groups") or claims.get("group") or []
     if not isinstance(groups, list):
         groups = [groups]
     if any(g == cfg["group_admin"] for g in groups):
         return "admin"
     if any(g == cfg["group_operator"] for g in groups):
-        return "operator"
-    return "readonly"
+        return "technician"
+    return "user"

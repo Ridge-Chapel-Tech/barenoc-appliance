@@ -7,6 +7,8 @@ Run from src/agent:
 
 import os
 import sys
+import json
+import shutil
 import tempfile
 import threading
 import time
@@ -205,6 +207,109 @@ class SysCtxTest(unittest.TestCase):
         sysctx = runner._build_sysctx("Ticket: TKT-20260817-9400 updates")
         self.assertIn("Ticket context:", sysctx)
         self.assertIn("TKT-20260817-9400", sysctx)
+
+    def test_sysctx_infra_change_contract(self):
+        # agent-foresight: every port/VLAN/network/switch/gateway action must be
+        # plan-first + checkpointed, never an improvised write (the 08-19 incident).
+        sysctx = runner._build_sysctx("")
+        self.assertIn("INFRA-CHANGE CONTRACT", sysctx)
+        self.assertIn("ENUMERATE CURRENT STATE FIRST", sysctx)
+        self.assertIn("BLAST-RADIUS REASONING", sysctx)
+        self.assertIn("CAPTURE the full 'before' state", sysctx)
+        self.assertIn("ROLLBACK-ON-FAILURE", sysctx)
+        self.assertIn("NEVER change the ports carrying the appliance", sysctx)
+        self.assertIn("infra_checkpoint.py", sysctx)
+
+    def test_sysctx_checkpoint_dir_injected(self):
+        sysctx = runner._build_sysctx("", checkpoint_dir="/tmp/cp/TKT-1")
+        self.assertIn("CHECKPOINT DIRECTORY", sysctx)
+        self.assertIn("/tmp/cp/TKT-1", sysctx)
+
+
+class CheckpointRollbackTest(unittest.TestCase):
+    """Checkpoint + rollback mechanics: capture the full before-state, and on a
+    mid-flight timeout surface 'applied step N of M, rollback state at <path>'
+    with the restore command (never a half-applied mystery)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ckpt-")
+        self.orig = runner.CHECKPOINT_BASE
+        runner.CHECKPOINT_BASE = self.tmp
+
+    def tearDown(self):
+        runner.CHECKPOINT_BASE = self.orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_and_read_checkpoint_roundtrip(self):
+        state = {"switch_mac": "aa:bb:cc:dd:ee:01",
+                 "ports": [{"port_idx": 6, "native_network_id": "x",
+                            "tagged_network_ids": ["y"]}]}
+        path = runner._write_checkpoint("TKT-CKPT-1", state, step=2, total=5)
+        self.assertTrue(os.path.exists(path))
+        cp = runner._read_checkpoint("TKT-CKPT-1")
+        self.assertEqual(cp["state"], state)
+        self.assertEqual(cp["step"], 2)
+        self.assertEqual(cp["total"], 5)
+
+    def test_rollback_hint_reports_step_of_total(self):
+        runner._write_checkpoint("TKT-CKPT-2", {"ports": []}, step=2, total=5)
+        hint = runner._rollback_hint("TKT-CKPT-2")
+        self.assertIn("applied step 2 of 5, rollback state at", hint["message"])
+        self.assertTrue(os.path.exists(hint["checkpoint"]))
+        self.assertIn("infra_checkpoint.py restore", hint["restore_command"])
+
+    def test_rollback_hint_without_checkpoint(self):
+        hint = runner._rollback_hint("TKT-CKPT-NONE")
+        self.assertIsNone(hint["checkpoint"])
+        self.assertIn("no checkpoint captured", hint["message"])
+        self.assertIn("infra_checkpoint.py restore", hint["restore_command"])
+
+    def test_timeout_result_surfaces_checkpoint_and_restore(self):
+        runner._write_checkpoint("TKT-CKPT-3", {"ports": []}, step=3, total=9)
+        result = runner._timeout_result("TKT-CKPT-3", 600)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["timed_out"])
+        out = result["output"]
+        self.assertIn("applied step 3 of 9, rollback state at", out["message"])
+        self.assertTrue(os.path.exists(out["checkpoint"]))
+        self.assertIn("infra_checkpoint.py restore", out["restore"])
+
+
+class PiTimeoutReplayTest(unittest.TestCase):
+    """The 08-19 incident replay: pi times out mid-execution after capturing its
+    before-state -> the watchdog reports the checkpoint + restore state."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pi-replay-")
+        self.orig_ckpt = runner.CHECKPOINT_BASE
+        runner.CHECKPOINT_BASE = os.path.join(self.tmp, "checkpoints")
+        self.fake_pi = os.path.join(self.tmp, "fake-pi")
+        with open(self.fake_pi, "w") as f:
+            f.write("#!/bin/sh\nsleep 3\n")
+        os.chmod(self.fake_pi, 0o755)
+
+    def tearDown(self):
+        runner.CHECKPOINT_BASE = self.orig_ckpt
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_timeout_reports_checkpoint_and_restore(self):
+        # Simulate the agent: capture the before-state (step 2 of 5), then hang.
+        runner._write_checkpoint("TKT-REPLAY-1",
+                                 {"switch_mac": "aa:bb:cc:dd:ee:01",
+                                  "ports": [{"port_idx": 6,
+                                             "native_network_id": "production"}]},
+                                 step=2, total=5)
+        env = {"PI_AGENT_BIN": self.fake_pi,
+               "PI_AGENT_WORKDIR": os.path.join(self.tmp, "pi-work")}
+        with patch.dict(os.environ, env), patch("time.sleep", return_value=None):
+            result = runner._run_pi_task_impl(
+                "change port 6 native vlan", "", "TKT-REPLAY-1", timeout=1)
+        self.assertFalse(result["success"])
+        self.assertTrue(result.get("timed_out"))
+        out = result.get("output") or {}
+        self.assertIn("applied step 2 of 5, rollback state at", out.get("message", ""))
+        self.assertTrue(os.path.exists(out.get("checkpoint", "")))
+        self.assertIn("infra_checkpoint.py restore", out.get("restore", ""))
 
 
 class PiTaskDedupTest(unittest.TestCase):

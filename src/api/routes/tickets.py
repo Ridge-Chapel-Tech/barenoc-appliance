@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 import datetime
 import os
 from database import get_db
-from models import Ticket, Device, User
+from models import Ticket, Device, User, is_customer
 from schemas import TicketCreate, TicketUpdate, TicketResponse, generate_ticket_id
 from auth import get_current_user, get_access_context, require_any_role
 from worknotes import add_note
@@ -51,15 +51,37 @@ def _ellipsize(text: str, limit: int = PROGRESS_NOTE_MAX_CHARS) -> str:
     return cut.rstrip() + "…"
 
 
-def _tenant_scope(q, user):
-    """Tenants see only their own tickets (submitter == self)."""
-    if user.role == "tenant":
+def _customer_scope(q, user):
+    """Customers (user/tenant) see only their own tickets (submitter == self)."""
+    if is_customer(user):
         return q.filter(Ticket.submitter_id == user.id)
     return q
 
 
-def _tenant_owns(ticket, user) -> bool:
-    return user.role != "tenant" or (ticket.submitter_id == user.id)
+def _customer_owns(ticket, user) -> bool:
+    """Customers may only reach their own tickets; staff see all."""
+    return not is_customer(user) or (ticket.submitter_id == user.id)
+
+
+def _requester_name(db, ticket) -> str:
+    """Human name for the ticket's requester (the close-loop owner)."""
+    sub = db.query(User).filter(User.id == ticket.submitter_id).first() if ticket.submitter_id else None
+    return (sub.username or "the requester") if sub else "the requester"
+
+
+def _tech_in_scope(db, ticket, ctx) -> bool:
+    """A technician/operator may close a ticket only within their device-group
+    scope. Ungrouped (Home/default) devices are open to all; a grouped device
+    requires the matching Pocket ID group claim."""
+    if ticket.target_device_id is None:
+        return True
+    device = db.query(Device).filter(Device.id == ticket.target_device_id).first()
+    if device is None:
+        return True
+    g = (device.device_group or "default")
+    if g == "default":
+        return True
+    return g in (ctx.get("groups") or [])
 
 
 @router.get("")
@@ -76,7 +98,7 @@ def list_tickets(
         q = q.filter(Ticket.status == status)
     if priority:
         q = q.filter(Ticket.priority == priority)
-    q = _tenant_scope(q, user)
+    q = _customer_scope(q, user)
 
     total = q.count()
     tickets = q.order_by(func.datetime(Ticket.created_at).desc(), Ticket.id.desc()).offset(offset).limit(limit).all()
@@ -118,7 +140,7 @@ def get_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Depen
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if not _tenant_owns(ticket, user):
+    if not _customer_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
 
@@ -137,7 +159,7 @@ def ticket_status(ticket_id: str, db: Session = Depends(get_db),
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if not _tenant_owns(ticket, user):
+    if not _customer_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     return derive_status(ticket)
@@ -218,18 +240,39 @@ def update_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    # Tenants: own tickets only, and only close them (no re-prioritizing,
-    # no assignment, no editing the resolution).
-    if ctx["user"].role == "tenant":
+    role = ctx["user"].role
+    # Customers (user/tenant): own tickets only, and only close them (no
+    # re-prioritizing, no assignment, no editing the resolution). The
+    # requester is the SOLE owner of their close-loop.
+    if is_customer(ctx["user"]):
         if ticket.submitter_id != ctx["user"].id:
             raise HTTPException(status_code=404, detail="Ticket not found")
         if update.assigned_to is not None or update.priority is not None \
                 or update.resolution is not None:
             raise HTTPException(status_code=403,
-                                detail="Tenants can only close their own tickets")
+                                detail="Customers can only close their own tickets")
         if update.status is not None and update.status != "closed":
             raise HTTPException(status_code=403,
-                                detail="Tenants can only close their own tickets")
+                                detail="Customers can only close their own tickets")
+    elif role == "readonly":
+        # Read-only staff may view but never mutate tickets.
+        raise HTTPException(
+            status_code=403,
+            detail="Read-only accounts cannot modify tickets",
+        )
+
+    # Close-loop gate: the requester always closes their own ticket; admin
+    # closes anything; a technician/operator (non-requester) closes only
+    # within their device-group scope. A non-requester customer confirm is
+    # blocked above (404) — it never closes.
+    if (update.status == "closed" and not is_customer(ctx["user"]) \
+            and ctx["user"].role in ("technician", "operator") \
+            and ticket.submitter_id != ctx["user"].id):
+        if not _tech_in_scope(db, ticket, ctx):
+            raise HTTPException(
+                status_code=403,
+                detail="This ticket's target device is outside your device-group scope.",
+            )
 
     # Approving a control action on a grouped device requires a passkey-
     # authenticated (Pocket ID) operator with access to that device group.
@@ -282,7 +325,7 @@ def add_progress_note(
     ticket_id: str,
     note: "ProgressNote",
     db: Session = Depends(get_db),
-    user: User = Depends(require_any_role("operator", "admin", "agent")),
+    user: User = Depends(require_any_role("technician", "operator", "admin", "agent")),
 ):
     """Live 1-3 line status from the AI tech mid-task (agent_progress note).
     The runner relays the agent's progress while a long-running pi task works,
@@ -310,7 +353,7 @@ def add_ticket_note(
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if not _tenant_owns(ticket, user):
+    if not _customer_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     message = note.message.strip()
@@ -330,7 +373,7 @@ def retry_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Dep
     ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if not _tenant_owns(ticket, user):
+    if not _customer_owns(ticket, user):
         raise HTTPException(status_code=404, detail="Ticket not found")
     if ticket.status not in ("failed", "escalated"):
         raise HTTPException(status_code=400, detail="Can only retry failed or escalated tickets")

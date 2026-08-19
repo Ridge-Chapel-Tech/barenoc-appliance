@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import SessionLocal, init_db
-from models import Ticket, Device, User, AuditLog
+from models import Ticket, Device, User, AuditLog, is_tech
 from schemas import generate_ticket_id, generate_event_id
 from sanitizer import sanitize_ticket
 from action_validator import (
@@ -758,12 +758,12 @@ def _requester_name(db, ticket) -> str:
 
 
 def _can_close(ticket, user) -> bool:
-    """Requester or admin/operator/technician may close. A non-requester
-    (e.g. another tenant or a readonly user) gets routed to
+    """Requester or the technician tier/admin may close. A non-requester
+    (e.g. another customer or a readonly user) gets routed to
     'waiting on <requester> to verify'."""
     if user is None:
         return False
-    if user.role in ("admin", "operator"):
+    if is_tech(user):
         return True
     return ticket.submitter_id == user.id
 

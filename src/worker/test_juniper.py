@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 _TMP = tempfile.mkdtemp(prefix="juniper-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))  # api/
 
 from queue_status import is_paused, derive_status  # noqa: E402
 from database import SessionLocal, init_db  # noqa: E402
-from models import User, ChatMessage, Ticket, AuditLog  # noqa: E402
+from models import User, ChatMessage, Ticket, AuditLog, PendingAction  # noqa: E402
 import juniper  # noqa: E402
 
 
@@ -314,7 +315,9 @@ class CloseDirectiveHandlerTest(unittest.TestCase):
                           hashed_password="x", role="tenant", is_active=True)
         self.op = User(username="op", display_name="Operator",
                        hashed_password="x", role="operator", is_active=True)
-        db.add_all([self.bot, self.owner, self.other, self.op])
+        self.tech = User(username="tech", display_name="Tech",
+                         hashed_password="x", role="technician", is_active=True)
+        db.add_all([self.bot, self.owner, self.other, self.op, self.tech])
         db.commit()
         db.close()
 
@@ -364,15 +367,22 @@ class CloseDirectiveHandlerTest(unittest.TestCase):
         self.assertEqual(self._ticket("TKT-20260816-0002").status, "closed")
         self.assertEqual(self._ticket("TKT-20260816-0001").status, "open")
 
-    def test_non_owner_denied(self):
+    def test_non_owner_customer_confirm_routed_to_requester(self):
         self._make_ticket("owner", "TKT-20260816-0001")
         text = self._run("close TKT-20260816-0001", "other")
-        self.assertIn("only the ticket owner or an operator", text)
+        self.assertIn("waiting on", text.lower())
+        self.assertIn("owner", text)
         self.assertEqual(self._ticket("TKT-20260816-0001").status, "open")
 
     def test_operator_can_close_others_ticket(self):
         self._make_ticket("owner", "TKT-20260816-0001")
         text = self._run("close TKT-20260816-0001", "op")
+        self.assertEqual(text, "Done — TKT-20260816-0001 is closed.")
+        self.assertEqual(self._ticket("TKT-20260816-0001").status, "closed")
+
+    def test_technician_can_close_others_ticket(self):
+        self._make_ticket("owner", "TKT-20260816-0001")
+        text = self._run("close TKT-20260816-0001", "tech")
         self.assertEqual(text, "Done — TKT-20260816-0001 is closed.")
         self.assertEqual(self._ticket("TKT-20260816-0001").status, "closed")
 
@@ -398,6 +408,169 @@ class CloseDirectiveHandlerTest(unittest.TestCase):
         db.close()
         self.assertIsNotNone(ev)
         self.assertEqual(ev.actor, "juniper")
+
+
+class PendingItemsContextTest(unittest.TestCase):
+    """Role-aware pending-items context + per-user front-desk isolation."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(PendingAction).delete()
+        db.query(Ticket).delete()
+        db.query(User).delete()
+        db.commit()
+        self.bot = User(username="juniper", display_name="Juniper",
+                        hashed_password="x", role="admin", is_active=True, is_bot=True)
+        self.alice = User(username="alice", display_name="Alice",
+                          hashed_password="x", role="user", is_active=True)
+        self.bob = User(username="bob", display_name="Bob",
+                        hashed_password="x", role="user", is_active=True)
+        self.tech = User(username="tech", display_name="Tech",
+                         hashed_password="x", role="technician", is_active=True)
+        self.admin = User(username="admin2", display_name="Admin",
+                          hashed_password="x", role="admin", is_active=True)
+        db.add_all([self.bot, self.alice, self.bob, self.tech, self.admin])
+        db.commit()
+        db.close()
+
+    def _ticket(self, submitter_username, status, ticket_id):
+        db = SessionLocal()
+        sub = db.query(User).filter(User.username == submitter_username).first()
+        t = Ticket(ticket_id=ticket_id, title="test ticket", description="d",
+                   priority="P3", status=status, source="chat",
+                   submitter_id=sub.id, work_notes="[]")
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.close()
+        return t
+
+    def _pending(self, kind="approval", required_role="technician", status="pending"):
+        db = SessionLocal()
+        a = PendingAction(kind=kind, title="Firmware upgrade", detail="d",
+                          device_name="UCG", device_type="gateway",
+                          firmware_from="1.0", firmware_to="2.0",
+                          status=status, required_role=required_role, extra={})
+        db.add(a)
+        db.commit()
+        db.refresh(a)
+        db.close()
+        return a
+
+    def _user(self, username):
+        db = SessionLocal()
+        u = db.query(User).filter(User.username == username).first()
+        db.close()
+        return u
+
+    def _run(self, body, sender_username):
+        db = SessionLocal()
+        sender = db.query(User).filter(User.username == sender_username).first()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        msg = ChatMessage(from_user_id=sender.id, to_user_id=bot.id, body=body)
+        out = juniper.handle_message(db, bot, msg, sender)
+        text = out.body
+        db.close()
+        return text
+
+    def test_customer_pending_is_only_their_own(self):
+        self._ticket("alice", "customer_action", "TKT-20260818-0001")
+        ctx = juniper.pending_context(SessionLocal(), self._user("alice"))
+        self.assertIn("TKT-20260818-0001", ctx)
+        ctx_bob = juniper.pending_context(SessionLocal(), self._user("bob"))
+        self.assertNotIn("TKT-20260818-0001", ctx_bob)
+
+    def test_customer_never_sees_other_users_items(self):
+        # alice has an awaiting ticket; bob must never see it in his context.
+        self._ticket("alice", "customer_action", "TKT-20260818-0001")
+        p = juniper.pending_items(SessionLocal(), self._user("bob"))
+        self.assertEqual(p["tickets_awaiting_verification"], [])
+        self.assertEqual(p["escalations"], [])
+        self.assertEqual(p["firmware_approvals"], [])
+
+    def test_tech_sees_escalations_and_approvals_when_visible(self):
+        self._ticket("alice", "escalated", "TKT-20260818-0002")
+        pa = self._pending(kind="approval", required_role="technician")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            p = juniper.pending_items(SessionLocal(), self._user("tech"))
+        self.assertEqual([e.ticket_id for e in p["escalations"]], ["TKT-20260818-0002"])
+        self.assertEqual([a.id for a in p["firmware_approvals"]], [pa.id])
+
+    def test_tech_visibility_off_hides_firmware_but_keeps_escalations(self):
+        self._ticket("alice", "escalated", "TKT-20260818-0002")
+        self._pending(kind="approval", required_role="technician")
+        with patch("llm_providers.read_env_file", return_value={}):
+            p = juniper.pending_items(SessionLocal(), self._user("tech"))
+        self.assertEqual([e.ticket_id for e in p["escalations"]], ["TKT-20260818-0002"])
+        self.assertEqual(p["firmware_approvals"], [])
+
+    def test_gateway_approval_admin_only_regardless(self):
+        pa = self._pending(kind="approval", required_role="admin")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            p_tech = juniper.pending_items(SessionLocal(), self._user("tech"))
+        self.assertEqual(p_tech["firmware_approvals"], [])
+        p_admin = juniper.pending_items(SessionLocal(), self._user("admin2"))
+        self.assertEqual([a.id for a in p_admin["firmware_approvals"]], [pa.id])
+
+    def test_greeting_includes_summary_lines(self):
+        self._ticket("alice", "customer_action", "TKT-20260818-0001")
+        g = juniper.front_desk_greeting(SessionLocal(), self._user("alice"))
+        self.assertIn("1 ticket(s) awaiting your verification", g)
+
+    def test_greeting_tech_includes_escalation_and_approval_counts(self):
+        self._ticket("alice", "escalated", "TKT-20260818-0002")
+        self._pending(kind="approval", required_role="technician")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            g = juniper.front_desk_greeting(SessionLocal(), self._user("tech"))
+        self.assertIn("1 escalation(s) requiring review", g)
+        self.assertIn("1 pending action approval(s) in your scope", g)
+
+    def test_handle_message_pending_lists_items(self):
+        self._ticket("alice", "customer_action", "TKT-20260818-0001")
+        text = self._run("pending", "alice")
+        self.assertIn("TKT-20260818-0001", text)
+
+    def test_approve_pending_action(self):
+        pa = self._pending(kind="approval", required_role="technician")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            text = self._run(f"approve #{pa.id}", "tech")
+        self.assertIn("Approved", text)
+        db = SessionLocal()
+        self.assertEqual(db.query(PendingAction).get(pa.id).status, "approved")
+        db.close()
+
+    def test_approve_denied_without_visibility(self):
+        pa = self._pending(kind="approval", required_role="technician")
+        with patch("llm_providers.read_env_file", return_value={}):
+            text = self._run(f"approve #{pa.id}", "tech")
+        self.assertIn("outside your scope", text)
+        db = SessionLocal()
+        self.assertEqual(db.query(PendingAction).get(pa.id).status, "pending")
+        db.close()
+
+    def test_approve_gateway_denied_for_tech(self):
+        pa = self._pending(kind="approval", required_role="admin")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            text = self._run(f"approve #{pa.id}", "tech")
+        self.assertIn("outside your scope", text)
+
+    def test_resolve_escalation(self):
+        pa = self._pending(kind="escalation", required_role="technician")
+        with patch("llm_providers.read_env_file",
+                   return_value={"FIRMWARE_TECH_VISIBILITY": "true"}):
+            text = self._run(f"resolve #{pa.id}", "tech")
+        self.assertIn("Resolved", text)
+        db = SessionLocal()
+        self.assertEqual(db.query(PendingAction).get(pa.id).status, "resolved")
+        db.close()
 
 
 if __name__ == "__main__":

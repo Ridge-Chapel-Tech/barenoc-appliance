@@ -6,7 +6,7 @@ Settings is **admin-only**; other roles see their own pages but not these tabs.
 | Tab | What you configure | Details |
 |-----|--------------------|---------|
 | **General** | Site ID, customer name, timezone, discovery subnets, parallel jobs, device groups, assistant names, desktop chat | [Getting Started](/wiki/getting-started) |
-| **Users** | Accounts, roles (admin / operator / read-only), password resets | [Getting Started](/wiki/getting-started) |
+| **Users** | Accounts, roles (admin / technician / user), password resets | [Getting Started](/wiki/getting-started) |
 | **API Keys** | LLM providers (chain + failover) and the **Autonomy Policy** | [Autonomy Policy](/wiki/autonomy) |
 | **Email** | SMTP, alert recipients, morning digest + EOD summary, test sends | [Reports & KPIs](/wiki/reports) |
 | **UniFi** | Controller URL + credentials, auto-sync, auto-adopt | [Network Discovery](/wiki/discovery) |

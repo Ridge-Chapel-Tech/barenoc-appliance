@@ -7,7 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import get_db
-from models import User
+from models import User, ROLE_LEVELS
 
 SECRET_KEY = os.getenv("JWT_SECRET", "change-this-to-a-random-secret")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
@@ -119,11 +119,15 @@ def _resolve_token_user(
 
 
 def require_role(role: str):
-    """Dependency factory: require specific role."""
+    """Dependency factory: require a role at or above the given tier.
+
+    Tiers (models.ROLE_LEVELS): admin > technician/operator > readonly >
+    user/tenant > agent. The technician tier therefore passes every
+    ``require_role("operator")`` gate automatically.
+    """
     def role_checker(user: User = Depends(get_current_user)):
-        roles = {"admin": 3, "operator": 2, "readonly": 1, "tenant": 0}
-        required = roles.get(role, 0)
-        actual = roles.get(user.role, 0)
+        required = ROLE_LEVELS.get(role, 0)
+        actual = ROLE_LEVELS.get(user.role, 0)
         if actual < required:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

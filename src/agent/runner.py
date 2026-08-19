@@ -1006,10 +1006,138 @@ _ACTIVE_PI_TICKETS = set()
 _ACTIVE_PI_LOCK = threading.Lock()
 
 
-def _build_sysctx(context: str = "") -> str:
+# ── Checkpoint + rollback (agent-foresight — never a half-applied mystery) ──
+# The 08-19 incident: pi timed out mid-execution after half-applying UniFi
+# port_overrides (port natives cleared, overrides trimmed, the .4.x segment
+# stranded). Fix: every infra change captures a checkpoint of the FULL
+# before-state, and a mid-flight timeout reports "applied step N of M, rollback
+# state at <path>" with the restore command — never a half-applied mystery.
+
+CHECKPOINT_BASE = os.getenv("PI_AGENT_CHECKPOINT_DIR",
+                            os.path.join(BASE, "pi-work", "checkpoints"))
+RESTORE_SCRIPT = "/opt/barenoc/scripts/infra_checkpoint.py"
+
+
+def _checkpoint_dir(ticket_id: str) -> str:
+    return os.path.join(CHECKPOINT_BASE, (ticket_id or "unknown"))
+
+
+def _checkpoint_file(ticket_id: str) -> str:
+    return os.path.join(_checkpoint_dir(ticket_id), "checkpoint.json")
+
+
+def _write_checkpoint(ticket_id: str, state, step=None, total=None) -> str:
+    """Capture the full before-state to a checkpoint file. `state` is the
+    complete port_overrides array (+ native/tagged assignments) the agent read
+    BEFORE any change. Returns the checkpoint path."""
+    d = _checkpoint_dir(ticket_id)
+    os.makedirs(d, exist_ok=True)
+    doc = {
+        "ticket_id": ticket_id,
+        "captured_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "state": state,
+    }
+    if step is not None:
+        doc["step"] = step
+    if total is not None:
+        doc["total"] = total
+    path = _checkpoint_file(ticket_id)
+    with open(path, "w") as f:
+        json.dump(doc, f, indent=2)
+    return path
+
+
+def _read_checkpoint(ticket_id: str) -> "dict | None":
+    try:
+        with open(_checkpoint_file(ticket_id)) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _rollback_hint(ticket_id: str) -> dict:
+    """What a mid-flight timeout should surface: where the agent stopped, the
+    checkpoint path, and the restore command. The incident-replay shape:
+    'applied step N of M, rollback state at <path>'."""
+    cp = _read_checkpoint(ticket_id)
+    path = _checkpoint_file(ticket_id)
+    restore_cmd = f"python3 {RESTORE_SCRIPT} restore --checkpoint {path}"
+    if cp:
+        step = cp.get("step")
+        total = cp.get("total")
+        if step is not None and total is not None:
+            message = f"applied step {step} of {total}, rollback state at {path}"
+        elif step is not None:
+            message = f"applied step {step}, rollback state at {path}"
+        else:
+            message = f"checkpoint captured, rollback state at {path}"
+        return {"checkpoint": path, "step": step, "total": total,
+                "message": message, "restore_command": restore_cmd}
+    return {"checkpoint": None, "step": None, "total": None,
+            "message": ("no checkpoint captured before the timeout — a human "
+                        "must inspect the device state before continuing"),
+            "restore_command": restore_cmd}
+
+
+def _timeout_result(ticket_id: str, timeout: int) -> dict:
+    """The result for a mid-flight pi timeout: where it stopped, the checkpoint
+    path, and the restore command — the 08-19 incident replay shape."""
+    hint = _rollback_hint(ticket_id)
+    logger.warning(f"Ticket {ticket_id}: pi timed out mid-execution "
+                   f"after {timeout}s; {hint['message']}")
+    return {"success": False, "timed_out": True,
+            "error": f"pi timed out mid-execution ({timeout}s)",
+            "output": {"checkpoint": hint["checkpoint"],
+                       "step": hint["step"],
+                       "total": hint["total"],
+                       "message": hint["message"],
+                       "restore": hint["restore_command"]}}
+
+
+# The INFRA-CHANGE CONTRACT — hard rules for any port/VLAN/network/switch/
+# gateway action. Kept as one constant so the sysctx builder and the tests
+# assert the SAME text.
+INFRA_CHANGE_CONTRACT = (
+    "INFRA-CHANGE CONTRACT (port/VLAN/network/switch/gateway actions — HARD RULES):\n"
+    "- ENUMERATE CURRENT STATE FIRST: before ANY change, read the FULL current state — "
+    "the complete port_overrides array (bash /opt/barenoc/scripts/unifi_ports.sh <switch_mac>), "
+    "what is connected per port, which ports are uplinks, and where the appliance + "
+    "management ride. Never guess a port's role.\n"
+    "- BLAST-RADIUS REASONING: identify what could break BEFORE acting — downstream "
+    "devices, the management plane, or the appliance itself. State it in the ticket work "
+    "notes (auditable reasoning). Never strand the network the appliance manages.\n"
+    "- PLAN -> CAPTURE-BEFORE -> VERIFIED STEPS -> ROLLBACK-ON-FAILURE:\n"
+    "  1. CAPTURE the full 'before' state (the complete port_overrides array + native/tagged "
+    "assignments) to the checkpoint file BEFORE any change. Never write a partial array "
+    "(replace-array semantics).\n"
+    "  2. Apply ONE change, then VERIFY (the device re-informs / the path stays up), then "
+    "the next change.\n"
+    "  3. On ANY verification failure, RESTORE the captured state automatically and report "
+    "what happened.\n"
+    "- NEVER change the ports carrying the appliance, the gateway uplink, or a management "
+    "path without explicit reasoning AND a plan covering the fallback.\n"
+    "Checkpoint helper: python3 /opt/barenoc/scripts/infra_checkpoint.py capture <switch_mac> "
+    "[--checkpoint DIR] [--step N] [--total M] writes the before-state; "
+    "python3 /opt/barenoc/scripts/infra_checkpoint.py restore --checkpoint <path> rolls back."
+)
+
+
+def _checkpoint_block(checkpoint_dir: str) -> str:
+    """The per-run checkpoint directory, injected into the sysctx so the agent
+    writes its before-state captures where the runner can surface them."""
+    if not checkpoint_dir:
+        return ""
+    return (f"CHECKPOINT DIRECTORY (this run): {checkpoint_dir}\n"
+            "- Write every before-state capture to a file under this directory BEFORE each "
+            "change (e.g. infra_checkpoint.py capture). The runner reads the newest "
+            "checkpoint here if you time out and reports the rollback state.")
+
+
+def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
     """The pi system context: operations guide + hard rules + ticket context.
     One function so tests can assert the script guidance and the 'not yours'
-    creds line stay intact."""
+    creds line stay intact. The INFRA-CHANGE CONTRACT (agent-foresight) rides
+    here so every port/VLAN/network action is plan-first + checkpointed."""
     sysctx = (
         "You are Lily, the BareNOC network operations assistant, working an autonomous "
         "ticket session with FULL tool access (bash, file reads, the UniFi controller "
@@ -1075,8 +1203,12 @@ def _build_sysctx(context: str = "") -> str:
         "these, decline and explain that self-protection forbids it.\n"
         "- If you truly cannot complete the request, say exactly what is missing or "
         "blocking you so a human can help.\n"
-        "- Do not invent data: report only what your tools actually returned."
+        "- Do not invent data: report only what your tools actually returned.\n\n"
+        + INFRA_CHANGE_CONTRACT
     )
+    cp_block = _checkpoint_block(checkpoint_dir)
+    if cp_block:
+        sysctx += "\n\n" + cp_block
     if context:
         sysctx += "\n\nTicket context:\n" + context[:6000]
     return sysctx
@@ -1116,7 +1248,9 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
     session_dir = os.path.join(workdir, "sessions", ticket_id)
     os.makedirs(session_dir, exist_ok=True)
     cfg = _pi_provider_config()
-    sysctx = _build_sysctx(context)
+    cdir = _checkpoint_dir(ticket_id)
+    os.makedirs(cdir, exist_ok=True)
+    sysctx = _build_sysctx(context, checkpoint_dir=cdir)
 
     def run_once(provider, model, api_key, session_subdir, label):
         sdir = os.path.join(workdir, "sessions", session_subdir)
@@ -1141,6 +1275,7 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
         cap = 15
         tone = _ProgressTone(ticket_id)
         deadline = time.time() + timeout
+        timed_out = False
         while time.time() < deadline and proc.poll() is None:
             now = time.time()
             try:
@@ -1192,15 +1327,23 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
                 pass
             time.sleep(4)
 
+        # A still-running proc once the deadline has passed = a mid-flight
+        # timeout (the 08-19 incident). The checkpoint + rollback state must
+        # surface instead of a half-applied mystery.
+        if proc.poll() is None and time.time() >= deadline:
+            timed_out = True
         try:
             out, err = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
             out, err = proc.communicate()
+            timed_out = True
         out = (out or "").strip()
         err = (err or "").strip()
         if proc.returncode == 0 and out:
             return {"success": True, "output": {"response": out[:20000]}}
+        if timed_out:
+            return _timeout_result(ticket_id, timeout)
         return {"success": False,
                 "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
 

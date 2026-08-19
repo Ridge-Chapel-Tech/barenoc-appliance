@@ -15,6 +15,50 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.19.a] — 2026-08-19
+
+### Added
+- **Agent foresight for infra changes** (the 08-19 Optimize-rollout incident fix):
+  risk-aware recommendations + an execution contract + checkpoint/rollback so a
+  port/VLAN/network change is planned and verified, never half-applied.
+  - `network_opt_rules.py`: every fixable rule now carries `high_risk` +
+    `blast_radius` + `plan_note` metadata; port/VLAN/uplink-changing rules are
+    flagged high-risk and their `suggested_action` includes the blast radius and
+    a plan-first note (e.g. unnamed uplink → "do not change the uplink";
+    port with no network → "assigning a native will move connected devices —
+    plan + verify"; ssh/http → safe).
+  - `netopt_tickets.py`: Optimize tickets now embed a **CHANGE PLAN** artifact
+    per finding (current state → proposed change → blast radius → verification
+    step → rollback step) + a `change_plan` work note, so the ticket arrives
+    pre-thought.
+  - `src/agent/runner.py`: the pi sysctx gains an **INFRA-CHANGE CONTRACT**
+    (enumerate current state first → blast-radius reasoning → capture-before →
+    one-change-verify → rollback-on-failure; never change the appliance/uplink/
+    management ports without reasoning + a fallback plan). A mid-flight timeout
+    now reports "applied step N of M, rollback state at <path>" with the restore
+    command instead of a half-applied mystery.
+  - `src/scripts/infra_checkpoint.py` (new): capture/restore the full before-state
+    of a UniFi switch's port table via the merge-safe appliance API.
+- **Three-tier roles + requester-owned close-loop (P1)** — `user` (customer) /
+  `technician` / `admin` roles with additive migration on the existing
+  `profiles.role` column (`operator` stays a legacy alias for technician,
+  `tenant` for user; `readonly` = read-only staff; `agent` = service identity).
+  Signup/self-registration defaults to `user`; admins change roles in
+  Settings → Users (the role picker now offers User / Technician / Admin).
+  Requester-owned verification: a ticket's close-loop is requester-gated —
+  requester closes their own, technician closes within their device-group
+  scope, admin closes anything; a non-requester customer confirm is routed to
+  "waiting on <requester> to verify" (Juniper + API enforcement).
+- **Per-user Juniper front desk + pending-items context** — the front-desk DM is
+  keyed to the authenticated user (no shared thread) and Juniper's greeting
+  surfaces that user's own pending items role-aware: "You have N ticket(s)
+  awaiting your verification" for everyone; "+ N escalation(s) requiring
+  review" and "+ N pending action approvals in your scope" for the technician
+  tier/admin (firmware visibility gated by `FIRMWARE_TECH_VISIBILITY`;
+  gateway approvals admin-only). New chat intents: "pending" (list),
+  "approve #<id>" / "resolve #<id>" (act on firmware pending items per role).
+
+
 ## [2026.08.18.h] — 2026-08-18
 
 ### Added

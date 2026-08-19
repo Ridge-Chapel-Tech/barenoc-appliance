@@ -228,6 +228,19 @@ def init_db():
             ))
     except OperationalError:
         pass  # Tables/indexes already exist
+    # Migration: findings.fix_ticket_id (optimize → ticket linkage, 08-19) —
+    # a finding that has a fix ticket must stop showing as actionable. Guarded
+    # ALTER + index (idempotent).
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE findings ADD COLUMN fix_ticket_id VARCHAR(32)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_findings_fix_ticket_id ON findings(fix_ticket_id)"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: metrics (telemetry backbone, P0). NEW table — create_all above
     # already creates it; the guarded CREATEs are idempotent belt-and-suspenders
     # no-ops. KEEP IN SYNC with models.Metric.

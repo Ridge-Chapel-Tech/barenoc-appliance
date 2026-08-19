@@ -18,7 +18,7 @@ class UserCreate(BaseModel):
     username: str
     email: Optional[str] = None
     password: str
-    role: str = "operator"
+    role: str = "user"  # signup default = customer tier
     display_name: Optional[str] = None
     must_change_password: bool = True  # temp passwords should be changed on first login
 
@@ -43,10 +43,13 @@ def list_users(db: Session = Depends(get_db), user: User = Depends(require_role(
     return result
 
 
+VALID_ROLES = ("admin", "technician", "operator", "readonly", "user", "tenant", "agent")
+
+
 @router.post("", status_code=201)
 def create_user(data: UserCreate, db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
-    if data.role not in ("admin", "operator", "readonly", "tenant"):
-        raise HTTPException(status_code=400, detail="Invalid role. Use admin, operator, readonly, tenant, or agent")
+    if data.role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role. Use admin, technician, user, operator, readonly, tenant, or agent")
     # case-insensitive: store usernames lowercase, uniqueness is case-insensitive
     username = data.username.strip().lower()
     existing = db.query(User).filter(func.lower(User.username) == username).first()
@@ -75,7 +78,7 @@ def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), u
         raise HTTPException(status_code=404, detail="User not found")
 
     if data.role is not None:
-        if data.role not in ("admin", "operator", "readonly", "tenant", "agent"):
+        if data.role not in VALID_ROLES:
             raise HTTPException(status_code=400, detail="Invalid role")
         target.role = data.role
     if data.email is not None:

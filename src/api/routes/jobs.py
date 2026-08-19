@@ -210,7 +210,7 @@ class JobResult(BaseModel):
 
 @router.post("/result")
 def report_job_result(result: JobResult, db: Session = Depends(get_db),
-                      user: User = Depends(require_any_role("operator", "admin", "agent"))):
+                      user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     """Called by the Pi Agent Runner to report job execution results.
     Requires an authenticated operator+, admin, or the agent service account
     (the runner's identity)."""

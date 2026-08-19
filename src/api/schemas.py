@@ -15,7 +15,7 @@ class LoginRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    """Tenant self-registration (first login = admin; everyone after = tenant)."""
+    """Self-registration (first login = admin; everyone after = user)."""
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=8, max_length=128)
     email: Optional[str] = None

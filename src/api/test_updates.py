@@ -193,7 +193,7 @@ class ProgressConfirmationTest(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="updates-fresh-")
         with open(os.path.join(tmp, "status.json"), "w") as f:
             json.dump({"current": "2026.08.17.a",
-                       "checked_at": "2026-08-18T22:11:50.282275+00:00"}, f)
+                       "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}, f)
         with patch.object(updates, "STATUS_DIR", tmp), \
              patch.object(updates, "_current_version", return_value="2026.08.17.a"):
             st = updates.update_status(SimpleNamespace(username="admin"))

@@ -36,8 +36,8 @@ so a designated laptop keeps management access whether it's cabled or on wifi
 - **Service account** — the Pi Agent Runner/scripts/scheduler use a dedicated
   `agent` role (Settings-provisioned credential file `0600`): it can fetch
   device credentials and run the UniFi write endpoints it needs, but is NOT
-  admin and NOT operator (human staff with operator accounts cannot fetch
-  decrypted SSH keys).
+  admin and NOT a technician (human staff with technician/operator accounts
+  cannot fetch decrypted SSH keys).
 - The **pi-agent provider key** is kept in a dedicated secrets file
   (`/opt/barenoc/volumes/secrets/llm_provider.json`, `0640 root:pi-agent`),
   rewritten by the API whenever Settings change and at startup — so the
@@ -71,7 +71,7 @@ With Pocket ID enabled, the login page offers **Sign in with passkey**:
 1. Admin enables Identity in Settings and registers the OIDC app.
 2. Users enroll a passkey on first login — **save your recovery codes**.
 3. Role comes from the Pocket ID group at every login
-   (`barenoc-admins` → admin, `barenoc-operators` → operator).
+   (`barenoc-admins` → admin, `barenoc-operators` → technician).
 
 ## Network hardening
 
