@@ -414,12 +414,14 @@ def collect_snmp(ip: str, community: str = "public", version: str = "2c") -> dic
         r = _run(args, timeout=8)
         return _parse_snmp_value(r["stdout"].strip()) if r["ok"] else None
 
-    descr = get(f"{_SNMP_BASE}.1.1.1.0")
+    # system group (1.3.6.1.2.1.1) — the trailing `.0` instance, NOT an extra
+    # `.1` before it (the 2026-08-18 wrong-OID bug). Aligned with telemetry.
+    descr = get(f"{_SNMP_BASE}.1.1.0")           # sysDescr   1.3.6.1.2.1.1.1.0
     if descr is None:
         return None  # no SNMP response
     out["sysdescr"] = str(descr)
-    out["sysname"] = get(f"{_SNMP_BASE}.1.1.5.0")
-    up = get(f"{_SNMP_BASE}.1.1.3.0")
+    out["sysname"] = get(f"{_SNMP_BASE}.1.5.0")  # sysName    1.3.6.1.2.1.1.5.0
+    up = get(f"{_SNMP_BASE}.1.3.0")              # sysUpTime  1.3.6.1.2.1.1.3.0
     out["uptime_seconds"] = int(up / 100) if isinstance(up, int) and up > 0 else None
     # UCD-SNMP (Linux/Net-SNMP hosts only — Cisco/Juniper ignore these)
     load = get("1.3.6.1.4.1.2021.10.1.3.1")
@@ -479,6 +481,7 @@ def _snmp_walk_duplex(ip, community, version) -> dict:
         if not line or "=" not in line:
             continue
         oid, _, value = line.partition("=")
+        oid = oid.strip()  # no trailing space — '1 ' would create a phantom ifindex
         ifindex = oid.rsplit(".", 1)[-1]
         v = _parse_snmp_value(value.strip())
         if isinstance(v, int):
@@ -499,6 +502,7 @@ def _snmp_walk_highspeed(ip, community, version) -> dict:
         if not line or "=" not in line:
             continue
         oid, _, value = line.partition("=")
+        oid = oid.strip()  # no trailing space — '1 ' would create a phantom ifindex
         ifindex = oid.rsplit(".", 1)[-1]
         v = _parse_snmp_value(value.strip())
         if isinstance(v, int):

@@ -253,3 +253,126 @@ class Finding(Base):
     detail = Column(Text, nullable=True)
     evidence = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class MaintenanceWindow(Base):
+    """A low-impact LOCAL-time window during which scheduled firmware upgrades
+    may run. Reusable by other scheduled ops (same shape as the updates-schedule-v2
+    / netopt schedules): recurring (day/hour) or one-time (local ``when``), plus
+    a duration. ``timezone`` is a snapshot of TZ at creation for display; the
+    engine always evaluates in the appliance's current TZ.
+    """
+
+    __tablename__ = "maintenance_windows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)
+    mode = Column(String(16), default="recurring")   # recurring | onetime
+    day = Column(String(16), default="daily")        # recurring: daily | 0-6 (0=Sunday)
+    hour = Column(Integer, default=3)                # recurring: 0-23 LOCAL
+    duration_minutes = Column(Integer, default=60)
+    when = Column(String(32), default="")            # onetime: local 'YYYY-MM-DDTHH:MM'
+    enabled = Column(Boolean, default=True)
+    timezone = Column(String(64), default="")
+    created_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class DeviceFirmware(Base):
+    """Per-managed-device firmware state (UniFi-managed gear only in v1).
+
+    Keyed by MAC (the controller's identity) with an optional device_id link to
+    the appliance inventory. ``prestaged_version`` records a firmware the device
+    has already DOWNLOADED (pre-staged) but not yet applied — the upgrade engine
+    skips the cache step when it matches the target.
+    """
+
+    __tablename__ = "device_firmware"
+    __table_args__ = (UniqueConstraint("mac_address", name="uq_device_firmware_mac"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    mac_address = Column(String(17), nullable=False, index=True)
+    name = Column(String(128), nullable=True)
+    device_type = Column(String(32), default="unknown")   # gateway | switch | ap
+    model = Column(String(64), nullable=True)
+    ip = Column(String(45), nullable=True)
+    current_version = Column(String(64), default="")
+    previous_version = Column(String(64), default="")
+    available_version = Column(String(64), default="")
+    upgradeable = Column(Boolean, default=False)
+    online = Column(Boolean, default=False)
+    prestaged_version = Column(String(64), default="")
+    last_result = Column(String(16), default="")       # success | failed | rolled_back | skipped
+    last_upgrade_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class FirmwareUpgrade(Base):
+    """One firmware upgrade attempt/run record — history log AND in-flight
+    state machine memory (a container restart resumes a staged/upgrading/
+    verifying/rolling_back row instead of losing it).
+
+    ``durations`` is a JSON dict of stage -> seconds (plus 'total').
+    """
+
+    __tablename__ = "firmware_upgrades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    mac_address = Column(String(17), nullable=False, index=True)
+    device_name = Column(String(128), nullable=True)
+    device_type = Column(String(32), default="unknown")
+    from_version = Column(String(64), default="")
+    to_version = Column(String(64), default="")
+    window_id = Column(Integer, ForeignKey("maintenance_windows.id"), nullable=True)
+    status = Column(String(16), default="staging", index=True)
+    # staging | upgrading | verifying | rolling_back | success | rolled_back | failed | cancelled
+    stage_started_at = Column(DateTime, nullable=True)
+    stage_deadline = Column(DateTime, nullable=True)
+    verify_attempts = Column(Integer, default=0)
+    rollback_attempted = Column(Boolean, default=False)
+    durations = Column(JSON, default=dict)
+    error = Column(Text, nullable=True)
+    triggered_by = Column(String(16), default="auto")   # auto | approval | manual
+    started_at = Column(DateTime, default=datetime.datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class PendingAction(Base):
+    """Approvals + escalations queue — persisted actionable items with role
+    visibility. This is the DATA the roles-and-chat-context worker consumes
+    (Juniper surfaces it in chat; that worker owns presentation, we own data + API).
+
+    Visibility: admin sees all; the technician tier (operator today, a real
+    technician role later) sees non-admin items only when
+    FIRMWARE_TECH_VISIBILITY is on; gateway approvals are admin-only regardless
+    (required_role="admin").
+    """
+
+    __tablename__ = "pending_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(16), default="approval", index=True)   # approval | escalation
+    title = Column(String(256), nullable=False)
+    detail = Column(Text, nullable=True)
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    mac_address = Column(String(17), nullable=True)
+    device_name = Column(String(128), nullable=True)
+    device_type = Column(String(32), default="unknown")
+    firmware_from = Column(String(64), default="")
+    firmware_to = Column(String(64), default="")
+    status = Column(String(16), default="pending", index=True)
+    # pending | approved | deferred | resolved
+    auto = Column(Boolean, default=False)          # auto-approved (non-blocking notice)
+    required_role = Column(String(16), default="technician")   # minimum role to act
+    resolved_by = Column(String(64), nullable=True)
+    resolved_note = Column(Text, nullable=True)
+    extra = Column(JSON, default=dict)            # runbook, severity, window, etc.
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)

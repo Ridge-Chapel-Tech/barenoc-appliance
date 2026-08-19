@@ -55,6 +55,81 @@
     </div>
   </div>
 
+  <!-- Firmware (UniFi) — inventory, maintenance windows, approvals, history -->
+  <div id="firmware" class="mt-6 bg-white shadow rounded-lg p-6">
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <h2 class="text-lg font-medium text-gray-900">Firmware <span class="text-xs text-gray-400">(UniFi · APs → switches → gateway last)</span></h2>
+      <button onclick="fwRefresh()" class="rounded-md bg-barenoc-50 text-barenoc-700 px-3 py-1.5 text-xs hover:bg-barenoc-100">Refresh</button>
+    </div>
+
+    <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+      <div>
+        <label class="block text-xs text-gray-500">Autonomy</label>
+        <select id="fw-autonomy" class="mt-1 w-full rounded border px-2 py-1">
+          <option value="">Follow profile</option>
+          <option value="autonomous">Autonomous</option>
+          <option value="balanced">Balanced</option>
+          <option value="strict">Strict</option>
+          <option value="off">Off</option>
+        </select>
+        <div id="fw-effective" class="text-xs text-gray-400 mt-1"></div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500">Technician visibility</label>
+        <input id="fw-tech-vis" type="checkbox" class="mt-2 h-4 w-4">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500">Default window hour</label>
+        <input id="fw-win-hour" type="number" min="0" max="23" value="3" class="mt-1 w-full rounded border px-2 py-1">
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500">Window duration (min)</label>
+        <input id="fw-win-dur" type="number" min="1" max="1440" value="60" class="mt-1 w-full rounded border px-2 py-1">
+      </div>
+    </div>
+    <div class="mt-2"><button onclick="fwSaveSettings()" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs hover:bg-gray-200">Save settings</button></div>
+
+    <div class="mt-4 border-t pt-3">
+      <h3 class="text-sm font-medium text-gray-700">Maintenance windows</h3>
+      <div id="fw-windows" class="mt-2 space-y-1 text-sm"></div>
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <input id="fw-new-name" placeholder="window name" class="rounded border px-2 py-1">
+        <select id="fw-new-mode" class="rounded border px-1 py-1" onchange="fwNewMode()">
+          <option value="recurring">Recurring</option>
+          <option value="onetime">One-time</option>
+        </select>
+        <span id="fw-new-recurring">
+          <select id="fw-new-day" class="rounded border px-1 py-1">
+            <option value="daily">daily</option><option value="0">Sun</option><option value="1">Mon</option>
+            <option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option>
+            <option value="5">Fri</option><option value="6">Sat</option>
+          </select>
+          <input id="fw-new-hour" type="number" min="0" max="23" value="3" class="w-14 rounded border px-1 py-1">:00
+        </span>
+        <span id="fw-new-onetime" class="hidden">
+          <input id="fw-new-when" type="datetime-local" class="rounded border px-1 py-1">
+        </span>
+        <input id="fw-new-dur" type="number" min="1" max="1440" value="60" class="w-20 rounded border px-1 py-1">min
+        <button onclick="fwAddWindow()" class="rounded-md bg-barenoc-600 text-white px-2 py-1">Add</button>
+      </div>
+    </div>
+
+    <div class="mt-4 border-t pt-3">
+      <h3 class="text-sm font-medium text-gray-700">Inventory</h3>
+      <div id="fw-inventory" class="mt-2 text-sm"></div>
+    </div>
+
+    <div class="mt-4 border-t pt-3">
+      <h3 class="text-sm font-medium text-gray-700">Pending actions <span class="text-xs text-gray-400">(approvals + escalations)</span></h3>
+      <div id="fw-pending" class="mt-2 space-y-2 text-sm"></div>
+    </div>
+
+    <div class="mt-4 border-t pt-3">
+      <h3 class="text-sm font-medium text-gray-700">History</h3>
+      <div id="fw-history" class="mt-2 text-sm"></div>
+    </div>
+  </div>
+
   <!-- Host Resource Cards -->
   <div id="host-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
   <div id="unifi-firmware" class="mt-4 bg-white shadow rounded-lg p-5 hidden"></div>
@@ -380,8 +455,147 @@ async function loadSystem() {
 document.addEventListener('DOMContentLoaded', function() {
   loadSystem();
   updLoad();
+  fwLoad();
   setInterval(loadSystem, 15000);
+  setInterval(fwLoad, 30000);
 });
+
+// ── Firmware (UniFi) — inventory, windows, approvals, history ──
+async function fwFetch(path, opts) {
+  const r = await fetch('/api/v1/firmware' + path, Object.assign({
+    headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' }
+  }, opts || {}));
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + r.status)); }
+  return r.json();
+}
+function fwType(t) { return t === 'gateway' ? '🌐 gateway' : t === 'switch' ? '🔀 switch' : t === 'ap' ? '📶 AP' : esc(t || ''); }
+async function fwLoad() {
+  try {
+    const inv = await fwFetch('/inventory');
+    try {
+      const s = await fetch('/api/v1/settings/firmware', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+      if (s.ok) {
+        const sc = await s.json();
+        document.getElementById('fw-autonomy').value = sc.autonomy || '';
+        document.getElementById('fw-tech-vis').checked = !!sc.technician_visibility;
+        document.getElementById('fw-win-hour').value = sc.default_window_hour;
+        document.getElementById('fw-win-dur').value = sc.window_duration_min;
+        document.getElementById('fw-new-hour').value = sc.default_window_hour;
+        document.getElementById('fw-new-dur').value = sc.window_duration_min;
+        document.getElementById('fw-effective').textContent = 'effective: ' + (sc.effective_autonomy || '');
+      }
+    } catch (e) { /* settings not admin-visible — ignore */ }
+
+    const invEl = document.getElementById('fw-inventory');
+    if (!(inv.devices && inv.devices.length)) {
+      invEl.innerHTML = '<p class="text-gray-400">No UniFi-managed devices yet — configure UniFi in Settings and run a sync.</p>';
+    } else {
+      invEl.innerHTML = '<table class="w-full text-xs"><thead><tr class="text-left text-gray-400">'
+        + '<th>Device</th><th>Type</th><th>Current</th><th>Previous</th><th>Available</th><th>Last result</th></tr></thead><tbody>'
+        + inv.devices.map(function(d) { return '<tr class="border-t">'
+            + '<td class="py-1">' + esc(d.name || d.mac_address) + '</td>'
+            + '<td>' + fwType(d.device_type) + '</td>'
+            + '<td class="font-mono">' + esc(d.current_version || '—') + '</td>'
+            + '<td class="font-mono">' + esc(d.previous_version || '—') + '</td>'
+            + '<td class="font-mono">' + esc(d.available_version || '') + (d.upgradeable ? ' <span class="text-green-600">▲</span>' : '') + (d.prestaged ? ' <span class="text-blue-500">(staged)</span>' : '') + '</td>'
+            + '<td>' + esc(d.last_result || '—') + '</td>'
+          + '</tr>'; }).join('') + '</tbody></table>';
+    }
+
+    const w = await fwFetch('/windows');
+    const wel = document.getElementById('fw-windows');
+    if (!(w.windows && w.windows.length)) {
+      wel.innerHTML = '<p class="text-gray-400">No maintenance windows — add one below (upgrades only run inside a window).</p>';
+    } else {
+      wel.innerHTML = w.windows.map(function(win) {
+        var desc = win.mode === 'onetime' ? 'once at ' + esc(win.when)
+          : (win.day === 'daily' ? 'daily' : 'every ' + win.day) + ' at ' + String(win.hour).padStart(2, '0') + ':00';
+        return '<div class="flex items-center justify-between py-1 border-b">'
+          + '<span>' + esc(win.name) + ' <span class="text-xs text-gray-400">' + desc + ' · ' + win.duration_minutes + ' min · ' + esc(win.timezone || '') + (win.active_now ? ' <span class="text-green-600">● active</span>' : '') + '</span></span>'
+          + '<span class="text-xs"><button class="px-2 py-0.5 rounded ' + (win.enabled ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600') + '" onclick="fwToggleWindow(' + win.id + ')">' + (win.enabled ? 'enabled' : 'disabled') + '</button> '
+          + '<button class="px-2 py-0.5 rounded bg-red-50 text-red-700" onclick="fwDeleteWindow(' + win.id + ')">delete</button></span></div>';
+      }).join('');
+    }
+
+    const p = await fwFetch('/pending');
+    const pel = document.getElementById('fw-pending');
+    if (!(p.items && p.items.length)) {
+      pel.innerHTML = '<p class="text-gray-400">Nothing pending.</p>';
+    } else {
+      pel.innerHTML = p.items.map(function(a) {
+        var badge = a.kind === 'escalation' ? '<span class="text-red-600 font-medium">' + (a.severity || 'P1') + ' escalation</span>'
+          : (a.auto ? '<span class="text-gray-400">auto notice</span>' : '<span class="text-amber-600 font-medium">approval</span>');
+        var btns = '';
+        if (a.can_act) {
+          if (a.kind === 'approval' && (a.status === 'pending' || a.status === 'deferred')) {
+            btns += '<button class="px-2 py-0.5 rounded bg-green-600 text-white" onclick="fwAct(' + a.id + ',\'approve\')">approve</button> ';
+            btns += '<button class="px-2 py-0.5 rounded bg-gray-100" onclick="fwAct(' + a.id + ',\'defer\')">defer</button> ';
+            btns += '<button class="px-2 py-0.5 rounded bg-red-50 text-red-700" onclick="fwAct(' + a.id + ',\'escalate\')">escalate</button> ';
+          }
+          if (a.status !== 'resolved') btns += '<button class="px-2 py-0.5 rounded bg-gray-100" onclick="fwAct(' + a.id + ',\'resolve\')">resolve</button>';
+        }
+        return '<div class="border rounded p-2"><div class="flex items-center justify-between"><span>' + badge + ' · ' + esc(a.title) + '</span><span class="text-xs text-gray-400">' + esc(a.status) + '</span></div>'
+          + '<div class="text-xs text-gray-500 mt-1">' + esc(a.detail || '') + '</div>'
+          + (btns ? '<div class="mt-2 text-xs">' + btns + '</div>' : '') + '</div>';
+      }).join('');
+    }
+
+    const h = await fwFetch('/history?limit=15');
+    const hel = document.getElementById('fw-history');
+    if (!(h.upgrades && h.upgrades.length)) {
+      hel.innerHTML = '<p class="text-gray-400">No upgrades yet.</p>';
+    } else {
+      hel.innerHTML = h.upgrades.map(function(u) {
+        var badge = u.status === 'success' ? '<span class="text-green-600">success</span>'
+          : u.status === 'rolled_back' ? '<span class="text-amber-600">rolled back</span>'
+          : u.status === 'failed' ? '<span class="text-red-600">failed</span>'
+          : '<span class="text-gray-500">' + esc(u.status) + '</span>';
+        var dur = (u.durations && u.durations.total != null) ? u.durations.total + 's' : '—';
+        return '<div class="flex justify-between text-xs border-b py-1"><span>' + esc(u.device_name || u.mac_address) + ' <span class="font-mono">' + esc(u.from_version) + ' → ' + esc(u.to_version) + '</span> ' + badge + '</span><span class="text-gray-400">' + dur + '</span></div>';
+      }).join('');
+    }
+  } catch (e) { console.error('firmware:', e); }
+}
+async function fwRefresh() { try { await fwFetch('/refresh', { method: 'POST' }); } catch (e) { alert(e.message); } fwLoad(); }
+async function fwSaveSettings() {
+  try {
+    const r = await fetch('/api/v1/settings/firmware', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        autonomy: document.getElementById('fw-autonomy').value,
+        technician_visibility: document.getElementById('fw-tech-vis').checked,
+        default_window_hour: parseInt(document.getElementById('fw-win-hour').value),
+        window_duration_min: parseInt(document.getElementById('fw-win-dur').value)
+      })
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + r.status)); }
+    alert('saved'); fwLoad();
+  } catch (e) { alert(e.message); }
+}
+async function fwAddWindow() {
+  try {
+    var mode = document.getElementById('fw-new-mode').value;
+    var body = {
+      name: document.getElementById('fw-new-name').value, mode: mode,
+      day: document.getElementById('fw-new-day').value,
+      hour: parseInt(document.getElementById('fw-new-hour').value),
+      duration_minutes: parseInt(document.getElementById('fw-new-dur').value),
+      when: mode === 'onetime' ? document.getElementById('fw-new-when').value : '',
+      enabled: true
+    };
+    await fwFetch('/windows', { method: 'POST', body: JSON.stringify(body) });
+    document.getElementById('fw-new-name').value = '';
+    fwLoad();
+  } catch (e) { alert(e.message); }
+}
+async function fwToggleWindow(id) { try { await fwFetch('/windows/' + id + '/toggle', { method: 'POST', body: '{}' }); fwLoad(); } catch (e) { alert(e.message); } }
+async function fwDeleteWindow(id) { if (!confirm('Delete this maintenance window?')) return; try { await fwFetch('/windows/' + id, { method: 'DELETE' }); fwLoad(); } catch (e) { alert(e.message); } }
+async function fwAct(id, action) { try { await fwFetch('/pending/' + id + '/' + action, { method: 'POST', body: '{}' }); fwLoad(); } catch (e) { alert(e.message); } }
+function fwNewMode() {
+  document.getElementById('fw-new-recurring').classList.toggle('hidden', document.getElementById('fw-new-mode').value !== 'recurring');
+  document.getElementById('fw-new-onetime').classList.toggle('hidden', document.getElementById('fw-new-mode').value !== 'onetime');
+}
 
 async function exportSupportBundle() {
   var msg = document.getElementById('support-msg');

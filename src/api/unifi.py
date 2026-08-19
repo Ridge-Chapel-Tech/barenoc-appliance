@@ -148,7 +148,13 @@ class UniFiClient:
     # ── inventory ────────────────────────────────────────────────
 
     def get_devices(self) -> list:
-        """Get all managed UniFi network devices (gateways, switches, APs)."""
+        """Get all managed UniFi network devices (gateways, switches, APs).
+
+        Includes firmware fields the upgrade engine needs: current version,
+        previous version, available (upgrade-to) version, and upgradeable flag.
+        UniFi OS reports these under a few spellings across firmware lines, so
+        each is resolved defensively.
+        """
         result = self._stat("stat/device")
         if result and "data" in result:
             devices = []
@@ -162,7 +168,14 @@ class UniFiClient:
                     "model": d.get("model", ""),
                     "type": self._map_type(d.get("type", "")),
                     "status": "online" if d.get("state", 0) == 1 else "offline",
+                    "state": d.get("state", 0),
                     "version": d.get("version", ""),
+                    "previous_version": (d.get("previous_version")
+                                         or d.get("previous_firmware_version") or ""),
+                    "available_version": (d.get("upgrade_to_firmware")
+                                          or d.get("upgrade_version")
+                                          or d.get("upgrade_to_version") or ""),
+                    "upgradeable": bool(d.get("upgradeable")),
                     "uptime": d.get("uptime", 0),
                     "site": d.get("site_id", self.site),
                     "uplink_mac": up.get("uplink_mac", ""),
@@ -171,6 +184,13 @@ class UniFiClient:
                 })
             return devices
         return []
+
+    def get_device(self, mac: str) -> Optional[dict]:
+        """One managed device by MAC (the shape get_devices returns), or None."""
+        for d in self.get_devices():
+            if (d.get("mac") or "").lower() == (mac or "").lower():
+                return d
+        return None
 
     def get_raw_devices(self) -> Optional[list]:
         """Raw stat/device list (includes per-device port_table with up/media/
@@ -298,6 +318,34 @@ class UniFiClient:
         result = self._cmd("cmd/devmgr",
                            {"cmd": "restart", "mac": mac, "reboot_type": "soft"})
         return bool(result and result.get("meta", {}).get("rc") == "ok")
+
+    # ── firmware upgrades (autonomy-aware engine) ────────────────────
+
+    def cache_firmware(self, mac: str) -> bool:
+        """PRE-STAGE: make the device download its available firmware WITHOUT
+        applying it (cmd/devmgr 'cache'). The upgrade engine calls this ahead of
+        the window so the in-window apply is fast."""
+        result = self._cmd("cmd/devmgr", {"cmd": "cache", "mac": mac})
+        return bool(result and result.get("meta", {}).get("rc") == "ok")
+
+    def upgrade_device(self, mac: str, version: Optional[str] = None) -> bool:
+        """Apply a firmware upgrade to one device (cmd/devmgr 'upgrade').
+
+        ``version`` pins a specific firmware (used for rollback to the previous
+        version); when None the controller applies the staged/latest firmware.
+        """
+        payload = {"cmd": "upgrade", "mac": mac}
+        if version:
+            payload["version"] = version
+        result = self._cmd("cmd/devmgr", payload)
+        return bool(result and result.get("meta", {}).get("rc") == "ok")
+
+    def rollback_device(self, mac: str, previous_version: str) -> bool:
+        """Roll a device back to its previous firmware (best-effort; the engine
+        verifies recovery afterward and escalates physically if it fails too)."""
+        if not previous_version:
+            return False
+        return self.upgrade_device(mac, version=previous_version)
 
     # ── port profiles / VLAN assignment (approved-agent-action support) ──
 

@@ -118,6 +118,15 @@ SECTIONS = {
         },
         "redact": set(),
     },
+    "firmware": {
+        "fields": {
+            "autonomy": "FIRMWARE_AUTONOMY",
+            "technician_visibility": "FIRMWARE_TECH_VISIBILITY",
+            "default_window_hour": "FIRMWARE_WINDOW_HOUR",
+            "window_duration_min": "FIRMWARE_WINDOW_DURATION_MIN",
+        },
+        "redact": set(),
+    },
     "restrictions": {
         "fields": {
             "block_actions": "RESTRICT_ACTIONS",
@@ -144,6 +153,8 @@ _TYPED_FIELDS = {
     "policy": {"profile", "risk_filters", "judge_required", "write_autoexec",
                 "autoexec_threshold", "approval_priorities", "patch_allowlist",
                 "llm_retry_interval_min", "llm_retry_max_attempts"},
+    "firmware": {"autonomy", "technician_visibility", "default_window_hour",
+                 "window_duration_min"},
 }
 
 # Policy validation constants
@@ -662,6 +673,22 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         # LLM-call retries (worker schedules retries instead of failing instantly)
         result["llm_retry_interval_min"] = _env_int(env.get("LLM_RETRY_INTERVAL_MIN", "2"), 2)
         result["llm_retry_max_attempts"] = _env_int(env.get("LLM_RETRY_MAX_ATTEMPTS", "10"), 10)
+    if section == "firmware":
+        # Firmware-management autonomy (System → Firmware). Empty = follow the
+        # LLM autonomy profile; off = opt out. The effective value is what the
+        # upgrade engine actually uses (mirrors firmware.effective_autonomy).
+        result["autonomy"] = env.get("FIRMWARE_AUTONOMY", "")
+        result["technician_visibility"] = _env_bool(env.get("FIRMWARE_TECH_VISIBILITY", ""))
+        result["default_window_hour"] = _env_int(env.get("FIRMWARE_WINDOW_HOUR", "3"), 3)
+        result["window_duration_min"] = _env_int(env.get("FIRMWARE_WINDOW_DURATION_MIN", "60"), 60)
+        fw = (result["autonomy"] or "").strip().lower()
+        profile = (env.get("LLM_POLICY_PROFILE") or "").strip().lower()
+        if fw in ("autonomous", "balanced", "strict", "off"):
+            result["effective_autonomy"] = fw
+        elif profile in ("autonomous", "balanced", "strict"):
+            result["effective_autonomy"] = profile
+        else:
+            result["effective_autonomy"] = "balanced"
     if section == "restrictions":
         # Hard deny caps (comma lists) — enforced by the worker even in
         # autonomous mode: actions never allowed, devices never acted on,
@@ -959,6 +986,35 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
             changed.append("llm_retry_max_attempts")
             values["llm_retry_max_attempts"] = str(ma)
         updated = len(changed)  # policy block counted via changed[]
+    if section == "firmware":
+        # Firmware-management toggles (System → Firmware; the engine reads them
+        # from .env via firmware._read_env).
+        if "autonomy" in config:
+            val = str(config["autonomy"]).strip().lower()
+            if val not in ("", "autonomous", "balanced", "strict", "off"):
+                raise HTTPException(status_code=400,
+                                    detail="autonomy must be autonomous, balanced, strict, off, or empty (follow profile)")
+            env["FIRMWARE_AUTONOMY"] = val
+            changed.append("autonomy")
+            values["autonomy"] = val or "(follow profile)"
+        if "technician_visibility" in config:
+            val = "true" if _env_bool(str(config["technician_visibility"])) else "false"
+            env["FIRMWARE_TECH_VISIBILITY"] = val
+            changed.append("technician_visibility")
+            values["technician_visibility"] = val
+        for field, env_key, lo, hi in (("default_window_hour", "FIRMWARE_WINDOW_HOUR", 0, 23),
+                                        ("window_duration_min", "FIRMWARE_WINDOW_DURATION_MIN", 1, 1440)):
+            if field in config:
+                try:
+                    iv = int(config[field])
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"{field} must be a number")
+                if not lo <= iv <= hi:
+                    raise HTTPException(status_code=400, detail=f"{field} must be {lo}-{hi}")
+                env[env_key] = str(iv)
+                changed.append(field)
+                values[field] = str(iv)
+        updated = len(changed)
     if not changed:
         return {"status": "ok", "updated": 0}
     _write_env_file(env)

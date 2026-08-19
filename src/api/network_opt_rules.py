@@ -123,6 +123,103 @@ def snapshot_rule(key, category, severity, title):
     return deco
 
 
+# ── fixability + suggested action (fix-ticket rollout) ─────────────────────
+# Each rule key maps to whether the finding is actionable (``fixable``) and,
+# if so, what fixing it means (``suggested_action``). Non-fixable findings
+# (informational observations with no in-controller action) disable the
+# Optimize checkbox — there is no meaningful ticket for them. ``fixability()``
+# is the stable public accessor used by the run-detail API + ticket helper.
+
+NON_FIXABLE_RULES = frozenset({
+    "rel.single_wan",     # a second ISP is outside the appliance's control
+    "rel.single_uplink",  # needs added hardware / redundant path
+    "hyg.disabled_ssid",  # an observation — remove it or leave it; nothing to fix
+    "hyg.unused_vlan",    # cleanup candidate — informational
+})
+NON_FIXABLE_LABEL = "informational — not actionable"
+DEFAULT_SUGGESTED_ACTION = "Resolve the underlying condition described in the finding."
+
+SUGGESTED_ACTIONS = {
+    "perf.duplex_half": "Reconfigure the interface and its peer for full-duplex "
+                        "(fix autonegotiation, or hard-set both ends to full duplex).",
+    "perf.link_speed_100": "Check/replace the cable and patch cord, and verify the "
+                           "peer's negotiation to restore the gigabit link.",
+    "perf.link_speed_10": "Replace the cable and verify the port/hardware — a 10 Mbps "
+                          "negotiation indicates a hardware fault.",
+    "perf.interface_errors": "Replace the failing cable/transceiver and investigate the "
+                             "CRC/alignment errors on the interface.",
+    "perf.interface_discards": "Relieve congestion on the interface (rebalance traffic, "
+                               "check the egress queue).",
+    "perf.mtu_mismatch": "Correct the interface MTU to 1500 (or match both ends if "
+                         "jumbo frames are intended).",
+    "perf.high_cpu": "Investigate the sustained CPU load (traffic storm, misconfig, or "
+                     "over-subscription).",
+    "perf.high_memory": "Investigate memory pressure (leak or under-provisioning) and "
+                        "reboot/upgrade if needed.",
+    "perf.port_errors_unifi": "Replace the cable/transceiver on the port reporting "
+                              "TX/RX errors.",
+    "perf.uplink_congestion": "Re-cable and renegotiate the uplink port to full capacity.",
+    "sec.telnet_exposed": "Disable Telnet and use SSH for management.",
+    "sec.ssh_exposed": "Disable or rotate the admin SSH, and restrict it to a management "
+                       "VLAN/ACL with key-only auth.",
+    "sec.http_mgmt_plaintext": "Disable HTTP management (port 80) and use HTTPS only.",
+    "sec.default_snmp_community": "Change the default SNMP community and prefer SNMPv3 "
+                                  "with auth+priv.",
+    "sec.snmp_v2c": "Move the device to SNMPv3 (auth+priv) where supported.",
+    "sec.firmware_outdated": "Run the firmware upgrade.",
+    "sec.mgmt_vlan_on_uplink": "Move the management VLAN off the uplink port onto a "
+                              "dedicated, restricted VLAN.",
+    "rel.dhcp_no_reservation": "Add a DHCP reservation/static lease for the device so "
+                               "its address can't drift.",
+    "rel.link_down_count": "Replace the flapping cable and re-seat both ends of the link.",
+    "rel.uptime_recent_reboot": "Verify the reboot cause (crash, power, or manual) and "
+                                "confirm the device is stable.",
+    "rel.uptime_extended": "Schedule a maintenance reboot to apply pending updates and "
+                           "clear memory leaks.",
+    "rel.offline_gear": "Bring the device back online (power/network) or remove it from "
+                        "inventory if retired.",
+    "rel.oper_down_admin_up": "Reconnect/restore the far end of the interface, or shut "
+                              "the interface if unused.",
+    "rel.ap_uplink_missing": "Verify the AP is meshed intentionally, or wire it for a "
+                             "dedicated uplink.",
+    "rel.wan_degraded": "Investigate the WAN health degradation and contact the ISP if "
+                        "needed.",
+    "hyg.stale_device": "Reconnect or remove the stale device from inventory.",
+    "hyg.unnamed_uplink_port": "Name the port in the controller so future changes are safe.",
+    "hyg.port_no_profile": "Assign a network profile to the port so traffic doesn't land "
+                           "on the default network.",
+    "sec.open_ssid": "Enable WPA2/WPA3 encryption (or disable the SSID).",
+    "sec.legacy_wpa": "Upgrade the SSID to WPA2/WPA3.",
+    "sec.wpa2_tkip": "Switch the SSID to AES/CCMP encryption.",
+    "hyg.default_vlan1": "Move traffic off VLAN 1 onto dedicated VLANs.",
+    "hyg.duplicate_ip": "Resolve the IP conflict (re-address one of the conflicting "
+                         "devices).",
+    "hyg.duplicate_mac": "Resolve the duplicate MAC (check for a mis-cloned identity).",
+    "hyg.disabled_network": "Remove the disabled network if unused.",
+    "hyg.vlan_without_name": "Give the VLAN a descriptive name.",
+}
+
+
+def fixability(key: str) -> dict:
+    """{fixable, suggested_action} for a finding key — the stable public
+    shape the run-detail API and the ticket helper consume."""
+    key = (key or "").strip()
+    if key in NON_FIXABLE_RULES:
+        return {"key": key, "fixable": False, "suggested_action": NON_FIXABLE_LABEL}
+    return {"key": key, "fixable": True,
+            "suggested_action": SUGGESTED_ACTIONS.get(key, DEFAULT_SUGGESTED_ACTION)}
+
+
+def _annotate_fixability():
+    """Attach fixable + suggested_action to every registered rule so the
+    registry itself carries the annotation (each rule *gains* the fields)."""
+    for coll in (RULES, SNAPSHOT_RULES):
+        for r in coll:
+            fx = fixability(r["key"])
+            r["fixable"] = fx["fixable"]
+            r["suggested_action"] = fx["suggested_action"]
+
+
 # ══════════════════════════════ PERFORMANCE ═══════════════════════════════
 
 @rule("perf.duplex_half", "performance", "warning",
@@ -830,3 +927,6 @@ def score(findings) -> dict:
 
 def count_rules() -> int:
     return len(RULES) + len(SNAPSHOT_RULES)
+
+
+_annotate_fixability()

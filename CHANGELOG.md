@@ -15,6 +15,36 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.18.h] — 2026-08-18
+
+### Added
+- **Firmware management (UniFi-only v1, autonomy-aware)** — the never-patched-home-router fix.
+  New `maintenance_windows` (local-time, one-time/recurring, reusable by other
+  scheduled ops — same shape as updates-schedule-v2), `device_firmware` (per
+  managed device: current/previous/available version + last upgrade result),
+  `firmware_upgrades` (history + in-flight state machine), and `pending_actions`
+  (approvals + escalations queue with role visibility — the feed the
+  roles-and-chat-context worker consumes). Upgrade engine: pre-stage → window
+  gate → one-device-at-a-time → verify (version bump + device returns/informing)
+  → next; halt-on-failure; rollback attempt via the controller; P1
+  physical-assistance escalation with a runbook when upgrade AND rollback both
+  fail. Autonomy matrix (firmware settings: autonomous/balanced/strict/off +
+  technician-visibility toggle): autonomous auto-runs with a non-blocking
+  "action pending" notice; balanced auto-runs APs/switches but gates the gateway
+  behind admin approval; strict approves every device; off opts out. Order by
+  risk APs → switches → gateway LAST. System → Firmware UI (inventory, windows,
+  queue, history) + `GET/POST /api/v1/firmware/*` API.
+### Fixed
+- **NetOpt SNMP read the wrong system OIDs** — `network_opt.collect_snmp` read
+  sysDescr / sysName / sysUpTime one OID node too deep (e.g.
+  `1.3.6.1.2.1.1.1.1.0` instead of `1.3.6.1.2.1.1.1.0`), so the system
+  identity + uptime block was always empty against real gear. Now aligned with
+  the telemetry collector and the scheduler/`snmp_poll.sh`/`snmp_sweep.sh`
+  (sysDescr `1.3.6.1.2.1.1.1.0`, sysName `1.3.6.1.2.1.1.5.0`, sysUpTime
+  `1.3.6.1.2.1.1.3.0`). The ifTable and UCD-SNMP CPU/mem OIDs were already
+  correct; new tests pin them.
+
+
 ## [2026.08.18.g] — 2026-08-18
 
 ### Added

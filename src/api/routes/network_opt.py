@@ -30,7 +30,8 @@ from database import get_db
 from models import User, ScanRun, Finding
 from routes.updates import _local_now, _parse_local_dt, _appliance_tz
 import network_opt
-from network_opt_rules import SCHEMA_VERSION, CATEGORIES, SEVERITIES
+from network_opt_rules import SCHEMA_VERSION, CATEGORIES, SEVERITIES, fixability
+from netopt_tickets import spawn_optimize_tickets, PER_ITEM_CAP
 
 router = APIRouter(prefix="/api/v1/netopt", tags=["network-optimization"])
 
@@ -233,6 +234,8 @@ def run_detail(run_id: int, db: Session = Depends(get_db),
             "title": f.title,
             "detail": f.detail,
             "evidence": f.evidence or {},
+            "fixable": fixability(f.finding_key)["fixable"],
+            "suggested_action": fixability(f.finding_key)["suggested_action"],
         } for f in findings],
     }
 
@@ -278,6 +281,70 @@ def cancel_run(run_id: int, db: Session = Depends(get_db),
     run.finished_at = datetime.datetime.utcnow()
     db.commit()
     return {"status": "ok", "run_id": run_id, "note": "cancellation requested"}
+
+
+class OptimizeBody(BaseModel):
+    finding_ids: list[int]
+    mode: str = "per_item"     # batched | per_item
+    comments: dict = {}         # {str(finding_id): text}
+
+
+@router.post("/runs/{run_id}/optimize")
+def optimize_run(run_id: int, body: OptimizeBody, db: Session = Depends(get_db),
+                 user: User = Depends(require_role("admin"))):
+    """Turn selected findings into admin tickets (per-item or batched).
+
+    The Optimize button creates TICKETS, never direct controller writes — the
+    tickets then flow through the normal pipeline (Juniper/Lily + approval
+    gates). Validation: admin-only, findings belong to this run, fixable only,
+    per-item cap of 10 (past that: use batched).
+    """
+    run = db.query(ScanRun).filter(ScanRun.id == run_id).first()
+    if not run:
+        raise HTTPException(404, "scan run not found")
+
+    # Dedupe while preserving order; coerce each id to int.
+    ids = []
+    for fid in (body.finding_ids or []):
+        try:
+            fid = int(fid)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"invalid finding id: {fid}")
+        if fid not in ids:
+            ids.append(fid)
+    if not ids:
+        raise HTTPException(400, "select at least one finding")
+
+    findings = db.query(Finding).filter(
+        Finding.run_id == run_id, Finding.id.in_(ids)).all()
+    by_id = {f.id: f for f in findings}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise HTTPException(400, f"finding(s) not in this run: {missing}")
+    ordered = [by_id[i] for i in ids]
+
+    # Fixable only — non-fixable findings are informational and not actionable.
+    nonfixable = [f for f in ordered if not fixability(f.finding_key)["fixable"]]
+    if nonfixable:
+        names = ", ".join(f"{f.finding_key} (#{f.id})" for f in nonfixable)
+        raise HTTPException(400, f"informational — not actionable: {names}")
+
+    mode = str(body.mode or "per_item").strip().lower().replace("-", "_")
+    if mode in ("peritem", "item", "individual"):
+        mode = "per_item"
+    if mode not in ("batched", "per_item"):
+        raise HTTPException(400, "mode must be 'batched' or 'per_item'")
+    if mode == "per_item" and len(ordered) > PER_ITEM_CAP:
+        raise HTTPException(
+            400, f"more than {PER_ITEM_CAP} findings for per-item tickets — "
+                 "use batched mode instead (or select ≤10 findings)")
+
+    result = spawn_optimize_tickets(
+        db, run_id, ordered, mode=mode, comments=body.comments or {},
+        submitter_id=user.id)
+    db.commit()
+    return {"status": "ok", "run_id": run_id, "mode": result["mode"],
+            "tickets": result["created"], "count": result["count"]}
 
 
 @router.get("/schedule")

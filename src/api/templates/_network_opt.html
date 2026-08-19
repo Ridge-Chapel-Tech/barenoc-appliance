@@ -137,6 +137,7 @@
 <script>
 (function () {
   var NO = { total: 0, critical: 0, warning: 0, info: 0 };
+  var netoptCurrent = null;   // the run currently shown in the detail panel
 
   function token() { return localStorage.getItem('access_token'); }
   async function nFetch(path, opts) {
@@ -391,14 +392,26 @@
   async function netoptShowRun(id) {
     try {
       var d = await nFetch('/runs/' + id);
+      netoptCurrent = d;
       var el = document.getElementById('netopt-detail');
       el.classList.remove('hidden');
+      var fixable = (d.findings || []).filter(function (f) { return f.fixable !== false; }).length;
+      var controls = fixable > 0
+        ? '<div class="mt-3 border-t pt-3 flex flex-wrap items-center gap-3">' +
+            '<span class="text-sm font-medium text-gray-700">Optimize selected findings</span>' +
+            '<label class="flex items-center gap-1 text-xs text-gray-600"><input type="radio" name="netopt-mode" value="batched" class="netopt-mode"> batched (one ticket)</label>' +
+            '<label class="flex items-center gap-1 text-xs text-gray-600"><input type="radio" name="netopt-mode" value="per_item" class="netopt-mode"> per-item (one ticket each)</label>' +
+            '<button onclick="netoptOptimize()" class="rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">Optimize →</button>' +
+            '<span class="text-xs text-gray-400">Creates admin tickets — never direct device writes</span>' +
+          '</div>'
+        : '';
       el.innerHTML = '<div class="bg-white shadow rounded-lg p-4">' +
         '<div class="flex items-center justify-between">' +
           '<h3 class="text-sm font-medium text-gray-900">Run #' + d.run_id + ' detail</h3>' +
           '<button onclick="document.getElementById(\'netopt-detail\').classList.add(\'hidden\')" class="text-sm text-gray-400 hover:text-gray-600">✕ close</button>' +
         '</div>' +
         '<div class="mt-2 text-xs text-gray-500">Score ' + (d.score != null ? d.score : '—') + ' · ' + d.findings.length + ' findings · ' + fmtTz(d.started_at) + ' → ' + fmtTz(d.finished_at) + '</div>' +
+        controls +
         '<div id="netopt-detail-findings" class="mt-3"></div>' +
       '</div>';
       var inner = document.createElement('div');
@@ -412,21 +425,73 @@
     var html = '<div class="space-y-2">';
     findings.forEach(function (f) {
       var sev = SEV[f.severity] || SEV.info;
-      html += '<div class="border rounded p-2">' +
-        '<div class="flex items-center justify-between gap-2">' +
-          '<span class="text-sm font-medium">' + esc(f.title) + '</span>' +
-          '<span class="px-2 py-0.5 text-xs rounded-full ' + sev[0] + '">' + sev[1] + '</span>' +
+      var fixable = f.fixable !== false;
+      html += '<div class="border rounded p-2 ' + (fixable ? '' : 'bg-gray-50 opacity-80') + '">' +
+        '<div class="flex items-start gap-2">' +
+          (fixable
+            ? '<input type="checkbox" class="netopt-fix mt-1" data-id="' + f.id + '">'
+            : '<input type="checkbox" disabled class="mt-1" title="informational — not actionable">') +
+          '<div class="flex-1 min-w-0">' +
+            '<div class="flex items-center justify-between gap-2 flex-wrap">' +
+              '<span class="text-sm font-medium">' + esc(f.title) + '</span>' +
+              '<span class="flex items-center gap-1">' +
+                '<span class="px-2 py-0.5 text-xs rounded-full ' + sev[0] + '">' + sev[1] + '</span>' +
+                (fixable
+                  ? '<span class="px-2 py-0.5 text-xs rounded-full bg-green-50 text-green-700">fixable</span>'
+                  : '<span class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">informational — not actionable</span>') +
+              '</span>' +
+            '</div>' +
+            (f.detail ? '<div class="mt-1 text-xs text-gray-500">' + esc(f.detail) + '</div>' : '') +
+            (f.suggested_action ? '<div class="mt-1 text-xs text-gray-600"><span class="font-medium">Suggested:</span> ' + esc(f.suggested_action) + '</div>' : '') +
+            '<div class="mt-1 text-xs font-mono text-gray-400">' + esc(f.finding_key) + '</div>' +
+            (fixable
+              ? '<input type="text" class="netopt-comment mt-1 w-full rounded-md border-gray-300 border px-2 py-1 text-xs" placeholder="Optional comment for the technician…" data-id="' + f.id + '">'
+              : '') +
+          '</div>' +
         '</div>' +
-        (f.detail ? '<div class="mt-1 text-xs text-gray-500">' + esc(f.detail) + '</div>' : '') +
-        '<div class="mt-1 text-xs font-mono text-gray-400">' + esc(f.finding_key) + '</div>' +
       '</div>';
     });
     html += '</div>';
     el.innerHTML = html;
   }
+  function netoptSelectedCount() {
+    return document.querySelectorAll('#netopt-detail .netopt-fix:checked').length;
+  }
+  function netoptMode() {
+    var checked = document.querySelector('#netopt-detail .netopt-mode:checked');
+    if (checked) return checked.value;
+    return netoptSelectedCount() > 3 ? 'batched' : 'per_item';
+  }
+  async function netoptOptimize() {
+    var d = netoptCurrent;
+    if (!d) return;
+    var selected = [];
+    var comments = {};
+    document.querySelectorAll('#netopt-detail .netopt-fix:checked').forEach(function (cb) {
+      var id = cb.getAttribute('data-id');
+      selected.push(parseInt(id, 10));
+      var input = document.querySelector('#netopt-detail .netopt-comment[data-id="' + id + '"]');
+      var c = input ? input.value.trim() : '';
+      if (c) comments[id] = c;
+    });
+    if (!selected.length) { alert('Select at least one fixable finding to optimize.'); return; }
+    var mode = netoptMode();
+    var label = mode === 'batched' ? 'ONE batched ticket' : selected.length + ' per-item ticket(s)';
+    if (!confirm('Optimize ' + selected.length + ' finding(s) as ' + label + '?\n\nThis creates admin tickets that flow through the normal approval pipeline — never direct device writes.')) return;
+    try {
+      var r = await nFetch('/runs/' + d.run_id + '/optimize', {
+        method: 'POST',
+        body: JSON.stringify({ finding_ids: selected, mode: mode, comments: comments })
+      });
+      var ids = (r.tickets || []).map(function (t) { return t.ticket_id; }).join(', ');
+      alert('Created ' + r.count + ' ticket(s): ' + ids);
+      netoptLoad();
+    } catch (e) { alert(e.message); }
+  }
 
   window.netoptLoad = netoptLoad;
   window.netoptShowRun = netoptShowRun;
+  window.netoptOptimize = netoptOptimize;
   window.netoptStart = netoptStart;
   window.netoptCancel = netoptCancel;
   window.netoptModeChange = netoptModeChange;

@@ -366,6 +366,116 @@ class CollectorParseTest(unittest.TestCase):
         self.assertIn("unix", network_opt.guess_os([22], 64).lower())
 
 
+# ═══════════════════════════ SNMP OID pinning ══════════════════════════════
+
+class SnmpOidTest(unittest.TestCase):
+    """Pin the exact OIDs the collector reads (the 2026-08-18 wrong-OID bug).
+
+    The fake ``_run`` answers ONLY the correct OIDs; a reverted/incorrect OID
+    returns ``noSuchObject`` -> ``collect_snmp`` returns None -> test fails.
+    """
+
+    def _collect(self, ip="10.0.0.2", community="public"):
+        calls = []
+
+        def fake_run(cmd, timeout):
+            calls.append(cmd)
+            binary = cmd[0]
+            if binary == "snmpget":
+                oid = cmd[-1]
+                vals = {
+                    "1.3.6.1.2.1.1.1.0": "Cisco IOS Software, Version 17.9",
+                    "1.3.6.1.2.1.1.5.0": "core-sw",
+                    "1.3.6.1.2.1.1.3.0": "360000",   # Timeticks -> 3600 s
+                    "1.3.6.1.4.1.2021.10.1.3.1": "42",
+                    "1.3.6.1.4.1.2021.4.5.0": "8000",
+                    "1.3.6.1.4.1.2021.4.6.0": "2000",
+                }
+                if oid not in vals:
+                    return {"ok": False, "stdout": "", "stderr": "noSuchObject"}
+                return {"ok": True, "stdout": vals[oid] + "\n", "stderr": ""}
+            if binary == "snmpwalk":
+                base = cmd[-1]
+                if base == network_opt._IFTABLE:
+                    return {"ok": True, "stdout": (
+                        "1.3.6.1.2.1.2.2.1.1.1 = INTEGER: 1\n"
+                        "1.3.6.1.2.1.2.2.1.2.1 = STRING: Gi0/1\n"
+                        "1.3.6.1.2.1.2.2.1.3.1 = INTEGER: 6\n"
+                        "1.3.6.1.2.1.2.2.1.4.1 = INTEGER: 1500\n"
+                        "1.3.6.1.2.1.2.2.1.5.1 = Gauge32: 1000000000\n"
+                        "1.3.6.1.2.1.2.2.1.7.1 = INTEGER: 1\n"
+                        "1.3.6.1.2.1.2.2.1.8.1 = INTEGER: 1\n"
+                        "1.3.6.1.2.1.2.2.1.11.1 = Counter32: 1000\n"
+                        "1.3.6.1.2.1.2.2.1.13.1 = Counter32: 2\n"
+                        "1.3.6.1.2.1.2.2.1.14.1 = Counter32: 5\n"
+                        "1.3.6.1.2.1.2.2.1.17.1 = Counter32: 900\n"
+                        "1.3.6.1.2.1.2.2.1.19.1 = Counter32: 1\n"
+                        "1.3.6.1.2.1.2.2.1.20.1 = Counter32: 7\n"
+                    ), "stderr": ""}
+                if base == "1.3.6.1.2.1.31.1.1.1.15":
+                    return {"ok": True, "stdout":
+                            "1.3.6.1.2.1.31.1.1.1.15.1 = Gauge32: 1000\n", "stderr": ""}
+                if base == network_opt._DOT3_DUPLEX:
+                    return {"ok": True, "stdout":
+                            "1.3.6.1.2.1.10.7.2.1.19.1 = INTEGER: 3\n", "stderr": ""}
+                return {"ok": False, "stdout": "", "stderr": "unknown base"}
+            return {"ok": False, "stdout": "", "stderr": "unknown binary"}
+
+        with patch.object(network_opt, "_binary", return_value=True), \
+             patch.object(network_opt, "_run", side_effect=fake_run):
+            snap = network_opt.collect_snmp(ip, community)
+        return snap, calls
+
+    def test_system_oids_correct(self):
+        snap, calls = self._collect()
+        get_oids = [c[-1] for c in calls if c[0] == "snmpget"]
+        self.assertIn("1.3.6.1.2.1.1.1.0", get_oids)   # sysDescr
+        self.assertIn("1.3.6.1.2.1.1.5.0", get_oids)   # sysName
+        self.assertIn("1.3.6.1.2.1.1.3.0", get_oids)   # sysUpTime
+        self.assertEqual(snap["sysdescr"], "Cisco IOS Software, Version 17.9")
+        self.assertEqual(snap["sysname"], "core-sw")
+        self.assertEqual(snap["uptime_seconds"], 3600)
+
+    def test_ucdsnmp_oids_correct(self):
+        snap, calls = self._collect()
+        get_oids = [c[-1] for c in calls if c[0] == "snmpget"]
+        self.assertIn("1.3.6.1.4.1.2021.10.1.3.1", get_oids)   # laLoad 1-min
+        self.assertIn("1.3.6.1.4.1.2021.4.5.0", get_oids)      # memTotalReal
+        self.assertIn("1.3.6.1.4.1.2021.4.6.0", get_oids)      # memAvailReal
+        self.assertEqual(snap["cpu_load"], 42.0)
+        self.assertEqual(snap["mem_used_pct"], 75.0)
+
+    def test_iftable_parse_uses_correct_columns(self):
+        snap, calls = self._collect()
+        walk_bases = [c[-1] for c in calls if c[0] == "snmpwalk"]
+        self.assertIn("1.3.6.1.2.1.2.2.1", walk_bases)          # ifTable
+        self.assertEqual(len(snap["interfaces"]), 1)
+        itf = snap["interfaces"][0]
+        self.assertEqual(itf["ifindex"], "1")
+        self.assertEqual(itf["ifdescr"], "Gi0/1")
+        self.assertEqual(itf["iftype"], 6)
+        self.assertEqual(itf["mtu"], 1500)
+        self.assertEqual(itf["oper_status"], "up")              # ifOperStatus .8
+        self.assertEqual(itf["admin_status"], "up")
+        self.assertEqual(itf["speed_mbps"], 1000)
+        self.assertEqual(itf["duplex"], "full")
+        self.assertEqual(itf["in_errors"], 5)                   # ifInErrors .14
+        self.assertEqual(itf["out_errors"], 7)                  # ifOutErrors .20
+        self.assertEqual(itf["in_discards"], 2)
+        self.assertEqual(itf["out_discards"], 1)
+        self.assertEqual(itf["in_pkts"], 1000)
+        self.assertEqual(itf["out_pkts"], 900)
+
+    def test_no_sysdescr_returns_none(self):
+        # a device that drops the (now-correct) sysDescr get is treated as
+        # not answering SNMP — same contract as before, still honored.
+        def fake_run(cmd, timeout):
+            return {"ok": False, "stdout": "", "stderr": "timeout"}
+        with patch.object(network_opt, "_binary", return_value=True), \
+             patch.object(network_opt, "_run", side_effect=fake_run):
+            self.assertIsNone(network_opt.collect_snmp("10.0.0.2"))
+
+
 # ═══════════════════════════ controller-live authority ═════════════════════
 
 class ControllerAuthorityTest(unittest.TestCase):
@@ -718,6 +828,228 @@ class AdminGatingTest(unittest.TestCase):
                      if getattr(r, "path", "") == "/api/v1/netopt/runs"
                      and "POST" in getattr(r, "methods", []))
         self.assertEqual(route.endpoint.__name__, "start_run")
+
+
+# ═══════════════════════════════ fixability mapping ═══════════════════════
+
+class FixabilityTest(unittest.TestCase):
+    NON_FIXABLE = {"rel.single_wan", "rel.single_uplink",
+                   "hyg.disabled_ssid", "hyg.unused_vlan"}
+
+    def test_non_fixable_rules_disabled(self):
+        for key in self.NON_FIXABLE:
+            fx = rules.fixability(key)
+            self.assertFalse(fx["fixable"], key)
+            self.assertEqual(fx["suggested_action"], "informational — not actionable")
+
+    def test_fixable_rules_have_suggested_action(self):
+        for r in rules.RULES + rules.SNAPSHOT_RULES:
+            fx = rules.fixability(r["key"])
+            if r["key"] in self.NON_FIXABLE:
+                self.assertFalse(fx["fixable"], r["key"])
+            else:
+                self.assertTrue(fx["fixable"], r["key"])
+                self.assertTrue((fx["suggested_action"] or "").strip(), r["key"])
+
+    def test_registry_annotated_with_fixability(self):
+        # every registered rule gains fixable + suggested_action
+        for r in rules.RULES + rules.SNAPSHOT_RULES:
+            self.assertIn("fixable", r, r["key"])
+            self.assertIn("suggested_action", r, r["key"])
+            self.assertEqual(r["fixable"], rules.fixability(r["key"])["fixable"])
+
+    def test_unknown_key_defaults_fixable(self):
+        fx = rules.fixability("perf.does_not_exist")
+        self.assertTrue(fx["fixable"])
+        self.assertTrue(fx["suggested_action"])
+
+
+# ═══════════════════════════════ optimize API ═════════════════════════════
+
+class OptimizeApiTest(unittest.TestCase):
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        for table in (Finding, ScanRun, Ticket, Device, User):
+            db.query(table).delete()
+        db.commit()
+        from auth import hash_password
+        admin = User(username="admin", role="admin",
+                     hashed_password=hash_password("pw"), is_active=True)
+        op = User(username="op", role="operator",
+                  hashed_password=hash_password("pw"), is_active=True)
+        db.add(admin)
+        db.add(op)
+        db.commit()
+        run = ScanRun(status="completed", score=80, summary="{}", scope={})
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        self.run_id = run.id
+        self.admin_id = admin.id
+
+        f1 = Finding(run_id=run.id, finding_key="sec.firmware_outdated",
+                     category="security", severity="warning",
+                     title="Firmware update available for core-sw",
+                     detail="core-sw (v6) has a firmware update available.",
+                     evidence={"version": "6"})
+        f2 = Finding(run_id=run.id, finding_key="hyg.unnamed_uplink_port",
+                     category="hygiene", severity="info",
+                     title="Unnamed uplink port on core-sw",
+                     detail="Uplink port has no meaningful label.",
+                     evidence={"port": 1})
+        f3 = Finding(run_id=run.id, finding_key="rel.single_wan",
+                     category="reliability", severity="info",
+                     title="Single WAN (no failover) on UCG-Max",
+                     detail="Single WAN link.",
+                     evidence={"wan_count": 1})
+        db.add_all([f1, f2, f3])
+        db.commit()
+        db.refresh(f1)
+        db.refresh(f2)
+        db.refresh(f3)
+        self.fixable_ids = [f1.id, f2.id]
+        self.nonfixable_id = f3.id
+        db.close()
+
+    def _client(self, username="admin", role="admin"):
+        from main import app
+        from fastapi.testclient import TestClient
+        from auth import create_access_token
+        token = create_access_token({"sub": username, "role": role,
+                                     "groups": [], "auth_method": "password"})
+        return TestClient(app), token
+
+    def _post(self, body, username="admin", role="admin"):
+        client, token = self._client(username, role)
+        return client.post(f"/api/v1/netopt/runs/{self.run_id}/optimize",
+                           json=body, headers={"Authorization": f"Bearer {token}"})
+
+    def test_optimize_requires_admin(self):
+        r = self._post({"finding_ids": self.fixable_ids, "mode": "per_item"},
+                       username="op", role="operator")
+        self.assertEqual(r.status_code, 403)
+
+    def test_per_item_creates_one_ticket_per_finding(self):
+        r = self._post({"finding_ids": self.fixable_ids, "mode": "per_item"})
+        self.assertEqual(r.status_code, 200, r.text)
+        data = r.json()
+        self.assertEqual(data["mode"], "per_item")
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(len(data["tickets"]), 2)
+        db = SessionLocal()
+        tickets = db.query(Ticket).filter(Ticket.source == "optimize").all()
+        self.assertEqual(len(tickets), 2)
+        self.assertEqual({t.priority for t in tickets}, {"P2", "P3"})  # warning->P2, info->P3
+        db.close()
+
+    def test_comment_embedded_and_run_ref_and_priority(self):
+        r = self._post({"finding_ids": [self.fixable_ids[0]], "mode": "per_item",
+                        "comments": {str(self.fixable_ids[0]): "Do it after hours"}})
+        self.assertEqual(r.status_code, 200, r.text)
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.source == "optimize").first()
+        desc = t.description or ""
+        self.assertIn("ADMIN CONTEXT", desc)
+        self.assertIn("read them fully before any action", desc)
+        self.assertIn("Do it after hours", desc)
+        self.assertIn(f"#{self.run_id}", desc)
+        self.assertIn("Suggested action:", desc)
+        self.assertEqual(t.title, "Firmware update available for core-sw")
+        self.assertEqual(t.priority, "P2")   # warning -> P2
+        notes = json.loads(t.work_notes or "[]")
+        self.assertTrue(any(n.get("event") == "admin_context" for n in notes))
+        self.assertTrue(any("read them fully before any action" in n.get("detail", "")
+                            for n in notes))
+        db.close()
+
+    def test_batched_single_ticket_with_sections(self):
+        r = self._post({"finding_ids": self.fixable_ids, "mode": "batched"})
+        self.assertEqual(r.status_code, 200, r.text)
+        data = r.json()
+        self.assertEqual(data["mode"], "batched")
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(len(data["tickets"]), 1)
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.source == "optimize").first()
+        self.assertIn("Finding 1:", t.description)
+        self.assertIn("Finding 2:", t.description)
+        self.assertIn(f"#{self.run_id}", t.description)
+        self.assertEqual(t.priority, "P2")   # highest selected severity wins
+        db.close()
+
+    def test_nonfixable_rejected(self):
+        r = self._post({"finding_ids": [self.nonfixable_id], "mode": "per_item"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not actionable", r.json()["detail"])
+
+    def test_mixed_fixable_and_nonfixable_rejected(self):
+        r = self._post({"finding_ids": self.fixable_ids + [self.nonfixable_id],
+                        "mode": "batched"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not actionable", r.json()["detail"])
+
+    def test_finding_from_other_run_rejected(self):
+        db = SessionLocal()
+        run2 = ScanRun(status="completed", score=90, summary="{}", scope={})
+        db.add(run2)
+        db.commit()
+        db.refresh(run2)
+        f = Finding(run_id=run2.id, finding_key="perf.high_cpu",
+                    category="performance", severity="warning",
+                    title="High CPU", detail="cpu", evidence={})
+        db.add(f)
+        db.commit()
+        db.refresh(f)
+        db.close()
+        r = self._post({"finding_ids": [f.id], "mode": "per_item"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not in this run", r.json()["detail"])
+
+    def test_per_item_cap_10(self):
+        db = SessionLocal()
+        extra = []
+        for i in range(11):
+            extra.append(Finding(run_id=self.run_id, finding_key="perf.high_cpu",
+                                 category="performance", severity="warning",
+                                 title=f"High CPU {i}", detail="cpu", evidence={}))
+        db.add_all(extra)
+        db.commit()
+        ids = [f.id for f in extra]
+        db.close()
+        r = self._post({"finding_ids": ids, "mode": "per_item"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("batched", r.json()["detail"].lower())
+
+    def test_batched_allows_over_10(self):
+        db = SessionLocal()
+        extra = []
+        for i in range(11):
+            extra.append(Finding(run_id=self.run_id, finding_key="perf.high_cpu",
+                                 category="performance", severity="warning",
+                                 title=f"High CPU {i}", detail="cpu", evidence={}))
+        db.add_all(extra)
+        db.commit()
+        ids = [f.id for f in extra]
+        db.close()
+        r = self._post({"finding_ids": ids, "mode": "batched"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["count"], 1)
+
+    def test_invalid_mode_rejected(self):
+        r = self._post({"finding_ids": self.fixable_ids, "mode": "sideways"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_empty_selection_rejected(self):
+        r = self._post({"finding_ids": [], "mode": "per_item"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_run_not_found(self):
+        client, token = self._client()
+        r = client.post("/api/v1/netopt/runs/999999/optimize",
+                        json={"finding_ids": self.fixable_ids, "mode": "per_item"},
+                        headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r.status_code, 404)
 
 
 if __name__ == "__main__":

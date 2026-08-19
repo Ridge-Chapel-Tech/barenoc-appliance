@@ -248,3 +248,107 @@ def init_db():
             ))
     except OperationalError:
         pass  # Table/index already exists
+    # Migration: firmware management (maintenance_windows + device_firmware +
+    # firmware_upgrades + pending_actions). NEW tables — create_all above
+    # already creates them; the guarded CREATEs are idempotent belt-and-
+    # suspenders no-ops. KEEP IN SYNC with the models.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS maintenance_windows ("
+                " id INTEGER PRIMARY KEY,"
+                " name VARCHAR(128) NOT NULL,"
+                " mode VARCHAR(16) DEFAULT 'recurring',"
+                " day VARCHAR(16) DEFAULT 'daily',"
+                " hour INTEGER DEFAULT 3,"
+                " duration_minutes INTEGER DEFAULT 60,"
+                " when VARCHAR(32) DEFAULT '',"
+                " enabled BOOLEAN DEFAULT 1,"
+                " timezone VARCHAR(64) DEFAULT '',"
+                " created_by VARCHAR(64),"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS device_firmware ("
+                " id INTEGER PRIMARY KEY,"
+                " device_id INTEGER,"
+                " mac_address VARCHAR(17) NOT NULL,"
+                " name VARCHAR(128),"
+                " device_type VARCHAR(32) DEFAULT 'unknown',"
+                " model VARCHAR(64),"
+                " ip VARCHAR(45),"
+                " current_version VARCHAR(64) DEFAULT '',"
+                " previous_version VARCHAR(64) DEFAULT '',"
+                " available_version VARCHAR(64) DEFAULT '',"
+                " upgradeable BOOLEAN DEFAULT 0,"
+                " online BOOLEAN DEFAULT 0,"
+                " prestaged_version VARCHAR(64) DEFAULT '',"
+                " last_result VARCHAR(16) DEFAULT '',"
+                " last_upgrade_at DATETIME,"
+                " last_error TEXT,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_device_firmware_mac "
+                "ON device_firmware(mac_address)"
+            ))
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS firmware_upgrades ("
+                " id INTEGER PRIMARY KEY,"
+                " device_id INTEGER,"
+                " mac_address VARCHAR(17) NOT NULL,"
+                " device_name VARCHAR(128),"
+                " device_type VARCHAR(32) DEFAULT 'unknown',"
+                " from_version VARCHAR(64) DEFAULT '',"
+                " to_version VARCHAR(64) DEFAULT '',"
+                " window_id INTEGER,"
+                " status VARCHAR(16) DEFAULT 'staging',"
+                " stage_started_at DATETIME,"
+                " stage_deadline DATETIME,"
+                " verify_attempts INTEGER DEFAULT 0,"
+                " rollback_attempted BOOLEAN DEFAULT 0,"
+                " durations JSON,"
+                " error TEXT,"
+                " triggered_by VARCHAR(16) DEFAULT 'auto',"
+                " started_at DATETIME,"
+                " finished_at DATETIME,"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS pending_actions ("
+                " id INTEGER PRIMARY KEY,"
+                " kind VARCHAR(16) DEFAULT 'approval',"
+                " title VARCHAR(256) NOT NULL,"
+                " detail TEXT,"
+                " device_id INTEGER,"
+                " mac_address VARCHAR(17),"
+                " device_name VARCHAR(128),"
+                " device_type VARCHAR(32) DEFAULT 'unknown',"
+                " firmware_from VARCHAR(64) DEFAULT '',"
+                " firmware_to VARCHAR(64) DEFAULT '',"
+                " status VARCHAR(16) DEFAULT 'pending',"
+                " auto BOOLEAN DEFAULT 0,"
+                " required_role VARCHAR(16) DEFAULT 'technician',"
+                " resolved_by VARCHAR(64),"
+                " resolved_note TEXT,"
+                " extra JSON,"
+                " created_at DATETIME,"
+                " updated_at DATETIME,"
+                " resolved_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_firmware_upgrades_status "
+                "ON firmware_upgrades(status)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_pending_actions_status "
+                "ON pending_actions(status)"
+            ))
+    except OperationalError:
+        pass  # Tables/indexes already exist

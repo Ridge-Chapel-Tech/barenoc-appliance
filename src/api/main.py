@@ -14,7 +14,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics, firmware as firmware_routes
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 from ratelimit import RateLimitMiddleware
@@ -274,6 +274,8 @@ async def lifespan(app: FastAPI):
     start_alert_engine()  # background: device-down alerts + daily digest
     from telemetry import start_telemetry_engine
     start_telemetry_engine()  # background: time-series collectors
+    from firmware import start_firmware_engine
+    start_firmware_engine()  # background: autonomy-aware firmware upgrades
     from routes.settings import _write_provider_secret
     _write_provider_secret()  # sync the pi-agent provider key at startup
     from routes.settings import _remount_net_backup
@@ -328,6 +330,7 @@ app.include_router(onboard.router)
 app.include_router(support.router)
 app.include_router(network_opt.router)
 app.include_router(metrics.router)
+app.include_router(firmware_routes.router)
 
 
 # ── Health Check ──
