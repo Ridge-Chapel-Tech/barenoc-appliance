@@ -127,18 +127,37 @@ state = {
     "error": None,
 }
 
-if os.path.isfile(ts) and os.access(ts, os.X_OK):
-    state["installed"] = True
-    try:
-        out = subprocess.check_output([ts, "status", "--json"], timeout=20).decode()
-        d = json.loads(out)
-        self_ = d.get("Self", {}) or {}
-        state["online"] = bool(self_.get("Online"))
-        state["joined"] = bool(tags in (self_.get("Tags") or []))
-    except Exception as e:
-        state["error"] = "tailscale status unavailable: %s" % e
-else:
-    state["error"] = "tailscale not installed"
+
+def probe():
+    st = {"installed": False, "online": False, "joined": False, "error": None}
+    if os.path.isfile(ts) and os.access(ts, os.X_OK):
+        st["installed"] = True
+        try:
+            out = subprocess.check_output([ts, "status", "--json"], timeout=20).decode()
+            d = json.loads(out)
+            self_ = d.get("Self", {}) or {}
+            st["online"] = bool(self_.get("Online"))
+            st["joined"] = bool(tags in (self_.get("Tags") or []))
+        except Exception as e:
+            st["error"] = "tailscale status unavailable: %s" % e
+    else:
+        st["error"] = "tailscale not installed"
+    return st
+
+
+state = probe()
+if (state["installed"] and not (state["online"] and state["joined"])
+        and not dry_run):
+    # The join lands within ~a minute (the reconcile timer + the provision's
+    # own join); a probe right after provision can catch it mid-flight — the
+    # 08-20 false-positive class (boxes auto-reported 'verification failed'
+    # then joined fine a minute later). Give it a short grace before failure.
+    import time
+    for _ in range(9):
+        time.sleep(10)
+        state = probe()
+        if state["installed"] and state["online"] and state["joined"]:
+            break
 
 if state["installed"] and state["online"] and state["joined"]:
     state["action"] = "ok"

@@ -15,6 +15,20 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.20.d] — 2026-08-20
+
+### Fixed
+- **Starlink phantom device fabrication (08-20):** `ensure_dish_device` created + CLAIMED
+  a "Starlink Dish" device on every appliance (the monitor defaulted to enabled + the
+  default address 192.168.100.1) even with no Starlink on the network. The record is now
+  created only after a real dish snapshot succeeds, and a purge removes phantom dish
+  records on boxes with no explicit `STARLINK_ADDRESS` (a configured dish in an outage
+  keeps its record). Found via loompafoo's report (the "Starlink Dish" he doesn't have).
+- **Post-update verification grace (08-20):** the tailscale check right after the
+  provision could catch the join mid-flight → false "verification failed" auto-reports
+  on boxes that joined fine a minute later. The probe now retries up to ~90s before
+  declaring failure.
+
 ## [2026.08.20.b] — 2026-08-20
 
 ### Added

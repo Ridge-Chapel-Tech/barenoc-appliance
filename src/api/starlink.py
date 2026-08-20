@@ -301,6 +301,36 @@ def _dish_ip(address: str) -> str:
     return address.split(":")[0] if ":" in (address or "") else (address or DEFAULT_ADDRESS.split(":")[0])
 
 
+def _configured_address() -> str:
+    """The EXPLICITLY-configured dish address (empty when only the default is in
+    play). A dish record without an explicit STARLINK_ADDRESS is a phantom — no
+    real dish was ever configured on this box."""
+    return (os.environ.get("STARLINK_ADDRESS") or "").strip()
+
+
+def _purge_phantom_dish(db, address: str) -> None:
+    """Remove dish device records that have no real dish behind them.
+
+    A phantom = a dish-type record on a box with NO explicit STARLINK_ADDRESS
+    (the default 192.168.100.1 was never a real dish — found 08-20: every
+    appliance was fabricating+claiming a 'Starlink Dish' record). A real dish
+    in an outage (explicitly configured + temporarily unreachable) keeps its
+    record — only the no-config case is a phantom."""
+    configured = _configured_address()
+    ip = _dish_ip(address)
+    phantoms = []
+    for d in db.query(Device).filter(Device.device_type == "dish").all():
+        keep = bool(configured) and d.ip_address == ip
+        if not keep:
+            phantoms.append(d)
+    for d in phantoms:
+        log_event(db, "starlink_phantom_removed", "system",
+                  {"ip": d.ip_address}, None)
+        db.delete(d)
+    if phantoms:
+        db.commit()
+
+
 def ensure_dish_device(db, address: str = DEFAULT_ADDRESS) -> int:
     """Find-or-create the device record that owns starlink.* metrics + tickets.
     Identified by device_type == 'dish' first, then the dish IP. Commits its
@@ -349,11 +379,12 @@ def collect_starlink_telemetry(cfg: dict, db) -> list:
     if not scfg["enabled"]:
         return []
     snapshot = get_snapshot(scfg)
-    device_id = ensure_dish_device(db, scfg["address"])
     if snapshot is None:
-        _set_device_status(db, device_id, "unreachable")
-        db.commit()
+        # No reachable dish — honest gap: never fabricate a record, and purge
+        # a phantom one (a dish record on a box with no real Starlink).
+        _purge_phantom_dish(db, scfg["address"])
         return []
+    device_id = ensure_dish_device(db, scfg["address"])
     _set_device_status(db, device_id, "online")
     db.commit()
     return collect_starlink_metrics(device_id, snapshot)
@@ -379,7 +410,15 @@ class StarlinkHealthMonitor:
             return
         snapshot = get_snapshot(cfg, client=self._client)
         if snapshot is None:
-            return  # unreachable — honest gap, leave the state machine untouched
+            # unreachable — honest gap; also purge a phantom dish record (a box
+            # with no real Starlink must not hold a fabricated 'Starlink Dish').
+            session = self._session_factory()
+            try:
+                _purge_phantom_dish(session, cfg["address"])
+                session.commit()
+            except Exception:
+                session.rollback()
+            return
         session = self._session_factory()
         try:
             device_id = ensure_dish_device(session, cfg["address"])

@@ -424,6 +424,34 @@ class DeviceTest(unittest.TestCase):
         self.assertTrue(d.claimed)
         db.close()
 
+    def test_phantom_dish_purged_when_unconfigured(self):
+        """A dish record on a box with NO explicit STARLINK_ADDRESS is a phantom
+        (the default 192.168.100.1 was never a real dish) — the purge removes it
+        (the 08-20 fabrication bug: every appliance claimed a 'Starlink Dish')."""
+        db = SessionLocal()
+        pid = st.ensure_dish_device(db, "192.168.100.1:9200")
+        self.assertIsNotNone(db.get(Device, pid))
+        st._purge_phantom_dish(db, "192.168.100.1:9200")
+        self.assertIsNone(db.get(Device, pid))
+        db.close()
+
+    def test_configured_dish_survives_unreachable_purge(self):
+        """An explicitly-configured dish keeps its record even when temporarily
+        unreachable — the purge only removes no-config phantoms."""
+        db = SessionLocal()
+        pid = st.ensure_dish_device(db, "192.168.100.1:9200")
+        old = os.environ.get("STARLINK_ADDRESS")
+        os.environ["STARLINK_ADDRESS"] = "192.168.100.1:9200"
+        try:
+            st._purge_phantom_dish(db, "192.168.100.1:9200")
+        finally:
+            if old is None:
+                os.environ.pop("STARLINK_ADDRESS", None)
+            else:
+                os.environ["STARLINK_ADDRESS"] = old
+        self.assertIsNotNone(db.get(Device, pid))
+        db.close()
+
 
 # ═══════════════════════════════ route gating ═══════════════════════════════
 
