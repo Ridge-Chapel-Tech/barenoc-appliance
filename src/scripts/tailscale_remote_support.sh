@@ -96,10 +96,24 @@ install_tailscale() {
     return 0
   fi
   if command -v apt-get >/dev/null 2>&1; then
-    log "installing tailscale (apt)"
+    log "installing tailscale (official installer — configures the apt repo)"
+    # The official installer configures the Tailscale apt repo + keyring and
+    # installs the package. `apt-get install tailscale` alone FAILS on existing
+    # boxes (the repo is not pre-configured) — found live 08-20. Fall back to a
+    # plain apt install if the installer script can't run (e.g. offline).
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale-install.sh 2>/dev/null \
+         && bash /tmp/tailscale-install.sh >/dev/null 2>&1; then
+        rm -f /tmp/tailscale-install.sh
+        log "tailscale installed (official installer)"
+        return 0
+      fi
+      rm -f /tmp/tailscale-install.sh
+      log "official installer failed — falling back to apt"
+    fi
     apt-get update -qq >/dev/null 2>&1 || true
     if apt-get install -y tailscale >/dev/null 2>&1; then
-      log "tailscale installed"
+      log "tailscale installed (apt)"
       return 0
     fi
     log "tailscale install FAILED — continuing without remote support"

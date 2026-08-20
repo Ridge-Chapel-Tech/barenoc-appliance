@@ -20,6 +20,8 @@ POLL_INTERVAL = 300  # 5 minutes
 HEALTH_INTERVAL = 60  # 1 minute for connectivity checks
 ENV_PATH = "/opt/barenoc/.env"
 CREDS_PATH = "/opt/barenoc/agent/credentials"
+UPDATE_NOTIFY_MARKER = "/opt/barenoc/jobs/update_notified.key"
+UPDATE_AUTO_REPORT_MARKER = "/opt/barenoc/jobs/update_auto_reported.key"
 AUTOSYNC_INTERVALS = (5, 10, 15, 30, 60)  # allowed minutes
 # Startup guard: wait this long (s) for the api to be healthy AND the agent
 # credentials to log in before the main loop starts (the 08-14/08-18 family).
@@ -161,6 +163,22 @@ def _api_post(path: str, data: dict, token: str):
         method="POST",
     )
     urllib.request.urlopen(req, timeout=10)
+
+
+def _api_post_json(path: str, data: dict, token: str) -> dict:
+    """POST and return the JSON body (raises urllib HTTPError on non-200)."""
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(
+        f"{API_BASE}{path}",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=30)
+    return json.loads(resp.read().decode())
 
 
 def _appliance_tz() -> str:
@@ -461,12 +479,41 @@ def check_netopt_schedule(token: str, last_triggered: dict):
     _queue_netopt(token, key, last_triggered, complete=False)
 
 
+def _transient_done(marker_path: str, key: str, memory: dict, memory_key: str) -> bool:
+    """True when this transition key has NOT been handled before (in-memory or
+    on-disk marker) — the once-per-transition guard used by both the notify and
+    auto-report hooks (mirrors the original update_notified.key pattern)."""
+    if memory.get(memory_key) == key:
+        return False
+    try:
+        with open(marker_path) as f:
+            if f.read().strip() == key:
+                memory[memory_key] = key
+                return False
+    except Exception:
+        pass
+    return True
+
+
+def _transient_mark(marker_path: str, key: str, memory: dict, memory_key: str):
+    memory[memory_key] = key
+    try:
+        with open(marker_path, "w") as f:
+            f.write(key)
+    except Exception:
+        pass
+
+
 def check_update_progress(token: str, last_notified: dict):
     """Watch the host self-update service's progress file (exposed via
-    /updates/status). When it reaches a terminal stage (done/failed), email
-    the alert channel ONCE per transition. Persists the last-notified key so a
-    scheduler restart doesn't re-notify."""
-    marker = "/opt/barenoc/jobs/update_notified.key"
+    /updates/status). When it reaches a terminal stage (done/failed):
+      - email the alert channel ONCE per transition, and
+      - on a FAILED stage, file an automatic bug report through the in-app
+        Submit-Report path (the /updates/auto-report hook, gated by
+        AUTO_REPORT_POST_UPDATE) ONCE per transition.
+    Both use a persisted key so a scheduler restart doesn't re-fire."""
+    notify_marker = UPDATE_NOTIFY_MARKER
+    report_marker = UPDATE_AUTO_REPORT_MARKER
     try:
         st = _api_get("/updates/status", token)
     except Exception as e:
@@ -477,30 +524,30 @@ def check_update_progress(token: str, last_notified: dict):
     if stage not in ("done", "failed"):
         return
     key = f"{stage}:{prog.get('at', '')}"
-    if last_notified.get("update") == key:
-        return
-    try:
-        with open(marker) as f:
-            if f.read().strip() == key:
-                last_notified["update"] = key
-                return
-    except Exception:
-        pass
-    try:
-        _api_post("/updates/notify", {
-            "stage": stage,
-            "message": prog.get("message", ""),
-            "version": st.get("current", ""),
-        }, token)
-        last_notified["update"] = key
+
+    if _transient_done(notify_marker, key, last_notified, "update"):
         try:
-            with open(marker, "w") as f:
-                f.write(key)
-        except Exception:
-            pass
-        logger.info(f"Update notification sent ({key})")
-    except Exception as e:
-        logger.warning(f"Update notification failed: {e}")
+            _api_post("/updates/notify", {
+                "stage": stage,
+                "message": prog.get("message", ""),
+                "version": st.get("current", ""),
+            }, token)
+            _transient_mark(notify_marker, key, last_notified, "update")
+            logger.info(f"Update notification sent ({key})")
+        except Exception as e:
+            logger.warning(f"Update notification failed: {e}")
+
+    if stage == "failed" and _transient_done(report_marker, key, last_notified, "auto_report"):
+        try:
+            r = _api_post_json("/updates/auto-report", {
+                "stage": stage,
+                "message": prog.get("message", ""),
+                "version": st.get("current", ""),
+            }, token)
+            _transient_mark(report_marker, key, last_notified, "auto_report")
+            logger.info(f"Post-update auto-report filed: {r}")
+        except Exception as e:
+            logger.warning(f"Post-update auto-report failed: {e}")
 
 
 def _db_path() -> str:

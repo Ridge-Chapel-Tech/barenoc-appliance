@@ -8,9 +8,11 @@
 #
 # Flow (update): optional Proxmox snapshot -> download tarball -> verify
 # checksum -> backup current code -> map the release tree (src/ layout) onto
-# /opt/barenoc (flat layout) -> compose up --build -d -> health check -> runner
-# restart. On health failure: restore the previous code (+ qm rollback when a
-# snapshot was taken). NEVER touches .env, volumes/, jobs/ or backups/.
+# /opt/barenoc (flat layout) -> compose up --build -d (visible build log) ->
+# VERSION-verifying health check -> post-apply provision -> post-update
+# verification -> runner restart. On health/version failure: restore the
+# previous code (+ qm rollback when a snapshot was taken). NEVER touches .env,
+# volumes/, jobs/ or backups/.
 set -uo pipefail
 exec >> /var/log/barenoc-self-update.log 2>&1
 echo "=== barenoc-self-update $(date -Is) ==="
@@ -23,6 +25,8 @@ RESULT="$STATUS_DIR/update_result.json"
 PROG="$STATUS_DIR/progress.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+BUILD_LOG="/var/log/barenoc-self-update-build.log"
+: > "$BUILD_LOG" 2>/dev/null || true
 
 # Progress reporting — the API surfaces this in the Updates card (progress
 # bar + stage message); the scheduler emails on the terminal stage.
@@ -37,6 +41,27 @@ UPDATE_VMID="$(grep -E '^UPDATE_VMID=' "$BASE/.env" 2>/dev/null | head -1 | cut 
 UPDATE_HOST_KEY="$(grep -E '^UPDATE_HOST_SSH=' "$BASE/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
 
 report() { echo "$1" > "$RESULT"; }
+
+# probe_health — read the live health JSON (HTTP code + version). The version
+# is what proves the NEW build is actually serving: a failed rebuild leaves the
+# OLD stack serving 200, which a bare HTTP check would wrongly call "updated"
+# (the 08-20 buddy incident).
+probe_health() {
+  HEALTH_CODE="$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health 2>/dev/null)"
+  HEALTH_VERSION="$(curl -sk https://127.0.0.1/api/v1/health 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version", ""))
+except Exception:
+    print("")' 2>/dev/null)"
+}
+
+# rebuild_stack — compose up --build with VISIBLE output. The build log goes to
+# $BUILD_LOG AND this script's own log; never fully silent (08-20 root cause #2).
+rebuild_stack() {
+  cd "$BASE" || return 1
+  docker compose up --build -d 2>&1 | tee -a "$BUILD_LOG"
+  echo "==> compose rebuild exit: ${PIPESTATUS[0]:-?}"
+}
 
 # ── rollback ───────────────────────────────────────────────────────────────
 if [ -f "$RB" ]; then
@@ -56,7 +81,7 @@ if [ -f "$RB" ]; then
           "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
   chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
   progress 60 "rollback" "rebuilding stack"
-  cd "$BASE" && docker compose up --build -d >/dev/null 2>&1
+  rebuild_stack
   sleep 8
   if curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health | grep -q 200; then
     systemctl restart pi-agent-runner 2>/dev/null || true
@@ -147,32 +172,57 @@ chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
 
 # shared modules the worker image needs in its build context (mirror deploy.sh)
 for m in action_validator.py audit.py crypto.py database.py models.py \
-         sanitizer.py schemas.py worknotes.py llm_providers.py emailer.py; do
+         sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
+         llm_providers.py emailer.py; do
   [ -f "$BASE/api/$m" ] && cp "$BASE/api/$m" "$BASE/worker/$m"
 done
 
 systemctl daemon-reload 2>/dev/null || true
 
-# 5. rebuild + health
+# 5. rebuild + health (VERSION-verifying — 08-20 root cause #1)
 progress 80 "rebuild" "rebuilding containers"
-echo "==> rebuilding stack"
-cd "$BASE" && docker compose up --build -d >/dev/null 2>&1
+echo "==> rebuilding stack (build log: $BUILD_LOG)"
+rebuild_stack
 progress 92 "healthcheck" "waiting for the web UI"
 sleep 8
-OK="$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/health)"
-if [ "$OK" = "200" ]; then
+probe_health
+REQV="$(printf '%s' "$VERSION" | sed 's/^[vV]//')"
+GOTV="$(printf '%s' "$HEALTH_VERSION" | sed 's/^[vV]//')"
+if [ "$HEALTH_CODE" = "200" ] && [ -n "$REQV" ] && [ "$REQV" = "$GOTV" ]; then
   systemctl restart pi-agent-runner 2>/dev/null || true
+  echo "==> updated to $VERSION (health $HEALTH_CODE, version $GOTV)"
+
+  # 6. post-apply provision — existing boxes updating must get the full pass
+  #    too (tailscale install/seed, agent creds, notify, remote support) —
+  #    08-20 root cause #4.
+  echo "==> post-apply provision"
+  if ! bash /opt/barenoc/scripts/provision_agent.sh; then
+    echo "!! provision_agent.sh reported a problem — verify_post_update.sh re-checks"
+  fi
+
+  # 7. post-update verification suite (entitlement + tailscale self-heal).
+  echo "==> post-update verification"
+  if bash /opt/barenoc/scripts/verify_post_update.sh; then
+    rm -f "$REQ"
+    progress 100 "done" "update complete — services restarted"
+    report "{\"ok\": true, \"action\": \"update\", \"version\": \"$VERSION\", \"at\": \"$(date -Is)\", \"services_restarted\": true, \"reboot_required\": false}"
+    echo "==> updated to $VERSION (health $HEALTH_CODE, version $GOTV)"
+    exit 0
+  fi
+
+  # Verification failed — the update itself is healthy, so DO NOT roll back.
+  # Surface the failure; the scheduler auto-reports it when enabled.
   rm -f "$REQ"
-  progress 100 "done" "update complete — services restarted"
-  report "{\"ok\": true, \"action\": \"update\", \"version\": \"$VERSION\", \"at\": \"$(date -Is)\", \"services_restarted\": true, \"reboot_required\": false}"
-  echo "==> updated to $VERSION (health $OK)"
-  exit 0
+  progress 100 "failed" "post-update verification failed — see verify_post_update.json"
+  report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"applied\": true, \"error\": \"post-update verification failed\", \"at\": \"$(date -Is)\"}"
+  echo "==> update applied ($VERSION) but post-update verification FAILED"
+  exit 1
 fi
 
-progress 100 "failed" "update failed — health check; restoring previous release"
+progress 100 "failed" "update failed — health/version check; restoring previous release"
 
 # 6. failure -> restore previous + optional qm rollback
-echo "==> update failed (health $OK) — restoring previous"
+echo "==> update failed (health $HEALTH_CODE, expected $REQV, got $GOTV) — restoring previous"
 for d in api worker scheduler nginx scripts agent client docker-compose.yml; do
   rm -rf "$BASE/$d"
   [ -e "$BASE/.previous/$d" ] && cp -a "$BASE/.previous/$d" "$BASE/$d"
@@ -180,11 +230,11 @@ done
 chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
         "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
 chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
-cd "$BASE" && docker compose up --build -d >/dev/null 2>&1
+rebuild_stack
 if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; then
   ssh -i "$UPDATE_HOST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
       -o LogLevel=ERROR "$UPDATE_HOST" \
       "qm rollback $UPDATE_VMID before-$VERSION 2>/dev/null || true" || true
 fi
-report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"error\": \"health check failed; previous release restored\"}"
+report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"error\": \"health/version check failed (expected $REQV, got $GOTV); previous release restored\"}"
 exit 1

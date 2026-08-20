@@ -15,6 +15,40 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.20.b] — 2026-08-20
+
+### Added
+- **Post-update verification suite** (`scripts/verify_post_update.sh`) — runs after EVERY
+  self-update: (a) entitlement check (the `support_grant` beta gate — an entitled box
+  proceeds; an unentitled box reports state + skips the tailscale requirement), (b) tailscale
+  check + self-heal (install → seed key → join → verify the node is Online + tagged), and
+  (c) a result JSON the auto-report hook reads. Idempotent + safe — a healthy entitled box
+  sees no action beyond the checks; `--dry-run` for read-only testing.
+- **Auto-report hook** (`AUTO_REPORT_POST_UPDATE` env knob, default ON) — when a post-update
+  check FAILS (or the update itself rolls back), the appliance files a bug through the
+  existing in-app Submit-Report path (forum thread + redacted support bundle) titled
+  "Post-update verification failed" with the stage + evidence. Only real failures report.
+
+### Changed
+- **Self-update health check is now VERSION-verifying** — after the rebuild the script reads
+  the live `/api/v1/health` JSON and compares `version` to the requested version; a mismatch
+  is treated as a failure → restore `.previous` (the existing rollback path). Actual +
+  expected are logged (a failed rebuild left the old stack serving 200 — the 08-20 buddy bug).
+- **Build output is no longer masked** — the compose build streams to
+  `/var/log/barenoc-self-update-build.log` and the self-update script's own log; never fully
+  silent.
+- **Post-apply provision** — the update runs `provision_agent.sh` after a successful apply, so
+  existing boxes updating now get the full provision pass (tailscale, agent creds, notify,
+  remote support) automatically.
+
+### Fixed
+- **Self-update shared-module list matches deploy.sh's 12** — added `queue_status.py` +
+  `tone_pool.py` to the worker build-context copy (was 10) so worker builds no longer fail on
+  updated boxes.
+- **Tailscale install is repo-correct** — the remote-support provision now configures the
+  Tailscale apt repo via the official installer (`apt-get install tailscale` alone fails on
+  existing boxes with no pre-configured repo); falls back to a plain apt install.
+
 ## [2026.08.20.a] — 2026-08-20
 
 ### Fixed

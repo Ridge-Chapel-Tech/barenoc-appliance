@@ -12,6 +12,7 @@ Auth: operator/admin (UI) and agent (the scheduler's scheduled updates).
 import datetime
 import json
 import os
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -128,6 +129,28 @@ def _read_update_result() -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _read_verify_result() -> dict:
+    """The last post-update verification result (written by
+    verify_post_update.sh)."""
+    try:
+        with open(os.path.join(STATUS_DIR, "verify_post_update.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _auto_report_enabled() -> bool:
+    """AUTO_REPORT_POST_UPDATE gates the automatic post-update bug report.
+    Default ON (the 08-20 user directive: after every update, auto-report a
+    real failure); the knob lets an operator turn it off. The endpoint still
+    refuses to report anything but a genuine terminal failure."""
+    try:
+        raw = (_read_env_file().get("AUTO_REPORT_POST_UPDATE") or "true").strip().lower()
+    except Exception:
+        raw = "true"
+    return raw not in ("0", "false", "no", "off")
 
 
 def _confirmed_progress(progress: dict) -> dict:
@@ -403,6 +426,66 @@ def update_notify(body: dict = None,
         return {"status": "ok", "notified": result, "error": err}
     except Exception as e:
         return {"status": "ok", "notified": False, "error": str(e)}
+
+
+@router.post("/auto-report")
+def update_auto_report(body: dict = None,
+                       db: Session = Depends(get_db),
+                       user: User = Depends(require_any_role("agent", "technician", "operator", "admin"))):
+    """File a bug through the in-app Submit-Report path when a post-update
+    check failed AND AUTO_REPORT_POST_UPDATE is enabled.
+
+    Called by the scheduler after the host self-update service reaches a
+    terminal 'failed' stage (a failed/rolled-back update, or a failed
+    post-update verification). Only REAL failures are reported — a healthy
+    update never calls this. The report ships the stage + evidence as the
+    comment and the full redacted support bundle as the attachment.
+    """
+    body = body or {}
+    if not _auto_report_enabled():
+        return {"reported": False, "note": "AUTO_REPORT_POST_UPDATE is disabled"}
+
+    stage = str(body.get("stage") or "").strip()
+    message = str(body.get("message") or "").strip()
+    version = str(body.get("version") or _current_version()).strip()
+
+    # Confirm a real failure from persisted state (never fabricate one).
+    prog = _read_progress()
+    if not stage:
+        stage = str(prog.get("stage") or "").strip()
+    if not message:
+        message = str(prog.get("message") or "").strip()
+    if stage != "failed":
+        return {"reported": False, "note": f"no reportable failure (stage={stage!r})"}
+
+    result = _read_update_result()
+    verify = _read_verify_result()
+    evidence = {
+        "progress": {k: prog.get(k) for k in ("stage", "pct", "message", "at")},
+        "update_result": result,
+        "verify_post_update": verify,
+    }
+
+    comment = (
+        "Post-update verification failed.\n\n"
+        f"stage: {stage}\n"
+        f"version: {version}\n"
+        f"message: {message or '(none)'}\n\n"
+        "evidence:\n" + json.dumps(evidence, indent=2, default=str)
+    )
+
+    system_user = SimpleNamespace(username="barenoc-auto-report",
+                                 display_name="BareNOC appliance")
+    try:
+        import report_submit
+        from routes import support as _support
+        bundle = _support.build_bundle(comment, db, system_user)
+        out = report_submit.submit_report(comment, system_user, bundle=bundle,
+                                          bundle_filename="barenoc-support.md",
+                                          flagged=False)
+    except RuntimeError as e:
+        return {"reported": False, "error": str(e)}
+    return {"reported": True, **out}
 
 
 @router.get("/schedule")

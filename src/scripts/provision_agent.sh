@@ -141,6 +141,10 @@ chown root:root "$SUPPORT_SECRET_DIR/support_grant.json"
 
 # Install the remote-support reconciler (systemd timer) + perform the
 # idempotent apt install / tagged join. All failures are non-fatal here.
+# The install is repo-correct (tailscale_remote_support.sh uses the official
+# installer to configure the Tailscale apt repo) — 08-20: a bare
+# `apt-get install tailscale` fails on existing boxes with no pre-configured
+# repo. verify_post_update.sh is the update-time guarantee (post-apply).
 install -m 0644 /opt/barenoc/scripts/barenoc-remote-support.service /etc/systemd/system/ 2>/dev/null || true
 install -m 0644 /opt/barenoc/scripts/barenoc-remote-support.timer /etc/systemd/system/ 2>/dev/null || true
 systemctl daemon-reload 2>/dev/null || true

@@ -436,3 +436,73 @@ class UpdatesCheckStaleTest(unittest.TestCase):
         ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)).isoformat()
         self.assertFalse(updates._check_is_stale(ts, hours=0))
 
+
+class AutoReportTest(unittest.TestCase):
+    """The post-update auto-report hook: only real failures, gated by
+    AUTO_REPORT_POST_UPDATE (default ON), ships stage + evidence through the
+    in-app Submit-Report path."""
+
+    def _call(self, body):
+        return updates.update_auto_report(body or {},
+                                          db=SimpleNamespace(),
+                                          user=SimpleNamespace(username="agent"))
+
+    def test_auto_report_enabled_default(self):
+        with patch("routes.updates._read_env_file", return_value={}):
+            self.assertTrue(updates._auto_report_enabled())
+
+    def test_auto_report_disabled(self):
+        for v in ("false", "0", "no", "off"):
+            with patch("routes.updates._read_env_file",
+                       return_value={"AUTO_REPORT_POST_UPDATE": v}):
+                self.assertFalse(updates._auto_report_enabled(), v)
+
+    def test_disabled_returns_not_reported(self):
+        with patch.object(updates, "_auto_report_enabled", return_value=False):
+            r = self._call({"stage": "failed"})
+        self.assertFalse(r["reported"])
+        self.assertIn("disabled", r["note"])
+
+    def test_non_failure_stage_not_reported(self):
+        with patch.object(updates, "_auto_report_enabled", return_value=True), \
+             patch.object(updates, "_read_progress", return_value={"stage": "done"}):
+            r = self._call({"stage": "done"})
+        self.assertFalse(r["reported"])
+        self.assertIn("no reportable failure", r["note"])
+
+    def test_failure_files_report_with_evidence(self):
+        with patch.object(updates, "_auto_report_enabled", return_value=True), \
+             patch.object(updates, "_current_version", return_value="2026.08.20.b"), \
+             patch.object(updates, "_read_progress", return_value={
+                 "stage": "failed", "pct": 100,
+                 "message": "post-update verification failed", "at": "now"}), \
+             patch.object(updates, "_read_update_result", return_value={
+                 "ok": False, "version": "2026.08.20.b", "error": "x"}), \
+             patch.object(updates, "_read_verify_result", return_value={
+                 "entitled": True, "ok": False}), \
+             patch("report_submit.submit_report",
+                   return_value={"thread_id": "abc"}) as submit, \
+             patch("routes.support.build_bundle", return_value="# bundle") as bundle:
+            r = self._call({"stage": "failed"})
+        self.assertTrue(r["reported"])
+        self.assertEqual(r["thread_id"], "abc")
+        submit.assert_called_once()
+        bundle.assert_called_once()
+        comment = submit.call_args[0][0]
+        self.assertIn("Post-update verification failed", comment)
+        self.assertIn("post-update verification failed", comment)
+        self.assertIn("evidence", comment)
+
+    def test_submit_runtime_error_surfaces_without_raising(self):
+        with patch.object(updates, "_auto_report_enabled", return_value=True), \
+             patch.object(updates, "_read_progress", return_value={
+                 "stage": "failed", "message": "boom", "at": "now"}), \
+             patch.object(updates, "_read_update_result", return_value={}), \
+             patch.object(updates, "_read_verify_result", return_value={}), \
+             patch("routes.support.build_bundle", return_value="# bundle"), \
+             patch("report_submit.submit_report",
+                   side_effect=RuntimeError("forum-submit rejected the report: HTTP 502")):
+            r = self._call({"stage": "failed"})
+        self.assertFalse(r["reported"])
+        self.assertIn("rejected", r["error"])
+

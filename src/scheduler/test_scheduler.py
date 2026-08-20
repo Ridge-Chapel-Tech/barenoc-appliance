@@ -229,5 +229,76 @@ class TelemetryPruneTest(unittest.TestCase):
         self.assertEqual(result["deleted"], 0)
 
 
+class UpdateProgressHookTest(unittest.TestCase):
+    """check_update_progress: terminal transitions email once and, on FAILED,
+    file the post-update auto-report once (restart-safe via the marker files)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="upd-prog-")
+        self.notify_marker = os.path.join(self.tmp, "notify.key")
+        self.report_marker = os.path.join(self.tmp, "report.key")
+        p = patch.multiple(main, UPDATE_NOTIFY_MARKER=self.notify_marker,
+                           UPDATE_AUTO_REPORT_MARKER=self.report_marker)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _status(self, stage):
+        return {"current": "2026.08.20.b",
+                "progress": {"stage": stage, "pct": 100,
+                             "message": "m", "at": "2026-08-20T00:00:00Z"}}
+
+    def test_failed_stage_notifies_and_auto_reports(self):
+        get = patch.object(main, "_api_get", return_value=self._status("failed"))
+        post = patch.object(main, "_api_post")
+        postj = patch.object(main, "_api_post_json", return_value={"reported": True})
+        get.start(); self.addCleanup(get.stop)
+        mp = post.start(); self.addCleanup(post.stop)
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_update_progress("tok", {})
+        self.assertEqual(mp.call_count, 1)
+        self.assertEqual(mj.call_count, 1)
+        self.assertEqual(mj.call_args[0][0], "/updates/auto-report")
+        body = mj.call_args[0][1]
+        self.assertEqual(body["stage"], "failed")
+        self.assertEqual(body["version"], "2026.08.20.b")
+
+    def test_done_stage_notifies_only(self):
+        get = patch.object(main, "_api_get", return_value=self._status("done"))
+        post = patch.object(main, "_api_post")
+        postj = patch.object(main, "_api_post_json")
+        get.start(); self.addCleanup(get.stop)
+        mp = post.start(); self.addCleanup(post.stop)
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_update_progress("tok", {})
+        self.assertEqual(mp.call_count, 1)
+        self.assertEqual(mj.call_count, 0)
+
+    def test_non_terminal_stage_noop(self):
+        get = patch.object(main, "_api_get", return_value=self._status("download"))
+        post = patch.object(main, "_api_post")
+        postj = patch.object(main, "_api_post_json")
+        get.start(); self.addCleanup(get.stop)
+        mp = post.start(); self.addCleanup(post.stop)
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_update_progress("tok", {})
+        self.assertEqual(mp.call_count, 0)
+        self.assertEqual(mj.call_count, 0)
+
+    def test_transition_reported_once_across_restarts(self):
+        get = patch.object(main, "_api_get", return_value=self._status("failed"))
+        post = patch.object(main, "_api_post")
+        postj = patch.object(main, "_api_post_json", return_value={"reported": True})
+        get.start(); self.addCleanup(get.stop)
+        mp = post.start(); self.addCleanup(post.stop)
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_update_progress("tok", {})
+        self.assertEqual(mj.call_count, 1)
+        # a scheduler restart (fresh in-memory dict) must NOT re-report — the
+        # on-disk marker is the restart-safe guard.
+        main.check_update_progress("tok", {})
+        self.assertEqual(mj.call_count, 1)
+        self.assertEqual(mp.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
