@@ -115,6 +115,18 @@ tailscale_running() {
   python3 -c 'import json,sys; d=json.load(open("/tmp/ts-rs.json")); sys.exit(0 if d.get("BackendState")=="Running" else 1)' 2>/dev/null
 }
 
+# The node is only "already joined" when it is ONLINE and carries the tag — a
+# running-but-broken state (e.g. a failed earlier join, or an up without the
+# tag) must NOT skip the join (found 08-20 live: a half-connected node left
+# the timer skipping re-joins forever).
+tailscale_healthy() {
+  [ -x "$TS" ] || return 1
+  "$TS" status --json >/tmp/ts-rs.json 2>/dev/null || return 1
+  python3 -c 'import json,sys
+s=json.load(open("/tmp/ts-rs.json")).get("Self",{})
+sys.exit(0 if (s.get("Online") and "'"$tags"'" in (s.get("Tags") or [])) else 1)' 2>/dev/null
+}
+
 join() {
   local key tags host
   key="$(read_json_key "$SECRET" auth_key "")"
@@ -124,12 +136,14 @@ join() {
     log "no auth key configured — zero-touch join disabled"
     return 2
   fi
-  if tailscale_running; then
-    log "tailscale already running — join skipped (idempotent)"
+  if tailscale_running && tailscale_healthy; then
+    log "tailscale already running + joined — skip (idempotent)"
     return 0
   fi
+  # any up-but-unhealthy state (or a plain failed join): tear down cleanly first
+  "$TS" down >/dev/null 2>&1 || true
   log "joining support tailnet as $host"
-  "$TS" up --auth-key="$key" --hostname="$host" --tags="$tags" >/dev/null 2>&1 || {
+  "$TS" up --auth-key="$key" --hostname="$host" --advertise-tags="$tags" >/dev/null 2>&1 || {
     log "tailscale up FAILED"
     return 1
   }

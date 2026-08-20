@@ -15,6 +15,16 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.20.a] — 2026-08-20
+
+### Fixed
+- **Tailscale remote-support join used the wrong CLI flag** (`--tags` vs the real
+  `--advertise-tags`) — every tagged join failed at runtime; the idempotency check also
+  only tested "interface up" (a broken half-join skipped re-joins forever). The join now
+  verifies the node is ONLINE + carrying the tag, tears down any unhealthy state, and
+  re-joins cleanly. (Found + fixed live 08-20: prod joined as `bareNOC-<id>`,
+  `tag:appliance`, CGNAT IP.)
+
 ## [2026.08.19.e] — 2026-08-19
 
 ### Added
