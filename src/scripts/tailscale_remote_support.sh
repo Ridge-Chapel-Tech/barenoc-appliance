@@ -135,6 +135,8 @@ tailscale_running() {
 # the timer skipping re-joins forever).
 tailscale_healthy() {
   [ -x "$TS" ] || return 1
+  local tags
+  tags="$(read_json_key "$SECRET" tags "tag:appliance")"
   "$TS" status --json >/tmp/ts-rs.json 2>/dev/null || return 1
   python3 -c 'import json,sys
 s=json.load(open("/tmp/ts-rs.json")).get("Self",{})
@@ -197,8 +199,12 @@ reconcile() {
 
   err=""
   if [ "$enabled" = "true" ]; then
-    if ! join; then
-      err="tailscale join failed (auth key configured?)"
+    join
+    local rc=$?
+    if [ "$rc" -eq 2 ]; then
+      err="No support key set — paste the key from your provider, then save."
+    elif [ "$rc" -ne 0 ]; then
+      err="Invalid key — check with your provider."
     fi
   else
     "$TS" down >/dev/null 2>&1 || true

@@ -65,7 +65,9 @@ expiring, revocable auth key** stored 0600 in
   identity), but a fresh key is required for a NEW appliance or after a node
   is fully removed. Rotate by replacing `auth_key` in
   `/opt/barenoc/volumes/secrets/tailscale.json` (0600) and re-running
-  `tailscale_remote_support.sh reconcile`.
+  `tailscale_remote_support.sh reconcile` — or, owner-side, paste the new key
+  into **Settings → Support → Support key** and save (no SSH needed; the file
+  edit remains the operator fallback).
 - **Beta grant:** the `support` gate is beta-open via an expiring
   `support_grant` (0600 in `support_grant.json`). At GA the grant expires and
   the Support-subscription entitlement check takes over.

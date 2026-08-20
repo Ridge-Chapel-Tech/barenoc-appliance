@@ -104,7 +104,49 @@ Categories per release:
 - **CGNAT/Tailscale discovery exclusion:** 100.64.0.0/10 (RFC 6598 CGNAT +
   Tailscale overlay) is never scanned, discovered, claimed, or adopted — the
   buddy's Starlink 100.99.121.62 case is pinned in tests.
+## [2026.08.20.c] — 2026-08-20
 
+### Added
+- **Settings → Support → Support key input** (the customer flow for remote
+  support): a password-style **Support key** field lets the customer (or the
+  owner on their behalf) paste the vendor's Tailscale auth key instead of
+  hand-editing `/opt/barenoc/volumes/secrets/tailscale.json` over SSH. The API
+  writes the key to the 0600 secret (merging `tailnet`/`tags`/`hostname_prefix`/
+  `appliance_id`) and kicks the host reconciler immediately (the 60s timer stays
+  as the backstop) → the node joins within a minute. The toggle (ON/OFF) is
+  unchanged; the key field only appears when the box is entitled (the gate is
+  open).
+- **Remote-support status in the UI** — Settings → Support now shows a human
+  status: **Connected** (online + tailnet IP) / **Connecting…** / **Not
+  connected**, plus the tailnet IP and a human error when the join fails
+  ("Invalid key — check with your provider." / "No support key set…"). The API
+  reads the same state the reconciler writes (`remote_support.desired` +
+  `remote_support.json` + `self.json`).
+
+### Fixed
+- **ISO install is now self-sufficient (zero hands) — `proxmox/build_barenoc_iso.sh` + new `scripts/bootstrap_appliance.sh`**
+  (the 08-20 round-3 gap: a fresh ISO box needed manual remediation before
+  `deploy.sh` could run). The first-boot flow now makes the box turnkey on its
+  own:
+  - `/opt/barenoc` source tree lands `barenoc`-owned (deploy.sh's rsync + first
+    `mkdir -p` run AS barenoc and failed on a root-owned tree).
+  - `barenoc` gets passwordless sudo (the deploy's sudo steps need it).
+  - `.env` is bootstrapped (template + JWT/admin/encryption/appliance identity)
+    — previously neither first-boot nor deploy.sh created it (only the
+    appliance installer did).
+  - `step-ca/password-in` is written BEFORE the CA-init, and the CA init now
+    FAILS LOUDLY if `ca.json` isn't produced (the deploy's `|| true` silently
+    masked the missing-password-file abort → "there is no ca.json config
+    file" → the step-ca provisioner step failed).
+  - nginx certs (main + stepca vhost) + CoreDNS Corefile + the
+    barenoc-devices provisioner are all created pre-compose, so `nginx` no
+    longer crash-loops on a fresh install.
+  - the worker build context gets the shared api modules copied in (deploy.sh
+    does this before compose; the ISO tarball ships them side-by-side so
+    first-boot must too — otherwise the worker build dies with
+    `"/emailer.py": not found`).
+  - `provision_agent.sh` re-asserts the same bootstrap on every deploy (the
+    appliance-installer / ISO / manual-deploy paths now converge).
 
 ## [2026.08.19.d] — 2026-08-19
 

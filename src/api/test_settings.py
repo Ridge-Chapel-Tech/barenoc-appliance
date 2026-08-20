@@ -398,33 +398,39 @@ class RemoteSupportTest(unittest.TestCase):
         init_db()
         return SessionLocal()
 
-    def _put(self, enabled, allowed=True, note=""):
+    def _put(self, enabled, allowed=True, note="", auth_key=None):
         import tempfile as _tf
         _t = _tf.mkdtemp(prefix="remote-support-put-")
         os.environ["DATABASE_URL"] = f"sqlite:///{_t}/test.db"
         db = self._db()
         desired = os.path.join(_t, "remote_support.desired")
         state = os.path.join(_t, "remote_support.json")
+        secret = os.path.join(_t, "tailscale.json")
+        config = {"enabled": enabled}
+        if auth_key is not None:
+            config["auth_key"] = auth_key
         with patch.object(s, "REMOTE_SUPPORT_DIR", _t), \
              patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
              patch.object(s, "REMOTE_SUPPORT_STATE", state), \
+             patch.object(s, "TAILSCALE_SECRET_FILE", secret), \
+             patch.object(s, "_trigger_remote_support_reconcile"), \
              patch.object(s.report_gate, "report_gate_allowed", return_value=allowed), \
              patch.object(s.report_gate, "report_gate_status",
                           return_value={"open": allowed, "mode": "support",
                                         "note": note}):
             r = s.update_remote_support(
-                {"enabled": enabled}, db=db,
+                config, db=db,
                 user=SimpleNamespace(role="admin", username="tester"))
-        return r, desired
+        return r, desired, secret
 
     def test_enable_writes_desired_flag(self):
-        r, desired = self._put(True)
+        r, desired, _ = self._put(True)
         self.assertEqual(r["enabled"], True)
         with open(desired) as f:
             self.assertIs(json.load(f)["enabled"], True)
 
     def test_disable_writes_desired_flag(self):
-        r, desired = self._put(False)
+        r, desired, _ = self._put(False)
         self.assertEqual(r["enabled"], False)
         with open(desired) as f:
             self.assertIs(json.load(f)["enabled"], False)
@@ -433,6 +439,121 @@ class RemoteSupportTest(unittest.TestCase):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException):
             self._put(True, allowed=False, note="gated to the Support subscription")
+
+
+class RemoteSupportKeyTest(unittest.TestCase):
+    """Settings → Support → Support key: 0600 write + JSON shape + trigger +
+    status read + toggle interplay. Uses a FAKE key only (never a real vendor
+    key)."""
+
+    FAKE_KEY = "tskey-test-not-real-000000"
+
+    def _db(self):
+        from database import SessionLocal, init_db
+        init_db()
+        return SessionLocal()
+
+    def _paths(self, tmp):
+        return (os.path.join(tmp, "remote_support.desired"),
+                os.path.join(tmp, "remote_support.json"),
+                os.path.join(tmp, "tailscale.json"))
+
+    def _put(self, config, tmp):
+        os.environ["DATABASE_URL"] = f"sqlite:///{tmp}/test.db"
+        db = self._db()
+        desired, state, secret = self._paths(tmp)
+        triggered = []
+        with patch.object(s, "REMOTE_SUPPORT_DIR", tmp), \
+             patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
+             patch.object(s, "REMOTE_SUPPORT_STATE", state), \
+             patch.object(s, "TAILSCALE_SECRET_FILE", secret), \
+             patch.object(s, "_trigger_remote_support_reconcile",
+                          side_effect=lambda: triggered.append(1)), \
+             patch.object(s.report_gate, "report_gate_allowed", return_value=True), \
+             patch.object(s.report_gate, "report_gate_status",
+                          return_value={"open": True, "mode": "support", "note": ""}):
+            r = s.update_remote_support(config, db=db,
+                                        user=SimpleNamespace(role="admin", username="tester"))
+        return r, secret, triggered
+
+    def test_key_written_0600_and_json_shape(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp(prefix="remote-support-key-")
+        r, secret, triggered = self._put({"enabled": False, "auth_key": self.FAKE_KEY}, tmp)
+        self.assertTrue(r["key_saved"])
+        self.assertEqual(triggered, [1])  # reconcile triggered on save
+        self.assertEqual(os.stat(secret).st_mode & 0o777, 0o600)
+        with open(secret) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["auth_key"], self.FAKE_KEY)
+        self.assertEqual(cfg["tags"], "tag:appliance")     # defaults merged
+        self.assertEqual(cfg["hostname_prefix"], "bareNOC")
+        self.assertIn("tailnet", cfg)
+
+    def test_key_merge_preserves_existing_fields(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp(prefix="remote-support-key-")
+        desired, state, secret = self._paths(tmp)
+        with open(secret, "w") as f:
+            json.dump({"auth_key": "", "tailnet": "example.ts.net",
+                       "tags": "tag:appliance", "hostname_prefix": "bareNOC",
+                       "appliance_id": "abc123"}, f)
+        r, secret, _ = self._put({"enabled": False, "auth_key": self.FAKE_KEY}, tmp)
+        with open(secret) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["auth_key"], self.FAKE_KEY)
+        self.assertEqual(cfg["tailnet"], "example.ts.net")  # preserved
+        self.assertEqual(cfg["appliance_id"], "abc123")     # preserved
+
+    def test_masked_key_ignored(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp(prefix="remote-support-key-")
+        desired, state, secret = self._paths(tmp)
+        with open(secret, "w") as f:
+            json.dump({"auth_key": self.FAKE_KEY, "tags": "tag:appliance"}, f)
+        r, secret, _ = self._put({"enabled": False, "auth_key": "••••••••"}, tmp)
+        self.assertFalse(r["key_saved"])
+        with open(secret) as f:
+            self.assertEqual(json.load(f)["auth_key"], self.FAKE_KEY)
+
+    def test_status_read_key_presence_and_joined(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp(prefix="remote-support-key-")
+        desired, state, secret = self._paths(tmp)
+        with open(secret, "w") as f:
+            json.dump({"auth_key": self.FAKE_KEY}, f)
+        with open(state, "w") as f:
+            json.dump({"applied": True, "tailscale_ip": "100.99.121.62",
+                       "hostname": "bareNOC-abc", "error": None}, f)
+        with open(os.path.join(tmp, "self.json"), "w") as f:
+            json.dump({"online": True, "tailscale_ip": "100.99.121.62",
+                       "hostname": "bareNOC-abc"}, f)
+        with patch.object(s, "REMOTE_SUPPORT_DIR", tmp), \
+             patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
+             patch.object(s, "REMOTE_SUPPORT_STATE", state), \
+             patch.object(s, "TAILSCALE_SECRET_FILE", secret), \
+             patch.object(s.report_gate, "report_gate_status",
+                          return_value={"open": True, "mode": "support", "beta": True, "note": ""}):
+            d = s.remote_support(user=SimpleNamespace(role="admin", username="tester"))
+        self.assertTrue(d["key_configured"])
+        self.assertEqual(d["auth_key"], "••••••••")
+        self.assertTrue(d["joined"])
+        self.assertEqual(d["tailscale"]["tailscale_ip"], "100.99.121.62")
+
+    def test_status_key_absent_not_joined(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp(prefix="remote-support-key-")
+        desired, state, secret = self._paths(tmp)
+        with patch.object(s, "REMOTE_SUPPORT_DIR", tmp), \
+             patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
+             patch.object(s, "REMOTE_SUPPORT_STATE", state), \
+             patch.object(s, "TAILSCALE_SECRET_FILE", secret), \
+             patch.object(s.report_gate, "report_gate_status",
+                          return_value={"open": True, "mode": "support", "note": ""}):
+            d = s.remote_support(user=SimpleNamespace(role="admin", username="tester"))
+        self.assertFalse(d["key_configured"])
+        self.assertEqual(d["auth_key"], "")
+        self.assertFalse(d["joined"])
 
 
 

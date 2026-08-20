@@ -14,6 +14,10 @@ When you turn it on, the appliance joins the BareNOC **support tailnet** over
 — no open ports).
 
 - The appliance appears as `bareNOC-<appliance-id>` on the support tailnet.
+- **Support key:** paste the key your provider sent you into the **Support
+  key** field (password-style) in Settings → Support, then save. The key is
+  stored securely (0600) and the appliance joins within a minute. The field
+  appears only when remote support is available for your box.
 - The support team can reach **appliance nodes only** — never the rest of your
   LAN (Tailscale ACLs enforce this; see the deployment guide).
 - Turning it **off** immediately runs `tailscale down` and removes the

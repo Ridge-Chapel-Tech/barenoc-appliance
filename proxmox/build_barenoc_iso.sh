@@ -84,7 +84,7 @@ APP_TARBALL="$WORK/barenoc-app.tar.gz"
 tar czf "$APP_TARBALL" -C "$REPO" \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='client/build' --exclude='client/dist' \
   --exclude='.git' client deploy.sh \
-  -C "$REPO/src" agent api worker scheduler nginx scripts docker-compose.yml
+  -C "$REPO/src" agent api worker scheduler nginx scripts docker-compose.yml .env.example
 APP_TARBALL_B64="$(base64 -w0 "$APP_TARBALL")"
 
 # The tarball is ~1MB base64 — a single `echo '<b64>'` shell arg exceeds the
@@ -168,6 +168,10 @@ mkdir -p "$WORK/isofs/autoinstall"
 SSH_LINE=""
 if [[ -n "$SSH_KEY" ]]; then SSH_LINE="    ssh_authorized_keys: [ $(tr -d '\n' < "$SSH_KEY") ]"; fi
 PW_HASH="$(openssl passwd -6 "$ADMIN_PASSWORD")"
+# Seed the app's first-login ADMIN_PASSWORD for the first-boot .env bootstrap
+# (base64 so a user-supplied --admin-password with any characters survives the
+# YAML/shell embedding; decoded in-target to /opt/barenoc/.admin-seed).
+ADMIN_PW_B64="$(printf '%s' "$ADMIN_PASSWORD" | base64 -w0)"
 
 # nocloud seed needs meta-data alongside user-data: DataSourceNoCloud FAILS
 # without it (found 08-14 live: cloud-init logged "Getting data from
@@ -201,6 +205,8 @@ $SSH_LINE
     # embedded application tarball → /opt/barenoc (deploy.sh contents),
     # in 60KB base64 chunks (single-arg embedding hit ARG_MAX/E2BIG)
 ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf /tmp/barenoc-app.tar.gz -C /opt/barenoc && rm -f /tmp/barenoc-app.tar.gz"
+    # seeded admin password for the first-boot .env bootstrap (removed after use)
+    - curtin in-target -- bash -c "printf '%s' '${ADMIN_PW_B64}' | base64 -d > /opt/barenoc/.admin-seed && chmod 600 /opt/barenoc/.admin-seed"
     # Bootable under OVMF — the efivars-bind + grub-install late-commands were
     # REMOVED 08-17 (round 3): curtin's own install-grub hook registers a working
     # 'ubuntu' NVRAM entry (Boot0002 -> \EFI\ubuntu\shimx64.efi) and the disk
@@ -232,7 +238,7 @@ ${CHUNK_CMDS}    - curtin in-target -- bash -c "mkdir -p /opt/barenoc && tar xzf
       [Service]
       Type=oneshot
       RemainAfterExit=yes
-      ExecStart=/bin/bash -c 'test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; cd /opt/barenoc && docker compose up --build -d api worker nginx step-ca pocket-id dns && bash scripts/provision_agent.sh && docker compose up --build -d scheduler && bash scripts/verify_agent_provision.sh && install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/ && install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now barenoc-self-update.path'
+      ExecStart=/bin/bash -c 'set -e; test -f /opt/barenoc/.provisioned || bash /opt/barenoc-provision.sh; bash /opt/barenoc/scripts/bootstrap_appliance.sh; cd /opt/barenoc && docker compose up --build -d api worker nginx step-ca pocket-id dns; bash scripts/provision_agent.sh; docker compose up --build -d scheduler; bash scripts/verify_agent_provision.sh; install -m 0755 /opt/barenoc/scripts/barenoc-self-update.sh /usr/local/bin/barenoc-self-update.sh; install -m 0644 /opt/barenoc/scripts/barenoc-self-update.service /etc/systemd/system/; install -m 0644 /opt/barenoc/scripts/barenoc-self-update.path /etc/systemd/system/; systemctl daemon-reload; systemctl enable --now barenoc-self-update.path'
 
       [Install]
       WantedBy=multi-user.target

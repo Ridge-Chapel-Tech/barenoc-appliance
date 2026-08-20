@@ -623,6 +623,11 @@
           <span class="block text-xs text-gray-400 mt-0.5" id="rs-gate-note"></span>
         </span>
       </label>
+      <div id="rs-key-wrap" class="mt-4 hidden">
+        <label class="block text-sm font-medium text-gray-700">Support key</label>
+        <input id="rs-key" type="password" autocomplete="off" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="tskey-… — paste the key from your provider">
+        <p class="text-xs text-gray-400 mt-1" id="rs-key-status"></p>
+      </div>
       <div class="mt-3 flex items-center gap-3">
         <button onclick="saveRemoteSupport()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Remote Support</button>
         <span id="rs-msg" class="text-sm"></span>
@@ -1478,19 +1483,38 @@ async function saveIdentity() {
 // ── Remote support (customer toggle) ──
 async function loadRemoteSupport() {
   var el = document.getElementById('rs-status');
+  var keyWrap = document.getElementById('rs-key-wrap');
   try {
     var r = await fetch('/api/v1/settings/remote-support', { headers: { 'Authorization': 'Bearer ' + getToken() } });
     var d = await r.json();
     document.getElementById('rs-enabled').checked = !!d.desired_enabled;
     var gate = d.gate || {};
+    var gateOpen = !!gate.open;
     document.getElementById('rs-gate-note').textContent = (gate.open && gate.beta) ? 'Beta support grant active.' : (gate.open ? '' : gate.note);
+    // The support key field only appears when the box is entitled (gate open).
+    keyWrap.classList.toggle('hidden', !gateOpen);
+    if (gateOpen) {
+      document.getElementById('rs-key').value = d.auth_key || '';
+      document.getElementById('rs-key-status').textContent = d.key_configured
+        ? 'Key saved — paste a new one to rotate it.'
+        : 'No key yet — paste the key from your provider.';
+    }
     var t = d.tailscale || {};
     var st = d.state || {};
-    var online = (t.online || st.applied) ? '● online' : '○ offline';
     var ip = t.tailscale_ip || st.tailscale_ip || '';
     var name = t.hostname || st.hostname || 'bareNOC-<appliance-id>';
-    el.innerHTML = 'Node: <span class="font-mono text-xs">' + esc(name) + '</span>' + (ip ? ' <span class="font-mono text-xs">' + esc(ip) + '</span>' : '') + ' · ' + online;
-    if (st.error) el.innerHTML += '<div class="text-xs text-red-600 mt-1">' + esc(st.error) + '</div>';
+    var statusHtml;
+    if (d.joined) {
+      statusHtml = '<span class="text-green-700 font-medium">● Connected</span>';
+    } else if (d.desired_enabled) {
+      statusHtml = '<span class="text-amber-600 font-medium">● Connecting…</span>';
+    } else {
+      statusHtml = '<span class="text-gray-500 font-medium">○ Not connected</span>';
+    }
+    el.innerHTML = 'Node: <span class="font-mono text-xs">' + esc(name) + '</span>' + (ip ? ' <span class="font-mono text-xs">' + esc(ip) + '</span>' : '') + ' · ' + statusHtml;
+    var err = st.error || '';
+    if (err && !d.joined) el.innerHTML += '<div class="text-xs text-red-600 mt-1">' + esc(err) + '</div>';
+    else if (!d.joined && !d.desired_enabled && !d.key_configured) el.innerHTML += '<div class="text-xs text-gray-500 mt-1">Paste your support key above, then enable remote support to connect.</div>';
   } catch (e) { el.innerHTML = '<span class="text-red-600">Could not load remote support status</span>'; }
 }
 async function saveRemoteSupport() {
@@ -1500,7 +1524,7 @@ async function saveRemoteSupport() {
     var r = await fetch('/api/v1/settings/remote-support', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-      body: JSON.stringify({ enabled: document.getElementById('rs-enabled').checked })
+      body: JSON.stringify({ enabled: document.getElementById('rs-enabled').checked, auth_key: document.getElementById('rs-key').value || '' })
     });
     if (!r.ok) { var e = await r.json().catch(function () { return {}; }); throw new Error(e.detail || ('HTTP ' + r.status)); }
     msg.textContent = '✅ Saved — applying within a minute.';

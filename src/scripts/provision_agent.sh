@@ -29,6 +29,19 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# Self-sufficiency wiring (ISO round 4): ownership / passwordless sudo /
+# .env bootstrap / step-ca password-in + CA init / nginx certs / Corefile.
+# The ISO first-boot runs this bootstrap BEFORE `docker compose up`; re-running
+# it here makes EVERY path (appliance installer, ISO, manual deploy) converge
+# on the same turnkey state — a box that was installed before this wiring
+# self-heals on the next deploy. Idempotent (no-ops once artifacts exist).
+echo "==> Agent provision: self-sufficiency bootstrap"
+if [[ -f /opt/barenoc/scripts/bootstrap_appliance.sh ]]; then
+  bash /opt/barenoc/scripts/bootstrap_appliance.sh
+else
+  echo "!! bootstrap_appliance.sh not found — skipping (pre-bootstrap tree)" >&2
+fi
+
 AGENT_DIR="/opt/barenoc/agent"
 UNIT_SRC="$AGENT_DIR/pi-agent-runner.service"
 UNIT_DST="/etc/systemd/system/pi-agent-runner.service"

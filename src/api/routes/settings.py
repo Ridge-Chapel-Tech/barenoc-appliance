@@ -658,6 +658,10 @@ def get_settings_status(user: User = Depends(require_role("admin"))):
 REMOTE_SUPPORT_DIR = "/opt/barenoc/volumes/remote_access"
 REMOTE_SUPPORT_DESIRED = os.path.join(REMOTE_SUPPORT_DIR, "remote_support.desired")
 REMOTE_SUPPORT_STATE = os.path.join(REMOTE_SUPPORT_DIR, "remote_support.json")
+# The support auth key (vendor Tailscale key) — 0600 secret, same pattern as
+# forum_submit.json / notify.json. The host reconciler reads it for the tagged
+# join; the API only ever returns PRESENCE (never the key itself).
+TAILSCALE_SECRET_FILE = "/opt/barenoc/volumes/secrets/tailscale.json"
 
 
 def _read_remote_support_json(path: str, default: dict) -> dict:
@@ -677,23 +681,73 @@ def _remote_support_state() -> dict:
     return _read_remote_support_json(REMOTE_SUPPORT_STATE, {})
 
 
+def _read_tailscale_secret() -> dict:
+    """Read the 0600 tailscale.json {auth_key, tailnet, tags, ...}."""
+    try:
+        with open(TAILSCALE_SECRET_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_tailscale_secret(auth_key: str):
+    """Persist the support auth key (0600). Merges the existing file so
+    tailnet/tags/hostname_prefix/appliance_id survive a key-only save. The key
+    value never touches .env."""
+    cfg = _read_tailscale_secret()
+    cfg["auth_key"] = auth_key.strip()
+    cfg.setdefault("tailnet", "")
+    cfg.setdefault("tags", "tag:appliance")
+    cfg.setdefault("hostname_prefix", "bareNOC")
+    cfg.setdefault("appliance_id", "")
+    os.makedirs(os.path.dirname(TAILSCALE_SECRET_FILE), exist_ok=True)
+    fd = os.open(TAILSCALE_SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f)
+    os.chmod(TAILSCALE_SECRET_FILE, 0o600)
+
+
+def _trigger_remote_support_reconcile():
+    """Best-effort: kick the host reconciler NOW so a saved key/toggle applies
+    immediately. `systemctl start --no-block` returns at once and lets systemd
+    run the oneshot (the 60s timer is the backstop). A missing host unit /
+    docker socket just means "wait for the timer" — never raised."""
+    try:
+        _host_run(
+            "nsenter -t 1 -m -- systemctl start --no-block "
+            "barenoc-remote-support.service",
+            timeout=15)
+    except Exception:
+        pass
+
+
 @router.get("/remote-support")
 def remote_support(user: User = Depends(require_role("admin"))):
-    """Settings → Support: the remote-support toggle state + gate + tailscale
-    node identity (from the host-written self.json)."""
+    """Settings → Support: the remote-support toggle + support-key presence +
+    live join status (host-written self.json + reconciler state). The auth key
+    itself is never returned."""
     gate = report_gate.report_gate_status(user)
     desired = _remote_support_desired()
     state = _remote_support_state()
     self_json = _read_remote_support_json(
         os.path.join(REMOTE_SUPPORT_DIR, "self.json"), {})
+    key_cfg = _read_tailscale_secret()
+    key_configured = bool((key_cfg.get("auth_key") or "").strip())
+    tailscale_ip = self_json.get("tailscale_ip") or state.get("tailscale_ip")
+    online = bool(self_json.get("online")) or bool(state.get("applied"))
+    joined = bool(online and tailscale_ip)
     return {
         "gate": gate,
         "desired_enabled": bool(desired.get("enabled")),
+        "key_configured": key_configured,
+        "auth_key": "••••••••" if key_configured else "",
+        "joined": joined,
         "state": state,
         "tailscale": {
-            "online": bool(self_json.get("online")),
+            "online": online,
             "hostname": self_json.get("hostname") or state.get("hostname"),
-            "tailscale_ip": self_json.get("tailscale_ip") or state.get("tailscale_ip"),
+            "tailscale_ip": tailscale_ip,
         },
     }
 
@@ -701,26 +755,43 @@ def remote_support(user: User = Depends(require_role("admin"))):
 @router.put("/remote-support")
 def update_remote_support(config: dict, db: Session = Depends(get_db),
                           user: User = Depends(require_role("admin"))):
-    """Enable/disable the customer Remote support toggle (audit-logged).
+    """Enable/disable the customer Remote support toggle + save the support
+    auth key (0600 secret, never .env). Audit-logged.
 
     Enabling is gated: in `support` mode the beta grant must be active (or the
     GA entitlement must pass). The host reconciler applies tailscale up/down
-    within its next tick (≤ 60s).
+    and the new key within its next tick (≤ 60s); we also trigger it now
+    (best-effort) so the join starts immediately.
     """
     enabled = bool(config.get("enabled"))
     # Mode-aware gate: open during beta (default), support-gated out of beta.
     if enabled and not report_gate.report_gate_allowed(user):
         gate = report_gate.report_gate_status(user)
         raise HTTPException(status_code=403, detail=gate["note"])
+
+    fields = ["remote_support"]
+    # Support key (password-style paste). Only a real, non-masked value is
+    # written — "••••••••" is the UI's "unchanged" signal and never persists.
+    auth_key = str(config.get("auth_key") or "").strip()
+    key_saved = False
+    if auth_key and "••" not in auth_key:
+        _write_tailscale_secret(auth_key)
+        key_saved = True
+        fields.append("support_key")
+
     os.makedirs(REMOTE_SUPPORT_DIR, exist_ok=True)
     with open(REMOTE_SUPPORT_DESIRED, "w") as f:
         json.dump({"enabled": enabled}, f)
     os.chmod(REMOTE_SUPPORT_DESIRED, 0o644)
     log_event(db, "settings_change", user.username, {
-        "section": "support", "fields": ["remote_support"],
+        "section": "support", "fields": fields,
+        # the auth key value is NEVER logged (only the toggle bool)
         "values": {"remote_support": enabled},
     })
-    return {"status": "ok", "enabled": enabled,
+
+    _trigger_remote_support_reconcile()
+
+    return {"status": "ok", "enabled": enabled, "key_saved": key_saved,
             "note": "The remote-support change applies within a minute."}
 
 

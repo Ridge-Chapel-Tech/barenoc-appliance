@@ -484,6 +484,12 @@ Remote support**.
   `tailscale up/down`; the node identity + tailnet status is shown beside the
   toggle. The change applies within a minute (a host-side systemd timer
   reconciles the desired state).
+- **Support key:** the customer (or the owner on their behalf) pastes the
+  vendor's auth key into the **Support key** field (password-style) in
+  **Settings → Support** — no `sudo nano` on the box. Saving it writes the
+  0600 secret and triggers the join immediately. The field appears only when
+  remote support is available for the box (the same entitlement gate as the
+  toggle).
 - **Scoped access (hard):** the support tailnet's **Tailscale ACLs** let the
   vendor's support user reach **appliance nodes ONLY** — never the customer's
   LAN. ACL config lives in the vendor's tailnet admin console (see the
@@ -494,9 +500,10 @@ Remote support**.
   **Support subscription** entitlement check takes over. The submit-report
   path is gated by the same check.
 - **Secrets:** the auth key + tailnet config live in
-  `/opt/barenoc/volumes/secrets/tailscale.json` (0600); the beta grant lives in
-  `/opt/barenoc/volumes/secrets/support_grant.json` (0600). Neither ever
-  touches `.env`.
+  `/opt/barenoc/volumes/secrets/tailscale.json` (0600; the **Support key**
+  field writes it, and the provision step seeds it empty); the beta grant
+  lives in `/opt/barenoc/volumes/secrets/support_grant.json` (0600). Neither
+  ever touches `.env`.
 
 > For the vendor: the Tailscale ACL config, the auth-key rotation cadence, and
 > the gate semantics are documented in the release handoff (internal-only).
