@@ -31,6 +31,7 @@ from database import SessionLocal
 from models import Device
 import metrics_store
 import network_opt
+import network_scope
 import starlink
 
 logger = logging.getLogger("barenoc.telemetry")
@@ -366,10 +367,13 @@ def _device_maps(db):
     devices = db.query(Device).filter(Device.claimed.is_(True)).all()
     self_ids = network_opt.self_identifiers()
     mac_map = {(d.mac_address or "").lower(): d.id for d in devices if d.mac_address}
-    pingable = [d for d in devices if d.ip_address and not network_opt.is_self(d, self_ids)]
+    pingable = [d for d in devices
+                if d.ip_address and not network_opt.is_self(d, self_ids)
+                and not network_scope.is_tunnel_or_cgnat(d.ip_address)]
     pingable.sort(key=lambda d: (d.ip_address or "", d.name or ""))
     snmp_devs = [d for d in devices if d.ip_address and d.snmp_community
-                 and not network_opt.is_self(d, self_ids)]
+                 and not network_opt.is_self(d, self_ids)
+                 and not network_scope.is_tunnel_or_cgnat(d.ip_address)]
     return mac_map, pingable, snmp_devs
 
 

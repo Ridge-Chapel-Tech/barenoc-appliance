@@ -6,6 +6,22 @@ without ever seeing your secrets.
 
 > Admin-only: only admins can generate the bundle.
 
+## Remote support (Settings → Support)
+
+**Settings → Support** has a **Remote support** toggle — **off by default**.
+When you turn it on, the appliance joins the BareNOC **support tailnet** over
+**Tailscale** (identity-verified, outbound-only, works through Starlink/CGNAT
+— no open ports).
+
+- The appliance appears as `bareNOC-<appliance-id>` on the support tailnet.
+- The support team can reach **appliance nodes only** — never the rest of your
+  LAN (Tailscale ACLs enforce this; see the deployment guide).
+- Turning it **off** immediately runs `tailscale down` and removes the
+  appliance from the support tailnet. The change applies within a minute.
+- **Beta note:** remote support is available during the beta via an expiring
+  support grant. At general availability it becomes a paid **Support**
+  subscription feature — the same gate that protects report submission.
+
 ## What's in the bundle
 
 | Section | Contents |

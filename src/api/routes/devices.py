@@ -15,6 +15,7 @@ from action_validator import (
     effective_channels, suggest_from_fingerprint,
     CHANNELS,
 )
+import network_scope
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
@@ -103,6 +104,8 @@ def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
         ip = (hit or {}).get("ip") or ""
         if not ip:
             continue
+        if network_scope.is_tunnel_or_cgnat(ip):
+            continue  # never inventory CGNAT/Tailscale overlay addresses
         name = (hit.get("sysname") or "").strip() or None
         vendor = (hit.get("vendor") or "").strip() or None
         desc = (hit.get("sysdescr") or "").strip()
@@ -268,6 +271,9 @@ def create_device(
     if not _group_ok(ctx, group):
         raise HTTPException(status_code=403,
                             detail=f"You don't have access to device group '{group}'")
+    if network_scope.is_tunnel_or_cgnat(device_data.ip_address):
+        raise HTTPException(status_code=400,
+                            detail="100.64.0.0/10 is CGNAT/Tailscale space — it can never be a device record.")
     # Check for duplicate IP
     existing = db.query(Device).filter(Device.ip_address == device_data.ip_address).first()
     if existing:
@@ -319,6 +325,9 @@ def claim_device(
     if not _group_ok(ctx, group):
         raise HTTPException(status_code=403,
                             detail=f"You don't have access to device group '{group}'")
+    if network_scope.is_tunnel_or_cgnat(device.ip_address):
+        raise HTTPException(status_code=400,
+                            detail="100.64.0.0/10 is CGNAT/Tailscale space — it can never be claimed or adopted.")
 
     device.name = config.name
     device.hostname = config.hostname or config.name
@@ -425,15 +434,17 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
             aip = (env.get("APPLIANCE_IP") or "").strip()
             raw = ".".join(aip.split(".")[:3]) + ".0/24" if aip.count(".") == 3 else "192.168.0.0/24"
         subnets = [s.strip() for s in raw.split(",") if s.strip()]
+        # Normalize legacy bare 3-octet prefixes to /24 so the ping loop AND
+        # the SNMP sweep target both see valid CIDRs.
+        normalized = [(s + "/24") if ("/" not in s and s.count(".") == 3) else s
+                      for s in subnets]
         max_per_subnet = 50
         try:
             max_per_subnet = max(10, min(int(env.get("DISCOVERY_MAX_HOSTS_PER_SUBNET") or "50"), 254))
         except (TypeError, ValueError):
             max_per_subnet = 50
         discovered = 0
-        for subnet in subnets:
-            if "/" not in subnet and subnet.count(".") == 3:
-                subnet = subnet + "/24"
+        for subnet in normalized:
             try:
                 net = ipaddress.ip_network(subnet, strict=False)
             except ValueError:
@@ -445,6 +456,8 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
             count = 0
             for ip in net.hosts():
                 ip = str(ip)
+                if network_scope.is_tunnel_or_cgnat(ip):
+                    continue  # CGNAT/Tailscale overlay — never a scan target
                 if ip in existing_ips or count >= max_per_subnet:
                     continue
                 job = {
@@ -468,10 +481,13 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
                     pass
         # SNMP sweep pass: probe the scanned subnets for SNMP gear (routers,
         # switches, APs, printers identify themselves). Runs as an agent job.
+        # CGNAT/Tailscale ranges are dropped from the sweep target entirely.
+        sweep_subnets = [n for n in normalized
+                         if not network_scope.subnet_overlaps_tunnel(n)]
         sweep = {
             "ticket_id": f"snmp-sweep-{datetime.utcnow().strftime('%M%S')}",
             "action": "snmp_sweep",
-            "target": ",".join(str(n) for n in subnets),
+            "target": ",".join(sweep_subnets),
             "params": {"community": env.get("DISCOVERY_SNMP_COMMUNITY", "public")},
             "reason": "SNMP discovery sweep",
             "confidence": 1.0,

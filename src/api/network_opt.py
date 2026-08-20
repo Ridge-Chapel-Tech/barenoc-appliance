@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 
 from database import SessionLocal
 from models import Device, ScanRun, Finding
+import network_scope
 from network_opt_rules import (
     SCHEMA_VERSION, GEAR_TYPES, evaluate, score, count_rules,
     build_port_discovery,
@@ -175,6 +176,10 @@ def build_scope(db, config: dict = None, env: dict = None) -> dict:
     for d in rows:
         if is_self(d, self_ids):
             excluded.append({"name": d.name, "ip": d.ip_address, "reason": "self"})
+            continue
+        if network_scope.is_tunnel_or_cgnat(d.ip_address):
+            excluded.append({"name": d.name, "ip": d.ip_address,
+                             "reason": "cgnat/tunnel (100.64.0.0/10)"})
             continue
         is_gear = (d.device_type or "unknown").lower() in GEAR_TYPES
         if is_gear or d.unifi_managed:
@@ -538,6 +543,19 @@ def _port_mac_table_count(pt: dict) -> int:
     return 0
 
 
+def _connected_at(pt: dict):
+    """When the port's current link came up (epoch seconds), from
+    last_connection.connected_at / last_seen — used for the link-flap recency
+    window (a high cumulative count with a long-stable link is historical, not
+    an active fault)."""
+    lc = pt.get("last_connection") or {}
+    for k in ("connected_at", "last_seen"):
+        v = lc.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
 def _mac_string(v) -> str:
     """Normalize a MAC-ish value (string or {mac:...} dict) to lowercase colon
     form — '' when not a usable MAC. Best-effort, never raises."""
@@ -715,6 +733,7 @@ def collect_unifi(config: dict, client=None) -> dict:
                 "tagged_networks": [n for n in (
                     _name(x) for x in tagged_ids.split(",") if x) if n],
                 "link_down_count": pt.get("link_down_count") or 0,
+                "connected_at": _connected_at(pt),
                 "tx_errors": pt.get("tx_errors") or 0,
                 "rx_errors": pt.get("rx_errors") or 0,
                 "is_uplink": bool(pt.get("is_uplink")),

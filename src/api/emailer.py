@@ -1,4 +1,4 @@
-"""Email module — dual transport for BareNOC alerts & digests.
+"""Email module — multi-transport for BareNOC alerts & digests.
 
 Transport selection (per send, read from the .env file — hot-reloadable):
 
@@ -15,6 +15,12 @@ Transport selection (per send, read from the .env file — hot-reloadable):
 
   2. SMTP (fallback for other providers, or OAuth2-capable SMTP relays) —
      SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD with STARTTLS.
+
+  3. Vendor-managed notify (DEFAULT — out-of-the-box) — the appliance POSTs to
+     the vendor `notify` edge function (shared NOTIFY_TOKEN in the 0600
+     /opt/barenoc/volumes/secrets/notify.json, the forum-submit pattern), which
+     sends via Resend from noreply@notify.barenoc.com. Used when no SMTP/Gmail
+     is configured, so alerts/digests/EOD/check-ins work with zero setup.
 
 Multi-recipient: ALERT_EMAIL may be comma/space/semicolon separated.
 All sending is best-effort: failures are logged, never raised.
@@ -46,11 +52,16 @@ SSL_CONTEXT = ssl.create_default_context()
 GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
+NOTIFY_SECRET_FILE = "/opt/barenoc/volumes/secrets/notify.json"
+NOTIFY_URL_DEFAULT = "https://eqivajpnvansfpxkegpr.supabase.co/functions/v1/notify"
+NOTIFY_TIMEOUT = 30
+
 _EMAIL_KEYS = (
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL",
     "ALERT_RECIPIENTS", "DIGEST_RECIPIENTS", "EOD_RECIPIENTS",
     "REPORT_MORNING_DIGEST", "REPORT_EOD_SUMMARY", "DIGEST_HOUR", "EOD_HOUR",
     "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SENDER",
+    "EMAIL_TRANSPORT", "EMAIL_REPLY_TO", "CUSTOMER_NAME", "SITE_ID",
 )
 
 
@@ -78,12 +89,60 @@ def gmail_configured() -> bool:
                 and env.get("GOOGLE_REFRESH_TOKEN"))
 
 
-def smtp_configured() -> bool:
-    """True when ANY email transport is configured (Gmail OAuth or SMTP)."""
-    if gmail_configured():
-        return True
+def _read_notify_secret() -> dict:
+    """Read the 0600 notify config {url, token} (never in .env)."""
+    try:
+        with open(NOTIFY_SECRET_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def load_notify_config() -> dict:
+    """Return {url, token} for the vendor notify transport. The URL has a
+    default (the shared Supabase project) and can be overridden in .env via
+    NOTIFY_URL; the token lives only in the 0600 secret file."""
+    cfg = _read_notify_secret()
     env = _read_email_env()
+    url = (cfg.get("url") or "").strip() or env.get("NOTIFY_URL", "").strip() \
+        or NOTIFY_URL_DEFAULT
+    return {"url": url, "token": (cfg.get("token") or "").strip()}
+
+
+def vendor_configured() -> bool:
+    """True when the vendor notify transport is usable (token + URL present)."""
+    return bool(load_notify_config()["token"])
+
+
+def _smtp_creds(env: dict) -> bool:
     return bool(env.get("SMTP_HOST") and env.get("SMTP_USER") and env.get("SMTP_PASSWORD"))
+
+
+def transport_mode(env: Optional[dict] = None) -> str:
+    """Resolve the effective email transport: 'vendor' or 'smtp'.
+
+    EMAIL_TRANSPORT is the explicit Settings choice (vendor-managed vs your own
+    SMTP). When unset (fresh install or upgrade), the self-hosted override wins
+    if SMTP/Gmail is configured — otherwise the out-of-the-box vendor transport
+    is the default."""
+    env = env if env is not None else _read_email_env()
+    choice = (env.get("EMAIL_TRANSPORT") or "").strip().lower()
+    if choice in ("vendor", "smtp"):
+        return choice
+    if gmail_configured() or _smtp_creds(env):
+        return "smtp"
+    return "vendor"
+
+
+def smtp_configured() -> bool:
+    """True when ANY email transport is configured — Gmail OAuth, SMTP, or the
+    vendor-managed notify transport (the out-of-the-box default). This is the
+    gate the alert engine's email half uses: vendor-managed counts as
+    configured so alerts/digests/EOD/check-ins run with zero setup."""
+    env = _read_email_env()
+    if transport_mode(env) == "smtp":
+        return gmail_configured() or _smtp_creds(env)
+    return vendor_configured()
 
 
 def _split_emails(value: str) -> list:
@@ -241,6 +300,77 @@ def _send_via_smtp(env: dict, to: list, msg, from_addr: str) -> tuple:
         return False, str(e)
 
 
+# ── Vendor-managed notify transport (default, out-of-the-box) ──
+
+def _vendor_from_name(env: dict) -> str:
+    """Display name for the vendor From — the appliance's site name."""
+    return (env.get("CUSTOMER_NAME") or env.get("SITE_ID") or "").strip() or "BareNOC"
+
+
+def _vendor_nonce(to: list, subject: str, text: str) -> str:
+    """Deterministic idempotency nonce: stable for ~10 min so a retry of the
+    same email dedupes at the notify fn, but a later identical email gets a
+    fresh nonce."""
+    import hashlib
+    import time
+    bucket = int(time.time() // 600)
+    h = hashlib.sha256()
+    h.update("|".join(sorted(to)).encode())
+    h.update(b"|")
+    h.update((subject or "").encode())
+    h.update(b"|")
+    h.update((text or "").encode())
+    return f"{h.hexdigest()[:32]}-{bucket}"
+
+
+def _send_via_vendor(env: dict, to: list, subject: str,
+                     body_text: str, body_html: str) -> tuple:
+    cfg = load_notify_config()
+    if not cfg["token"]:
+        return False, "vendor notify token not configured (Settings → Email/Notifications)"
+    reply_to = (env.get("EMAIL_REPLY_TO") or "").strip()
+    payload = {
+        "to": to,
+        "subject": subject,
+        "text": body_text,
+        "from_name": _vendor_from_name(env),
+        "nonce": _vendor_nonce(to, subject, body_text),
+    }
+    if body_html:
+        payload["html"] = body_html
+    if reply_to:
+        payload["reply_to"] = reply_to
+    req = urllib.request.Request(
+        cfg["url"],
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {cfg['token']}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=NOTIFY_TIMEOUT, context=SSL_CONTEXT)
+        data = json.loads(resp.read().decode())
+        if data.get("ok"):
+            logger.info("Vendor notify send OK (to %d recipient(s), id %s)",
+                        len(to), data.get("id", ""))
+            return True, None
+        note = data.get("note") or "vendor notify rejected the send"
+        logger.error(f"Vendor notify failed: {note}")
+        return False, note
+    except urllib.error.HTTPError as e:
+        try:
+            note = json.loads(e.read().decode()).get("note") or f"HTTP {e.code}"
+        except Exception:
+            note = f"HTTP {e.code}"
+        logger.error(f"Vendor notify failed: {note}")
+        return False, note
+    except Exception as e:
+        logger.error(f"Vendor notify failed: {e}")
+        return False, str(e)
+
+
 # ── public API ──────────────────────────────────────────────────
 
 def send_email(
@@ -252,9 +382,12 @@ def send_email(
 ) -> tuple:
     """Send one email. `to` may be a string (comma-separated ok) or a list.
 
-    Uses Gmail OAuth2 when configured, else SMTP. `overrides` (from the
-    settings form, e.g. test-email before saving) is merged over the .env
-    config. Returns (ok: bool, error: Optional[str]). Never raises.
+    Transport (per send, hot-read from .env):
+      - 'smtp'  → Gmail OAuth2 when configured, else SMTP (your own domain).
+      - 'vendor' (default) → the vendor-managed notify edge fn (Resend).
+    `overrides` (from the settings form, e.g. test-email before saving) is
+    merged over the .env config. Returns (ok: bool, error: Optional[str]).
+    Never raises.
     """
     env = _read_email_env()
     if overrides:
@@ -277,16 +410,21 @@ def send_email(
     from_addr = env.get("GOOGLE_SENDER") or env.get("SMTP_USER", "")
     if from_addr:
         msg["From"] = from_addr
+    if (env.get("EMAIL_REPLY_TO") or "").strip():
+        msg["Reply-To"] = env["EMAIL_REPLY_TO"].strip()
     msg.attach(MIMEText(body_text, "plain"))
     if body_html:
         msg.attach(MIMEText(body_html, "html"))
 
-    if gmail_configured() or (env.get("GOOGLE_CLIENT_ID") and env.get("GOOGLE_REFRESH_TOKEN")):
-        return _send_via_gmail(env, to, msg)
-    if not env.get("SMTP_HOST") or not env.get("SMTP_USER") or not env.get("SMTP_PASSWORD"):
-        logger.warning("Email send skipped: no transport configured (Gmail OAuth or SMTP)")
-        return False, "no email transport configured (Gmail OAuth or SMTP)"
-    return _send_via_smtp(env, to, msg, from_addr or env.get("SMTP_USER", ""))
+    mode = transport_mode(env)
+    if mode == "smtp":
+        if gmail_configured() or (env.get("GOOGLE_CLIENT_ID") and env.get("GOOGLE_REFRESH_TOKEN")):
+            return _send_via_gmail(env, to, msg)
+        if not _smtp_creds(env):
+            logger.warning("Email send skipped: 'your own SMTP' selected but not configured")
+            return False, "no email transport configured ('your own SMTP' selected but SMTP/Gmail not set)"
+        return _send_via_smtp(env, to, msg, from_addr or env.get("SMTP_USER", ""))
+    return _send_via_vendor(env, to, subject, body_text, body_html)
 
 
 def alert_html(title: str, rows: list) -> str:

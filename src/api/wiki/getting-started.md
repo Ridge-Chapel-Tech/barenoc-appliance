@@ -63,7 +63,14 @@ BareNOC and its Proxmox hosts join a **Tailscale** tailnet for remote
 management — no open ports, works from anywhere. See the **Remote Access**
 card in Settings → General: it shows each node (appliance + Proxmox host),
 its `100.x` tailnet IP, and an **Approve this node** link when a node still
-needs your Tailscale login. Once online:
+needs your Tailscale login.
+
+There is also a **customer-controlled Remote support** toggle in **Settings →
+Support** (off by default). It joins the appliance to the BareNOC **support
+tailnet** under a tagged, revocable identity so the support team can reach
+**this appliance only** (never your LAN). See [Support / Bug Report](/wiki/support).
+
+Once online:
 
 ```bash
 # from anywhere on your tailnet

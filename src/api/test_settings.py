@@ -8,6 +8,7 @@ empty on reload — never re-injected as "P1,P2".
     docker compose exec api python3 -m unittest test_settings -v
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -322,6 +323,117 @@ class BackupsSectionTest(unittest.TestCase):
             r = s.get_section("identity", user=SimpleNamespace(role="admin"))
         self.assertIs(r["passkey_viable"], False)
         self.assertIn("public-suffix", r["passkey_warning"])
+
+
+class EmailTransportTest(unittest.TestCase):
+    """Settings → Email/Notifications: vendor-managed vs your own SMTP."""
+
+    def _get(self, env: dict, notify_cfg: dict = None) -> dict:
+        with patch.object(s, "_read_env_file", return_value=env), \
+             patch.object(s, "_read_notify_secret_file", return_value=notify_cfg or {}), \
+             patch("emailer.gmail_configured", return_value=False):
+            return s.get_section("email", user=SimpleNamespace(role="admin"))
+
+    def test_get_defaults_to_vendor(self):
+        r = self._get({})
+        self.assertEqual(r["transport"], "vendor")
+        self.assertEqual(r["reply_to"], "")
+        self.assertFalse(r["notify_token_configured"])
+
+    def test_get_reflects_smtp_override_when_creds_set(self):
+        env = {"SMTP_HOST": "h", "SMTP_USER": "u", "SMTP_PASSWORD": "p"}
+        self.assertEqual(self._get(env)["transport"], "smtp")
+
+    def test_get_notify_config_presence(self):
+        r = self._get({}, {"url": "https://fn", "token": "t"})
+        self.assertTrue(r["notify_token_configured"])
+        self.assertEqual(r["notify_url"], "https://fn")
+        self.assertEqual(r["notify_token"], "••••••••")
+
+    def _put(self, config: dict, env: dict = None):
+        env = dict(env or {})
+        captured_env = {}
+        captured_notify = {}
+        with patch.object(s, "_read_env_file", return_value=env), \
+             patch.object(s, "_write_env_file", side_effect=lambda e: captured_env.update(e)), \
+             patch.object(s, "log_event"), \
+             patch.object(s, "_read_notify_secret_file", return_value={}), \
+             patch.object(s, "_write_notify_secret",
+                          side_effect=lambda u, t: captured_notify.update({"url": u, "token": t})):
+            r = s.update_section("email", config, db=None,
+                                 user=SimpleNamespace(role="admin", username="t"))
+        return r, captured_env, captured_notify
+
+    def test_put_transport_and_reply_to(self):
+        r, env, _ = self._put({"transport": "smtp", "reply_to": "a@x.com"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(env["EMAIL_TRANSPORT"], "smtp")
+        self.assertEqual(env["EMAIL_REPLY_TO"], "a@x.com")
+
+    def test_put_transport_rejects_bad_value(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._put({"transport": "carrier-pigeon"})
+
+    def test_put_reply_to_rejects_junk(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._put({"reply_to": "not-an-email"})
+
+    def test_put_notify_config_0600(self):
+        r, env, notify = self._put({"notify_url": "https://fn2", "notify_token": "newtok"})
+        self.assertEqual(notify, {"url": "https://fn2", "token": "newtok"})
+        self.assertNotIn("notify_token", env)  # token never lands in .env
+
+    def test_put_notify_token_masked_is_ignored(self):
+        r, env, notify = self._put({"notify_token": "••••••••"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(notify, {})
+class RemoteSupportTest(unittest.TestCase):
+    """Settings → Support → Remote support toggle (customer-controlled
+    Tailscale up/down), gated by the beta support grant."""
+
+    def _db(self):
+        from database import SessionLocal, init_db
+        init_db()
+        return SessionLocal()
+
+    def _put(self, enabled, allowed=True, note=""):
+        import tempfile as _tf
+        _t = _tf.mkdtemp(prefix="remote-support-put-")
+        os.environ["DATABASE_URL"] = f"sqlite:///{_t}/test.db"
+        db = self._db()
+        desired = os.path.join(_t, "remote_support.desired")
+        state = os.path.join(_t, "remote_support.json")
+        with patch.object(s, "REMOTE_SUPPORT_DIR", _t), \
+             patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
+             patch.object(s, "REMOTE_SUPPORT_STATE", state), \
+             patch.object(s.report_gate, "report_gate_allowed", return_value=allowed), \
+             patch.object(s.report_gate, "report_gate_status",
+                          return_value={"open": allowed, "mode": "support",
+                                        "note": note}):
+            r = s.update_remote_support(
+                {"enabled": enabled}, db=db,
+                user=SimpleNamespace(role="admin", username="tester"))
+        return r, desired
+
+    def test_enable_writes_desired_flag(self):
+        r, desired = self._put(True)
+        self.assertEqual(r["enabled"], True)
+        with open(desired) as f:
+            self.assertIs(json.load(f)["enabled"], True)
+
+    def test_disable_writes_desired_flag(self):
+        r, desired = self._put(False)
+        self.assertEqual(r["enabled"], False)
+        with open(desired) as f:
+            self.assertIs(json.load(f)["enabled"], False)
+
+    def test_enable_denied_without_grant(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._put(True, allowed=False, note="gated to the Support subscription")
+
 
 
 if __name__ == "__main__":

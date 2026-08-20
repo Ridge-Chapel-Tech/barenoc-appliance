@@ -753,5 +753,32 @@ class LoginCacheAndBackoffTest(unittest.TestCase):
         urlopen.assert_not_called()
 
 
+class SweepRunnerTest(unittest.TestCase):
+    """The sweep path streams PROGRESS notes and aborts cleanly at the
+    deadline — a subnet sweep never hangs the runner (the 08-19 fix)."""
+
+    def test_streams_progress_and_parses_json(self):
+        cmd = ["bash", "-c",
+               'echo "PROGRESS: Scanned 1 of 1 hosts (1 up)" >&2; '
+               'echo \'{"network": "192.0.2.0/30", "found": [{"ip": "192.0.2.1"}], "count": 1}\'']
+        notes = []
+        with patch("runner._post_progress", side_effect=lambda tid, text, tone=None: notes.append(text)):
+            res = runner._run_sweep(cmd, "TKT-SWEEP-1", os.environ.copy(),
+                                    "network_discovery", "192.0.2.0/30")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["output"]["count"], 1)
+        self.assertEqual(notes, ["Scanned 1 of 1 hosts (1 up)"])
+
+    def test_sweep_aborts_cleanly_on_timeout(self):
+        # A long sleep must be killed at the deadline and reported as a clean
+        # abort — never an indefinite hang.
+        cmd = ["bash", "-c", "sleep 30"]
+        with patch("runner.JOB_TIMEOUT", 1), patch("runner._post_progress"):
+            res = runner._run_sweep(cmd, "TKT-SWEEP-2", os.environ.copy(),
+                                    "network_discovery", "10.0.0.0/24")
+        self.assertFalse(res["success"])
+        self.assertIn("Timed out", res["error"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

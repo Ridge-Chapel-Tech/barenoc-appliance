@@ -666,6 +666,35 @@ class SnmpOidTest(unittest.TestCase):
             snap = network_opt.collect_snmp(ip, community)
         return snap, calls
 
+
+    def test_link_down_historical_stable_downgraded_to_info(self):
+        """The 08-19 user report: a high CUMULATIVE link_down_count with a
+        long-stable link (e.g. maintenance actions) must NOT recommend a cable
+        replacement — it drops to info with a 'watch, don't re-cable' note."""
+        # build a minimal snapshot: one switch port, 26 transitions, connected 48h ago
+        import time
+        dev = {"name": "HouseSwitch", "device_type": "switch", "unifi_managed": True,
+               "unifi": {"ports": [{"port_idx": 1, "name": "Port 1", "up": True,
+                                     "link_down_count": 26,
+                                     "connected_at": int(time.time()) - 48 * 3600}]}}
+        ev = rules._rel_link_down_count({"devices": [dev]}, dev)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.get("severity"), "info")
+        self.assertIn("don't re-cable", ev.get("detail", ""))
+
+    def test_link_down_recent_warns_conservative(self):
+        """A recently-re-established link with a high count still warns, but the
+        action is the conservative maintenance-aware one (never 'replace the cable')."""
+        import time
+        dev = {"name": "HouseSwitch", "device_type": "switch", "unifi_managed": True,
+               "unifi": {"ports": [{"port_idx": 1, "name": "Port 1", "up": True,
+                                     "link_down_count": 26,
+                                     "connected_at": int(time.time()) - 600}]}}
+        ev = rules._rel_link_down_count({"devices": [dev]}, dev)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.get("severity", "warning"), "warning")
+        self.assertIn("maintenance", ev.get("detail", ""))
+
     def test_system_oids_correct(self):
         snap, calls = self._collect()
         get_oids = [c[-1] for c in calls if c[0] == "snmpget"]

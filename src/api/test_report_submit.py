@@ -94,6 +94,28 @@ class GateTest(unittest.TestCase):
         self.assertIn("Support subscription", st["note"])
         self.assertFalse(report_gate.report_gate_allowed(env={"REPORT_GATE": "support"}))
 
+    def test_support_gated_beta_grant_active(self):
+        env = {"REPORT_GATE": "support", "SUPPORT_GRANT": "beta-grant-key",
+               "SUPPORT_GRANT_EXPIRES_AT": "2999-01-01T00:00:00Z"}
+        st = report_gate.report_gate_status(env=env)
+        self.assertTrue(st["open"])
+        self.assertTrue(st["beta"])
+        self.assertTrue(report_gate.support_allowed(env=env))
+        self.assertTrue(report_gate.report_gate_allowed(env=env))
+
+    def test_support_gated_beta_grant_expired(self):
+        env = {"REPORT_GATE": "support", "SUPPORT_GRANT": "beta-grant-key",
+               "SUPPORT_GRANT_EXPIRES_AT": "2000-01-01T00:00:00Z"}
+        st = report_gate.report_gate_status(env=env)
+        self.assertFalse(st["open"])
+        self.assertFalse(report_gate.support_grant_active(env=env))
+        self.assertFalse(report_gate.report_gate_allowed(env=env))
+
+    def test_support_gated_beta_grant_missing(self):
+        st = report_gate.report_gate_status(env={"REPORT_GATE": "support"})
+        self.assertFalse(st["open"])
+        self.assertFalse(report_gate.support_grant_active(env={"REPORT_GATE": "support"}))
+
 
 class PayloadTest(unittest.TestCase):
     def test_payload_shape(self):

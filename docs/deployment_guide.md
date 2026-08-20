@@ -164,7 +164,8 @@ run `./deploy.sh barenoc@<ip>` yourself later.
 5. Configure in **Settings** (all audit-logged):
    - **UniFi** — controller URL/credentials, auto-sync interval, auto-adopt.
    - **LLM Providers** — the active provider(s) (DeepSeek/Gemini/Anthropic/Ollama).
-   - **Email** — Gmail OAuth2 (client id/secret/refresh token) + recipients/schedule.
+   - **Email** — vendor-managed (out-of-the-box, default) or your own SMTP
+     (Gmail OAuth2 / SMTP relay) + recipients/schedule/reply-to.
    - **General** — site ID, customer name, timezone, bot names.
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
    - **Tickets / Autonomy Policy** — lifecycle + approval profile for your site.
@@ -385,8 +386,11 @@ Directory layout: `/opt/barenoc/{api,worker,scheduler,nginx,scripts,agent,client
   `LLM_PROVIDER_ORDER` (failover chain), `LLM_POLICY_*` (autonomy),
   `LLM_RETRY_*`.
 - **UniFi:** `UNIFI_URL/USER/PASSWORD`, `UNIFI_AUTOSYNC_*`, `UNIFI_AUTO_ADOPT`.
-- **Email:** `GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN/SENDER`, `ALERT_EMAIL`,
-  per-type recipients, digest/EOD schedule.
+- **Email:** `EMAIL_TRANSPORT` (vendor-managed default vs `smtp`),
+  `EMAIL_REPLY_TO`, `ALERT_EMAIL`, per-type recipients, digest/EOD schedule;
+  the vendor notify token/URL live in the 0600 `notify.json` secret (never
+  `.env`); Gmail OAuth2 (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN/SENDER`) or
+  `SMTP_HOST/USER/PASSWORD` for the self-hosted override.
 - **Pocket ID:** `APP_URL`, `OIDC_*` (set in Settings → Identity).
 - **Backups:** managed in Settings → Backups (the Proxmox host reconciles its
   cron from the VM every 10 min — appliance only).
@@ -463,6 +467,40 @@ sudo security delete-certificate -c "BareNOC Internal CA Root"
 > and warn when it isn't covered (e.g. `certutil` missing, or a flatpak/snap profile) with
 > the manual command to run.
 
+<a id="remote-support-tailscale"></a>
+### Remote support (Tailscale) — customer-controlled
+
+BareNOC ships a **vendor support tailnet** path for remote support. It is
+**off by default** and controlled by the customer in **Settings → Support →
+Remote support**.
+
+- **Mechanism:** Tailscale (identity mTLS, outbound-only — works through
+  Starlink/CGNAT and double-NAT; no inbound ports).
+- **Join:** the provision step (which runs on every deploy, including the
+  in-app update) runs `apt install tailscale` and joins the appliance to the
+  support tailnet with a **tagged, expiring, revocable auth key**. The node
+  name is `bareNOC-<appliance-id>` and its tag is `tag:appliance`.
+- **Customer toggle:** **Settings → Support → Remote support** runs
+  `tailscale up/down`; the node identity + tailnet status is shown beside the
+  toggle. The change applies within a minute (a host-side systemd timer
+  reconciles the desired state).
+- **Scoped access (hard):** the support tailnet's **Tailscale ACLs** let the
+  vendor's support user reach **appliance nodes ONLY** — never the customer's
+  LAN. ACL config lives in the vendor's tailnet admin console (see the
+  handoff note; not part of the appliance tree).
+- **Gating:** remote support is **paid-only at GA**. During beta it is open
+  via an **expiring `support_grant`** key (semi-public, rotated — the same
+  pattern as the forum-submit token). At GA the grant expires and the
+  **Support subscription** entitlement check takes over. The submit-report
+  path is gated by the same check.
+- **Secrets:** the auth key + tailnet config live in
+  `/opt/barenoc/volumes/secrets/tailscale.json` (0600); the beta grant lives in
+  `/opt/barenoc/volumes/secrets/support_grant.json` (0600). Neither ever
+  touches `.env`.
+
+> For the vendor: the Tailscale ACL config, the auth-key rotation cadence, and
+> the gate semantics are documented in the release handoff (internal-only).
+
 <a id="updating"></a>
 ## Updating
 
@@ -492,6 +530,9 @@ sudo security delete-certificate -c "BareNOC Internal CA Root"
 - [ ] `Settings → Backups` status is truthful for your deployment type
 - [ ] Agent runner active; `md5sum /opt/barenoc/agent/runner.py` matches the
       repo if you changed the runner
+- [ ] **Settings → Support → Remote support** shows the node identity and
+      **off** by default; enabling it (during beta) joins the support tailnet
+      within a minute, disabling it runs `tailscale down`
 
 <a id="troubleshooting-operations"></a>
 ### Troubleshooting & operations

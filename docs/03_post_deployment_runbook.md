@@ -46,6 +46,12 @@
 
 Navigate to **Settings** (gear icon, top-right nav bar) and complete:
 
+**Email transport:** the default is **vendor-managed (out-of-the-box)** —
+alert/digest email goes via BareNOC's notify service (Resend) from
+`noreply@notify.barenoc.com` (shown as your site name; reply-to is your
+address). The table below is the **your own SMTP (self-hosted)** override for
+customers who want email to stay on their own Gmail/company server.
+
 | Setting | Description | Example |
 |---------|-------------|---------|
 | **Site Name** | Display name for this BareNOC instance | `"Acme Corp NOC"` or `"Smith Residence"` |

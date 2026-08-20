@@ -16,10 +16,12 @@ if [ -z "$TARGETS" ]; then
   exit 1
 fi
 
-# find SNMP-open hosts per subnet (UDP 161) — fast: no service versioning
+# find SNMP-open hosts per subnet (UDP 161) — fast: no service versioning.
+# 100.64.0.0/10 (CGNAT + Tailscale overlay) is never a valid gear identity.
 HOSTS=$(mktemp)
 for net in $(echo "$TARGETS" | tr ',' ' '); do
-  nmap -sU -p 161 --open -Pn --host-timeout 20s -oG - "$net" 2>/dev/null \
+  nmap -sU -p 161 --open -Pn --host-timeout 20s --exclude 100.64.0.0/10 \
+    -oG - "$net" 2>/dev/null \
     | awk '/161\/open/{print $2}' >> "$HOSTS"
 done
 
@@ -34,8 +36,21 @@ try:
 except Exception:
     pass
 
+def _cgnat(ip):
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if a.version != 4:
+        return False
+    b = a.packed
+    return b[0] == 100 and 64 <= b[1] <= 127
+
 out = []
 for ip in ips:
+    if _cgnat(ip):
+        continue
     def oid(oid_):
         try:
             r = subprocess.run(["snmpget", "-v2c", "-c", community, "-t", "3", "-r", "1",

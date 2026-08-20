@@ -13,6 +13,7 @@ from auth import get_current_user, require_role, require_any_role
 from llm_providers import load_providers, probe_provider
 from audit import log_event
 from database import get_db
+import report_gate
 
 logger = logging.getLogger("barenoc.settings")
 
@@ -429,7 +430,8 @@ def _read_env_file() -> dict:
             if key in ("SITE_ID", "CUSTOMER_NAME", "TZ", "DEVICE_GROUPS",
                        "SMTP_HOST", "SMTP_PORT", "SMTP_USER",
                        "ALERT_EMAIL", "UNIFI_URL", "UNIFI_USER", "BRANDING_LOGO",
-                       "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SENDER"):
+                       "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SENDER",
+                       "EMAIL_TRANSPORT", "EMAIL_REPLY_TO"):
                 env[key] = value
     return env
 
@@ -472,10 +474,14 @@ def _api_key_status():
     """Return API key presence status for all integrations."""
     env = _read_env_file()
     llm_configured = any(p.get("api_key") for p in load_providers(env).values())
+    from emailer import smtp_configured, transport_mode, vendor_configured
     return {
         "llm": llm_configured,
         "smtp": bool(env.get("SMTP_PASSWORD")),
         "gmail": bool(env.get("GOOGLE_REFRESH_TOKEN") and env.get("GOOGLE_CLIENT_ID")),
+        "vendor": vendor_configured(),
+        "email": smtp_configured(),
+        "email_transport": transport_mode(env),
         "unifi": bool(env.get("UNIFI_PASSWORD")),
     }
 
@@ -561,6 +567,42 @@ def _write_forum_submit_secret(url: str, token: str):
     os.chmod(FORUM_SUBMIT_SECRET_FILE, 0o600)
 
 
+NOTIFY_SECRET_FILE = "/opt/barenoc/volumes/secrets/notify.json"
+
+
+def _read_notify_secret_file() -> dict:
+    """Read the 0600 vendor-notify config {url, token} (never in .env)."""
+    try:
+        with open(NOTIFY_SECRET_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_notify_secret(url: str, token: str):
+    """Persist the vendor-notify url + token (0600 — same pattern as the
+    forum-submit token). The token is the shared NOTIFY_TOKEN for the vendor
+    `notify` edge function; nothing secret touches .env."""
+    os.makedirs(os.path.dirname(NOTIFY_SECRET_FILE), exist_ok=True)
+    fd = os.open(NOTIFY_SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"url": url, "token": token}, f)
+    os.chmod(NOTIFY_SECRET_FILE, 0o600)
+
+
+def _email_notify_config() -> dict:
+    """The vendor-notify endpoint + token (presence only) for Settings → Email."""
+    cfg = _read_notify_secret_file()
+    env = _read_env_file()
+    token_configured = bool((cfg.get("token") or "").strip())
+    return {
+        "notify_url": (cfg.get("url") or "").strip()
+                      or env.get("NOTIFY_URL", "").strip(),
+        "notify_token_configured": token_configured,
+        "notify_token": "••••••••" if token_configured else "",
+    }
+
+
 def _support_section() -> dict:
     """Settings → Support: forum-submit endpoint + token (presence only)."""
     cfg = _read_forum_submit_secret_file()
@@ -603,6 +645,83 @@ def _update_support(config: dict, db: Session, user: User) -> dict:
 def get_settings_status(user: User = Depends(require_role("admin"))):
     """Get which integrations are configured (presence only, no secrets)."""
     return _api_key_status()
+
+
+# ── Remote support (customer-controlled Tailscale toggle) ──────────────────
+# The customer flips a "Remote support" toggle (default OFF) that joins the
+# appliance to the VENDOR support tailnet via a tagged, expiring, revocable
+# auth key. The API only writes the desired state; a host-side reconciler
+# (tailscale_remote_support.sh, run by a systemd timer installed by
+# provision_agent.sh) applies tailscale up/down and refreshes self.json. The
+# gate (report_gate support mode) is checked BEFORE enabling — paid-only at
+# GA, beta-open via the expiring support_grant now.
+REMOTE_SUPPORT_DIR = "/opt/barenoc/volumes/remote_access"
+REMOTE_SUPPORT_DESIRED = os.path.join(REMOTE_SUPPORT_DIR, "remote_support.desired")
+REMOTE_SUPPORT_STATE = os.path.join(REMOTE_SUPPORT_DIR, "remote_support.json")
+
+
+def _read_remote_support_json(path: str, default: dict) -> dict:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else default
+    except Exception:
+        return default
+
+
+def _remote_support_desired() -> dict:
+    return _read_remote_support_json(REMOTE_SUPPORT_DESIRED, {"enabled": False})
+
+
+def _remote_support_state() -> dict:
+    return _read_remote_support_json(REMOTE_SUPPORT_STATE, {})
+
+
+@router.get("/remote-support")
+def remote_support(user: User = Depends(require_role("admin"))):
+    """Settings → Support: the remote-support toggle state + gate + tailscale
+    node identity (from the host-written self.json)."""
+    gate = report_gate.report_gate_status(user)
+    desired = _remote_support_desired()
+    state = _remote_support_state()
+    self_json = _read_remote_support_json(
+        os.path.join(REMOTE_SUPPORT_DIR, "self.json"), {})
+    return {
+        "gate": gate,
+        "desired_enabled": bool(desired.get("enabled")),
+        "state": state,
+        "tailscale": {
+            "online": bool(self_json.get("online")),
+            "hostname": self_json.get("hostname") or state.get("hostname"),
+            "tailscale_ip": self_json.get("tailscale_ip") or state.get("tailscale_ip"),
+        },
+    }
+
+
+@router.put("/remote-support")
+def update_remote_support(config: dict, db: Session = Depends(get_db),
+                          user: User = Depends(require_role("admin"))):
+    """Enable/disable the customer Remote support toggle (audit-logged).
+
+    Enabling is gated: in `support` mode the beta grant must be active (or the
+    GA entitlement must pass). The host reconciler applies tailscale up/down
+    within its next tick (≤ 60s).
+    """
+    enabled = bool(config.get("enabled"))
+    # Mode-aware gate: open during beta (default), support-gated out of beta.
+    if enabled and not report_gate.report_gate_allowed(user):
+        gate = report_gate.report_gate_status(user)
+        raise HTTPException(status_code=403, detail=gate["note"])
+    os.makedirs(REMOTE_SUPPORT_DIR, exist_ok=True)
+    with open(REMOTE_SUPPORT_DESIRED, "w") as f:
+        json.dump({"enabled": enabled}, f)
+    os.chmod(REMOTE_SUPPORT_DESIRED, 0o644)
+    log_event(db, "settings_change", user.username, {
+        "section": "support", "fields": ["remote_support"],
+        "values": {"remote_support": enabled},
+    })
+    return {"status": "ok", "enabled": enabled,
+            "note": "The remote-support change applies within a minute."}
 
 
 TICKET_CHECKIN_DEFAULT_HOURS = {"P1": 1, "P2": 4, "P3": 24, "P4": 24}
@@ -673,6 +792,13 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         result["report_eod_summary"] = _env_bool(env.get("REPORT_EOD_SUMMARY", "true"))
         result["digest_hour"] = _env_int(env.get("DIGEST_HOUR", "7"), 7)
         result["eod_hour"] = _env_int(env.get("EOD_HOUR", "18"), 18)
+        # Transport choice (vendor-managed vs your own SMTP) — the effective
+        # value, not just the raw EMAIL_TRANSPORT (which may be unset).
+        from emailer import transport_mode
+        result["transport"] = transport_mode(env)
+        result["reply_to"] = env.get("EMAIL_REPLY_TO", "")
+        # Vendor notify config (0600, presence only)
+        result.update(_email_notify_config())
     if section == "unifi":
         result["password_configured"] = bool(env.get("UNIFI_PASSWORD"))
         result["password"] = "••••••••" if result["password_configured"] else ""
@@ -961,6 +1087,40 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
                 updated += 1
                 changed.append(field)
                 values[field] = str(h)
+        # Transport choice (vendor-managed / your own SMTP) + reply-to.
+        if "transport" in config:
+            t = str(config["transport"]).strip().lower()
+            if t not in ("vendor", "smtp"):
+                raise HTTPException(status_code=400,
+                                    detail="transport must be 'vendor' or 'smtp'")
+            env["EMAIL_TRANSPORT"] = t
+            updated += 1
+            changed.append("transport")
+            values["transport"] = t
+        if "reply_to" in config:
+            rv = str(config["reply_to"] or "").strip()
+            if rv:
+                parts = [p for p in re.split(r"[,;\s]+", rv) if p]
+                if not all("@" in p and "." in p.split("@")[-1] for p in parts):
+                    raise HTTPException(status_code=400,
+                                        detail="reply_to must be a valid email (or comma-separated list)")
+            env["EMAIL_REPLY_TO"] = rv
+            updated += 1
+            changed.append("reply_to")
+            values["reply_to"] = rv or "(none)"
+        # Vendor notify endpoint + token (0600 secret file, never .env).
+        ncfg = _read_notify_secret_file()
+        url = str(config.get("notify_url", "") or "").strip()
+        token = str(config.get("notify_token", "") or "")
+        cur_url = (ncfg.get("url") or "").strip()
+        cur_token = (ncfg.get("token") or "").strip()
+        new_url = url or cur_url
+        new_token = token if (token and "••" not in token) else cur_token
+        if new_url != cur_url or new_token != cur_token:
+            _write_notify_secret(new_url, new_token)
+            updated += 1
+            changed += [f for f in ("notify_url" if new_url != cur_url else "",
+                                    "notify_token" if new_token != cur_token else "") if f]
     if section == "policy":
         # Autonomy policy (typed + validated before writing .env)
         def _bool_field(field, env_key):
@@ -1539,13 +1699,16 @@ def test_llm(config: dict, user: User = Depends(require_role("admin"))):
 @router.post("/test/email")
 def test_email(config: dict = None, user: User = Depends(require_role("admin"))):
     """Send a test email using current config (or form values before saving).
-    Supports Gmail OAuth2 (google_* fields) and SMTP (smtp_* fields)."""
+    Supports Gmail OAuth2 (google_* fields), SMTP (smtp_* fields), and the
+    vendor-managed notify transport (uses the saved 0600 notify token)."""
     from emailer import send_email
     config = config or {}
     overrides = {}
     for k, env_k in (("smtp_host", "SMTP_HOST"), ("smtp_port", "SMTP_PORT"),
                      ("smtp_user", "SMTP_USER"), ("smtp_password", "SMTP_PASSWORD"),
                      ("alert_email", "ALERT_EMAIL"),
+                     ("reply_to", "EMAIL_REPLY_TO"),
+                     ("transport", "EMAIL_TRANSPORT"),
                      ("google_client_id", "GOOGLE_CLIENT_ID"),
                      ("google_client_secret", "GOOGLE_CLIENT_SECRET"),
                      ("google_refresh_token", "GOOGLE_REFRESH_TOKEN"),

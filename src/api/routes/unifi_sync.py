@@ -13,6 +13,7 @@ from schemas import DeviceResponse
 from auth import get_current_user, require_role, require_any_role
 from unifi import UniFiClient
 from audit import log_event
+import network_scope
 
 router = APIRouter(prefix="/api/v1/unifi", tags=["unifi"])
 
@@ -696,6 +697,11 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
     auto_adopt = _env_bool(env_auto := _read_unifi_env().get("UNIFI_AUTO_ADOPT") or "true")
 
     for ud in unifi_devices:
+        # A CGNAT/Tailscale address is never a real UniFi LAN identity — skip
+        # it so the 100.64.0.0/10 overlay can't be adopted as inventory.
+        if ud["ip"] and network_scope.is_tunnel_or_cgnat(ud["ip"]):
+            skipped += 1
+            continue
         # Match existing device by MAC or IP
         existing = None
         if ud["mac"]:
@@ -786,6 +792,11 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
     for uc in clients:
         # Only invent devices for clients we can actually reach/monitor
         if not uc["ip"]:
+            c_skipped += 1
+            continue
+        if network_scope.is_tunnel_or_cgnat(uc["ip"]):
+            # 100.64.0.0/10 = CGNAT/Tailscale overlay (the 08-19 Starlink
+            # 100.99.121.62 case) — never a client record.
             c_skipped += 1
             continue
         # Skip noisy anonymous clients — but keep ONLINE anonymous ones

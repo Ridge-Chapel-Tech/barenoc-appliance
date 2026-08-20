@@ -106,6 +106,48 @@ JSON
 chmod 600 "$FORUM_SUBMIT_SECRET_DIR/forum_submit.json"
 chown root:root "$FORUM_SUBMIT_SECRET_DIR/forum_submit.json"
 
+echo "==> Agent provision: vendor-managed email (notify capability — out-of-the-box alerts)"
+# Same shared-token pattern as forum-submit: the appliance POSTs alert/digest
+# email to the vendor `notify` edge function (Resend) so email works with zero
+# SMTP setup. The token is semi-public in the release tree (it only gates the
+# vendor's rate-limited Resend sends); Settings → Email remains the per-install
+# override, and the vendor can rotate the token at any time.
+cat > "$FORUM_SUBMIT_SECRET_DIR/notify.json" <<JSON
+{"url":"https://eqivajpnvansfpxkegpr.supabase.co/functions/v1/notify","token":"80e5e5af4993d65714f7145827bdc600b2dc32aac8af8278a1ebfd5bd7419c97"}
+JSON
+chmod 600 "$FORUM_SUBMIT_SECRET_DIR/notify.json"
+chown root:root "$FORUM_SUBMIT_SECRET_DIR/notify.json"
+echo "==> Agent provision: remote support (tailscale zero-touch onboarding + beta grant)"
+# Tailscale = the remote-support mechanism (identity mTLS, outbound-only,
+# works through Starlink/CGNAT). The appliance joins the VENDOR support
+# tailnet via a tagged, expiring, revocable auth key in a 0600 secret file
+# (same pattern as forum_submit.json above). The customer controls it with
+# the Settings → Support → "Remote support" toggle (default OFF) — the API
+# writes a desired-state flag and a host timer applies tailscale up/down.
+#
+# The join is idempotent + fails GRACEFULLY: a no-tailscale host, a missing
+# auth key, or a failed join must never block the deploy.
+SUPPORT_SECRET_DIR="/opt/barenoc/volumes/secrets"
+mkdir -p "$SUPPORT_SECRET_DIR"
+# Beta support grant — the report_gate.py `support` mode reads this expiring
+# key (semi-public beta pattern like the forum-submit token). ROTATE it and
+# set a new expiry before/at GA; when it expires the Support-subscription
+# entitlement check takes over.
+cat > "$SUPPORT_SECRET_DIR/support_grant.json" <<JSON
+{"grant":"support-grant-beta-2026-CHANGE-ME","expires_at":"2026-12-31T23:59:59Z","note":"beta remote-support grant — ROTATE before GA"}
+JSON
+chmod 600 "$SUPPORT_SECRET_DIR/support_grant.json"
+chown root:root "$SUPPORT_SECRET_DIR/support_grant.json"
+
+# Install the remote-support reconciler (systemd timer) + perform the
+# idempotent apt install / tagged join. All failures are non-fatal here.
+install -m 0644 /opt/barenoc/scripts/barenoc-remote-support.service /etc/systemd/system/ 2>/dev/null || true
+install -m 0644 /opt/barenoc/scripts/barenoc-remote-support.timer /etc/systemd/system/ 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now barenoc-remote-support.timer >/dev/null 2>&1 || true
+bash /opt/barenoc/scripts/tailscale_remote_support.sh provision || true
+
+
 echo "==> Agent provision: start runner"
 systemctl restart pi-agent-runner
 # give the runner a moment to pass its startup path (job-dir recovery + login)

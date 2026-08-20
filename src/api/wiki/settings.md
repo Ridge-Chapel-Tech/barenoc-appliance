@@ -14,6 +14,7 @@ Settings is **admin-only**; other roles see their own pages but not these tabs.
 | **Tickets** | Check-in + auto-close lifecycle per priority | [Tickets](/wiki/tickets) |
 | **Restrictions** | Hard denies: blocked actions / devices / request phrases + self-protection | [Security](/wiki/security) |
 | **Backups** | USB backup schedule, network (NAS) copy, first-time stick setup | [Backups](/wiki/backups) |
+| **Support** | Forum-submit endpoint + token, and the **Remote support** (Tailscale) toggle | [Support / Bug Report](/wiki/support) |
 
 ## Where the rest lives
 

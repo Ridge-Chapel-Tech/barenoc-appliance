@@ -15,6 +15,53 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.19.e] — 2026-08-19
+
+### Added
+- **Vendor-managed email (out-of-the-box)** — the appliance now has a third
+  transport (`vendor`) that POSTs alert/digest/EOD/check-in email to the
+  vendor `notify` Supabase edge function (shared `NOTIFY_TOKEN`, the
+  forum-submit pattern), which sends via **Resend** from
+  `noreply@notify.barenoc.com`. The display name is the appliance's site name;
+  the REPLY-TO is configurable. Emails land in inboxes with SPF/DKIM/DMARC on
+  the vendor domain.
+- **Settings → Email/Notifications** gains the transport choice
+  (vendor-managed vs your own SMTP, with the privacy note), the notify URL +
+  token (0600 `notify.json`, the Settings → Support pattern), a REPLY-TO field,
+  and the Test email button covers the vendor transport.
+- **`smtp_configured()` now counts vendor-managed as configured** — the alert
+  engine's email half (down/recovery, P1/P2, digests, EOD, check-ins) runs
+  out-of-the-box instead of sitting dead when SMTP is unconfigured.
+- New `supabase/functions/notify` edge fn (BareNOC-Forum repo): token-gated,
+  Resend send, rate-limited, nonce idempotency (in-isolate dedupe + Resend
+  Idempotency-Key).
+
+### Changed
+- `emailer.send_email` transport resolution: explicit `EMAIL_TRANSPORT` wins;
+  when unset, your own SMTP/Gmail overrides the vendor default (so existing
+  self-hosted setups are unchanged).
+- **Remote support (Tailscale zero-touch onboarding + customer toggle):** the
+  appliance joins a vendor support tailnet via a tagged, expiring, revocable
+  auth key (provision step: `apt install tailscale` + tagged join, idempotent +
+  graceful), and Settings → Support gains a **Remote support** toggle (default
+  OFF) that runs `tailscale up/down` and shows the node identity + tailnet
+  status. Scoped by Tailscale ACLs (appliance nodes only, never the customer
+  LAN); audit-logged.
+- **Support gate (`report_gate.py`):** `support` mode now reads an expiring
+  beta `support_grant` (0600 secret, forum-submit pattern) — beta-open while
+  the grant is active, then the GA entitlement stub. Both the remote-support
+  toggle and the submit-report path check it.
+
+### Fixed
+- **Ping-sweep no-hang:** whole-subnet sweeps are now parallel + capped with
+  short timeouts, progress notes, and CGNAT exclusion; the runner streams
+  `PROGRESS:` notes and aborts sweeps cleanly at the job timeout (a /24
+  finishes in seconds, never hangs the worker/pi session).
+- **CGNAT/Tailscale discovery exclusion:** 100.64.0.0/10 (RFC 6598 CGNAT +
+  Tailscale overlay) is never scanned, discovered, claimed, or adopted — the
+  buddy's Starlink 100.99.121.62 case is pinned in tests.
+
+
 ## [2026.08.19.d] — 2026-08-19
 
 ### Added

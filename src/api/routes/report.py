@@ -56,7 +56,7 @@ def submit_report(body: SubmitRequest,
     authoritative check — the UI's vet step is advisory).
     """
     gate = report_gate.report_gate_status(user)
-    if not gate["open"]:
+    if not report_gate.report_gate_allowed(user):
         raise HTTPException(status_code=403, detail=gate["note"])
 
     bundle = support.build_bundle(body.comment, db, user)

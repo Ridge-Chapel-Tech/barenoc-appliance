@@ -507,6 +507,70 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
     return ["bash", script_path, target]
 
 
+def _run_sweep(cmd: list, ticket_id: str, env: dict, action: str,
+               target: str) -> dict:
+    """Run a subnet sweep (network_discovery / snmp_sweep) with live progress
+    notes streamed from the script's stderr (PROGRESS: lines), and the same
+    JOB_TIMEOUT abort as any other step — a sweep never hangs the runner.
+
+    The 08-19 fix: whole-subnet sweeps are parallel + capped inside the script,
+    so this path only needs to (1) relay progress and (2) abort cleanly at the
+    deadline.
+    """
+    tone = _ProgressTone(ticket_id)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env)
+
+    def _relay():
+        try:
+            for line in iter(proc.stderr.readline, ""):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("PROGRESS:"):
+                    _post_progress(ticket_id, line[len("PROGRESS:"):].strip(), tone)
+        except Exception:
+            pass
+
+    relay = threading.Thread(target=_relay, daemon=True)
+    relay.start()
+    timed_out = False
+    try:
+        # Sweep stdout is one small JSON object; the relay thread owns stderr,
+        # so we wait for exit then drain stdout (never communicate() — that
+        # would race the stderr reader).
+        proc.wait(timeout=JOB_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    stdout = (proc.stdout.read() or "") if proc.stdout else ""
+    try:
+        relay.join(timeout=2)
+    except Exception:
+        pass
+    for pipe in (proc.stdout, proc.stderr):
+        try:
+            if pipe:
+                pipe.close()
+        except Exception:
+            pass
+    if timed_out:
+        logger.warning(f"Sweep timed out after {JOB_TIMEOUT}s (ticket {ticket_id})")
+        return {"success": False, "error": f"Timed out after {JOB_TIMEOUT}s",
+                "target": target, "action": action}
+    stdout = (stdout or "").strip()
+    try:
+        output = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        output = {"raw_output": stdout}
+    return {"success": proc.returncode == 0, "exit_code": proc.returncode,
+            "output": output, "target": target, "action": action}
+
+
 def _run_single(action: str, target: str, params: dict, ticket_id: str,
                 env_tz: str = "") -> dict:
     """Run ONE action script and parse its JSON output."""
@@ -523,6 +587,8 @@ def _run_single(action: str, target: str, params: dict, ticket_id: str,
         # The appliance timezone (worker reads .env; pi-agent can't).
         env["TZ"] = env_tz
     try:
+        if action in ("network_discovery", "snmp_sweep"):
+            return _run_sweep(cmd, ticket_id, env, action, target)
         try:
             result = subprocess.run(cmd, capture_output=True, text=True,
                                     timeout=JOB_TIMEOUT, env=env)
@@ -1154,6 +1220,11 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
         "  (find the device's IP in the ticket context / device inventory by its name, "
         "then pass the IP — device_ssh.sh decrypts its stored SSH key and runs the "
         "command over SSH for you).\n"
+        "- Whole-subnet sweeps: use discover.sh <subnet-or-cidr> (e.g. "
+        "bash /opt/barenoc/scripts/discover.sh 192.168.4.0/24). It is parallel + "
+        "capped and prints JSON of the live hosts — NEVER run a sequential "
+        "`for i in ...; do ping ...; done` loop over a subnet (it hangs the session). "
+        "It also never scans 100.64.0.0/10 (CGNAT/Tailscale overlay).\n"
         "- Other ready-made helpers: ping_check.sh <ip> (reachability), "
         "collect_logs.sh <ip> (system logs), reboot_device.sh, enroll_device.sh, "
         "fingerprint.sh, network_info.sh, ticket_status.sh, and the unifi_*.sh "

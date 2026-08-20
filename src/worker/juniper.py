@@ -246,12 +246,13 @@ _CLOSE_FILLER = frozenset({
 # Thanks/ack filler: a completed ticket where the customer says only one of
 # these is an ack, handled inline (short note) rather than re-dispatched.
 _ACK_FILLER = frozenset({
-    "all", "appreciate", "appreciated", "awesome", "cheers", "confirm",
-    "confirmed", "cool", "done", "excellent", "fixed", "good", "got", "great",
-    "it", "its", "k", "looks", "much", "nice", "ok", "okay", "perfect",
-    "perfecto", "resolved", "set", "so", "sound", "sounds", "sweet", "thank",
-    "thanks", "that", "thx", "tnx", "ty", "wonderful", "work", "working",
-    "works", "you",
+    "affirmative", "agree", "agreed", "all", "alright", "appreciate",
+    "appreciated", "awesome", "cheers", "confirm", "confirmed", "cool", "correct",
+    "done", "excellent", "fine", "fixed", "good", "got", "great", "indeed", "it",
+    "its", "k", "looks", "much", "nice", "ok", "okay", "perfect", "perfecto",
+    "please", "resolved", "right", "roger", "set", "so", "sound", "sounds",
+    "sure", "sweet", "thank", "thanks", "that", "thx", "tnx", "true", "ty",
+    "wonderful", "work", "working", "works", "yeah", "yep", "yes", "you", "yup",
 })
 
 

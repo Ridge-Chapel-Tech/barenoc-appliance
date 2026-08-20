@@ -43,6 +43,33 @@ scp /path/to/file root@100.x.x.x:/opt/barenoc/
 tailscale serve --https 8006 localhost:8006
 ```
 
+### Customer remote support (vendor support tailnet)
+
+The appliance can join a **vendor support tailnet** on the customer's explicit
+consent (Settings → Support → **Remote support**, default OFF). The node is
+`bareNOC-<appliance-id>`, tagged `tag:appliance`, and joins via a **tagged,
+expiring, revocable auth key** stored 0600 in
+`/opt/barenoc/volumes/secrets/tailscale.json`.
+
+- The provision step (`provision_agent.sh`) installs tailscale + performs the
+  idempotent join on every deploy — never blocks the deploy on failure.
+- The customer toggle runs `tailscale up/down` via a host-side reconciler
+  (`tailscale_remote_support.sh`, a systemd timer every 60 s).
+- **ACL config (tailnet admin console):** the vendor's support user may reach
+  `tag:appliance` nodes ONLY — never a customer's LAN or other tags. Keep the
+  support user key-only SSH + 2FA; revoke it in the tailnet console when an
+  engineer rotates off support.
+- **Auth-key rotation cadence:** rotate the tagged auth key at least every 90
+  days (or immediately on any suspected exposure). The key is single-use by
+  default — a rejoin after `tailscale down`/up is fine (the node keeps its
+  identity), but a fresh key is required for a NEW appliance or after a node
+  is fully removed. Rotate by replacing `auth_key` in
+  `/opt/barenoc/volumes/secrets/tailscale.json` (0600) and re-running
+  `tailscale_remote_support.sh reconcile`.
+- **Beta grant:** the `support` gate is beta-open via an expiring
+  `support_grant` (0600 in `support_grant.json`). At GA the grant expires and
+  the Support-subscription entitlement check takes over.
+
 ### Managing Multiple Appliances
 
 Create an SSH config:
@@ -142,7 +169,11 @@ If the customer site has no internet, Tailscale won't work. In this case:
 
 - All remote access is logged in the **Proxmox host audit log**
 - NanoKVM has its own login — do not reuse the Proxmox root password
-- Tailscale nodes are tagged `barenoc-appliance` for organization
+- Tailscale nodes are tagged `tag:appliance` for organization
+- Customer remote support is **default OFF** and customer-controlled; the
+  toggle + audit log make every up/down visible
+- The support tailnet is **ACL-scoped to appliance nodes only** — the vendor
+  support user never reaches the customer's LAN
 - **Disable root password SSH login** after Tailscale is set up:
 
 ```bash

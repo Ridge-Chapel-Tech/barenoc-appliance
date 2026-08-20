@@ -70,6 +70,8 @@ MEM_USED_WARN = 90.0          # UCD-SNMP memory used (%) -> warning
 DUPLEX_FULL_SPEED = 100       # half-duplex at >=100Mbps -> warning
 MTU_EXPECTED = 1500
 LINK_DOWN_COUNT_WARN = 3      # >2 link-down transitions on a port -> warning.
+LINK_STABLE_SECONDS = 24 * 3600  # link up this long with a high cumulative count = historical (08-19)
+import time
                                # A single historical flap (e.g. the 08-18
                                # PoE-cycle artifact) must not warn forever —
                                # UniFi's port_table exposes no per-flap
@@ -330,7 +332,9 @@ SUGGESTED_ACTIONS = {
                               "dedicated, restricted VLAN.",
     "rel.dhcp_no_reservation": "Add a DHCP reservation/static lease for the device so "
                                "its address can't drift.",
-    "rel.link_down_count": "Replace the flapping cable and re-seat both ends of the link.",
+    "rel.link_down_count": "Investigate the link stability — check whether recent "
+                           "maintenance (PoE cycles / config changes) explains the "
+                           "transitions before replacing any cable.",
     "rel.uptime_recent_reboot": "Verify the reboot cause (crash, power, or manual) and "
                                 "confirm the device is stable.",
     "rel.uptime_extended": "Schedule a maintenance reboot to apply pending updates and "
@@ -922,13 +926,32 @@ def _rel_link_down_count(snap, dev):
     for p in (dev.get("unifi") or {}).get("ports") or []:
         if (p.get("link_down_count") or 0) >= LINK_DOWN_COUNT_WARN:
             label = port_label(dev, p)
+            n = p.get("link_down_count") or 0
+            ca = p.get("connected_at")
+            stable_since = (time.time() - ca) if ca else None
+            # Recency window (08-19): a high CUMULATIVE count with a link that has
+            # been up a long while is HISTORICAL (e.g. maintenance — PoE cycles,
+            # VLAN moves), not an active fault. Only the recent case warns; the
+            # historical case drops to info with a "watch, don't re-cable" note.
+            if stable_since is not None and stable_since > LINK_STABLE_SECONDS and p.get("up"):
+                return {"port": p.get("port_idx"), "name": p.get("name"),
+                        "port_label": label,
+                        "severity": "info",
+                        "link_down_count": n,
+                        "detail": _fmt("{port_label} has recorded {n} link-down "
+                                       "transition(s) but the link has been stable "
+                                       "for a while — the transitions look historical "
+                                       "(e.g. maintenance actions), not an active "
+                                       "fault. Watch it; don't re-cable yet.",
+                                       {"port_label": label, "n": n})}
             return {"port": p.get("port_idx"), "name": p.get("name"),
                     "port_label": label,
-                    "link_down_count": p.get("link_down_count"),
+                    "link_down_count": n,
                     "detail": _fmt("{port_label} has recorded {n} link-down "
-                                   "transition(s) — repeated flapping / intermittent cable.",
-                                   {"port_label": label,
-                                    "n": p.get("link_down_count")})}
+                                   "transition(s) recently — investigate; check "
+                                   "whether recent maintenance (PoE cycles / config "
+                                   "changes) explains them before replacing any cable.",
+                                   {"port_label": label, "n": n})}
 
 
 @rule("rel.uptime_recent_reboot", "reliability", "info",

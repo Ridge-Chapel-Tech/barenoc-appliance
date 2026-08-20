@@ -9,7 +9,8 @@
   tickets and device health.
 
 All sending goes through emailer.send_email (best-effort, never raises) and
-silently no-ops when SMTP isn't configured yet.
+silently no-ops when no email transport is configured (Gmail OAuth, SMTP, or
+vendor-managed).
 """
 
 import datetime

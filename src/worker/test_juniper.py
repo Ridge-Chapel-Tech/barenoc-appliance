@@ -264,6 +264,16 @@ class CloseIntentTest(unittest.TestCase):
         # "how do I close…" is a question, not a close request.
         self.assertFalse(juniper.close_intent("how do I close the ticket"))
 
+
+    def test_ack_yes_family(self):
+        """The 08-20 TKT-1827 case: 'yes. thank you' (and the yes-family) are
+        acknowledgments — they must ACK, never re-dispatch a fresh session."""
+        for t in ("yes. thank you", "yes", "yes please", "yep thanks",
+                  "yeah, that works", "sure, sounds good", "yup"):
+            self.assertTrue(juniper.ack_intent(t), t)
+        # an ack with NEW work is not an ack ("yes, and also check port 5")
+        self.assertFalse(juniper.ack_intent("yes, and also check port 5"))
+
     def test_ack_thanks(self):
         self.assertTrue(juniper.ack_intent("thanks"))
 

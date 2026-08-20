@@ -1,63 +1,136 @@
-#!/bin/bash
-# Safe network discovery script — ping sweep a subnet to find live hosts.
-# Usage: discover.sh <target>
-#   target: "192.0.2.0/24" (subnet CIDR) or "192.0.2.10" (single host)
-# Outputs JSON: {"network": "...", "found": [{"ip": "..."}, ...], "count": N}
+#!/usr/bin/env bash
+# Safe network discovery — parallel, capped ping sweep (NO-HANG).
 #
-# Note: sweeps the last octet (.1-.254) of the base IP, so it is designed for
-# /24-style ranges. Read-only ICMP traffic only — no device writes happen here.
+# Usage: discover.sh <target>
+#   target: "192.0.2.0/24" (CIDR) or "192.0.2.10" (single host)
+#
+# Output (stdout) — one JSON object:
+#   {"network": "...", "found": [{"ip": "..."}, ...], "count": N,
+#    "skipped_cgnat": N, "capped": bool}
+#
+# Progress notes go to STDERR as "PROGRESS: <human sentence>" so the agent
+# runner can relay them to the ticket as live updates.
+#
+# Why this exists (the 08-19 fix): whole-subnet sweeps ("ping each IP on
+# x.x.x.x/24") used to run sequentially and hang the worker against the 600s
+# pi timeout. Now they run ~20 pings at a time with -W 1 -c 1 short timeouts,
+# a host cap, progress notes, and NEVER sweep 100.64.0.0/10 (CGNAT + Tailscale
+# overlay — the buddy's Starlink 100.99.121.62 case). A /24 finishes in a few
+# seconds.
+#
+# Env knobs (both hot-read by this script):
+#   DISCOVERY_MAX_PARALLEL   concurrent pings (default 20)
+#   DISCOVERY_MAX_HOSTS      host cap per sweep (default 254)
 
-TARGET="$1"
-if [ -z "$TARGET" ]; then
-  echo '{"error": "No target specified", "found": [], "count": 0}'
-  exit 1
-fi
+set -u
 
-# Single host target
-if [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  if ping -c 1 -W 1 "$TARGET" >/dev/null 2>&1; then
-    echo "{\"network\": \"$TARGET\", \"found\": [{\"ip\": \"$TARGET\"}], \"count\": 1}"
-  else
-    echo "{\"network\": \"$TARGET\", \"found\": [], \"count\": 0}"
-  fi
-  exit 0
-fi
+TARGET="${1:-}"
 
-# Parse CIDR: a.b.c.d/prefix
-if [[ "$TARGET" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/([0-9]+)$ ]]; then
-  IP="${BASH_REMATCH[1]}"
-  PREFIX="${BASH_REMATCH[2]}"
-else
-  echo "{\"error\": \"Invalid target '$TARGET' — use a CIDR like 192.0.2.0/24 or a single IP\", \"found\": [], \"count\": 0}"
-  exit 1
-fi
+python3 - "$TARGET" <<'PY'
+import ipaddress
+import json
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Safety: only accept /24 or wider ranges
-if [ "$PREFIX" -gt 24 ]; then
-  echo "{\"error\": \"Prefix /$PREFIX not supported — use /24 or wider (e.g. 192.0.2.0/24)\", \"found\": [], \"count\": 0}"
-  exit 1
-fi
 
-BASE_IP="${IP%.*}"   # a.b.c
-FOUND_FILE=$(mktemp)
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
 
-for host in $(seq 1 254); do
-  (
-    if ping -c 1 -W 1 "${BASE_IP}.${host}" >/dev/null 2>&1; then
-      echo "${BASE_IP}.${host}" >> "$FOUND_FILE"
-    fi
-  ) &
-done
-wait
 
-COUNT=0
-FOUND=""
-while read -r ip; do
-  [ -z "$ip" ] && continue
-  COUNT=$((COUNT + 1))
-  FOUND="${FOUND}{\"ip\": \"$ip\"},"
-done < "$FOUND_FILE"
-rm -f "$FOUND_FILE"
+MAX_PARALLEL = max(1, min(_env_int("DISCOVERY_MAX_PARALLEL", 20), 50))
+MAX_HOSTS = max(1, min(_env_int("DISCOVERY_MAX_HOSTS", 254), 1024))
 
-FOUND="${FOUND%,}"
-echo "{\"network\": \"$TARGET\", \"found\": [$FOUND], \"count\": $COUNT}"
+
+def is_cgnat(ip):
+    """True for 100.64.0.0/10 (RFC 6598 CGNAT + Tailscale overlay)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if addr.version != 4:
+        return False
+    b = addr.packed
+    return b[0] == 100 and 64 <= b[1] <= 127
+
+
+def fail(msg):
+    print(json.dumps({"error": msg, "found": [], "count": 0}))
+    sys.exit(1)
+
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+if not target:
+    fail("No target specified")
+
+try:
+    if "/" in target:
+        net = ipaddress.ip_network(target, strict=False)
+        hosts = [str(h) for h in net.hosts()]
+        network = str(net)
+    else:
+        hosts = [target]
+        network = target
+except ValueError:
+    fail(f"Invalid target '{target}' — use a CIDR like 192.0.2.0/24 or a single IP")
+
+# CGNAT/Tailscale exclusion — never a scan target.
+scannable = []
+skipped_cgnat = 0
+for h in hosts:
+    if is_cgnat(h):
+        skipped_cgnat += 1
+    else:
+        scannable.append(h)
+
+capped = len(scannable) > MAX_HOSTS
+scannable = scannable[:MAX_HOSTS]
+
+if len(scannable) == 1:
+    found = []
+    try:
+        r = subprocess.run(["ping", "-c", "1", "-W", "1", scannable[0]],
+                           capture_output=True, timeout=3)
+        if r.returncode == 0:
+            found = [{"ip": scannable[0]}]
+    except Exception:
+        pass
+    print(json.dumps({"network": network, "found": found,
+                      "count": len(found), "skipped_cgnat": skipped_cgnat,
+                      "capped": capped}))
+    sys.exit(0)
+
+
+def ping_one(ip):
+    try:
+        r = subprocess.run(["ping", "-c", "1", "-W", "1", ip],
+                           capture_output=True, timeout=3)
+        return ip if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+found = []
+done = 0
+total = len(scannable)
+with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as ex:
+    futures = {ex.submit(ping_one, ip): ip for ip in scannable}
+    for fut in as_completed(futures):
+        ip = fut.result()
+        if ip:
+            found.append({"ip": ip})
+        done += 1
+        # Progress notes: every 25 hosts (and the final one) so the runner has
+        # something to relay — never a silent long sweep.
+        if done % 25 == 0 or done == total:
+            print(f"PROGRESS: Scanned {done} of {total} hosts ({len(found)} up)",
+                  file=sys.stderr, flush=True)
+
+found.sort(key=lambda d: d["ip"])
+print(json.dumps({"network": network, "found": found, "count": len(found),
+                  "skipped_cgnat": skipped_cgnat, "capped": capped}))
+PY

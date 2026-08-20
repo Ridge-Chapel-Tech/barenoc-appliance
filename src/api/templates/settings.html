@@ -182,17 +182,44 @@
     </div>
   </div>
 
-  <!-- Email -->
+  <!-- Email & Notifications -->
   <div id="panel-email" class="mt-6 max-w-xl hidden">
     <div class="bg-white shadow rounded-lg p-6">
-      <h3 class="text-lg font-medium">Email (SMTP)</h3>
+      <h3 class="text-lg font-medium">Email &amp; Notifications</h3>
       <div class="mt-4 space-y-4">
-        <div class="grid grid-cols-2 gap-4">
-          <div><label class="block text-sm font-medium text-gray-700">SMTP Host</label><input id="smtp-host" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="smtp.gmail.com"></div>
-          <div><label class="block text-sm font-medium text-gray-700">Port</label><input id="smtp-port" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="587"></div>
+        <!-- Transport choice -->
+        <div>
+          <p class="text-sm font-medium text-gray-700">Email transport</p>
+          <label class="flex items-start gap-2 mt-2">
+            <input type="radio" name="email-transport" value="vendor" id="transport-vendor" onchange="transportChanged()" class="mt-1">
+            <span class="text-sm text-gray-700">Vendor-managed (out-of-the-box)<br><span class="text-xs text-gray-500">BareNOC sends via its notify service — from <code>noreply@notify.barenoc.com</code>, shown as your site name.</span></span>
+          </label>
+          <label class="flex items-start gap-2 mt-2">
+            <input type="radio" name="email-transport" value="smtp" id="transport-smtp" onchange="transportChanged()" class="mt-1">
+            <span class="text-sm text-gray-700">Your own SMTP (self-hosted)<br><span class="text-xs text-gray-500">Your Gmail/company server — nothing transits BareNOC.</span></span>
+          </label>
+          <p class="text-xs text-amber-600 mt-1" id="transport-privacy-note"></p>
         </div>
-        <div><label class="block text-sm font-medium text-gray-700">SMTP User</label><input id="smtp-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc.noc@gmail.com"></div>
-        <div><label class="block text-sm font-medium text-gray-700">App Password</label><input id="smtp-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="smtp-status"></p></div>
+
+        <!-- Vendor-managed (notify) config -->
+        <div id="vendor-block" class="border-t border-gray-200 pt-4 hidden">
+          <div><label class="block text-sm font-medium text-gray-700">Notify URL</label><input id="notify-url" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="https://…/functions/v1/notify"></div>
+          <div class="mt-2"><label class="block text-sm font-medium text-gray-700">Notify token</label><input id="notify-token" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="••••••••"><p class="text-xs text-gray-400 mt-1" id="notify-token-status"></p></div>
+        </div>
+
+        <!-- Your own SMTP -->
+        <div id="smtp-block" class="border-t border-gray-200 pt-4 hidden">
+          <div class="grid grid-cols-2 gap-4">
+            <div><label class="block text-sm font-medium text-gray-700">SMTP Host</label><input id="smtp-host" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="smtp.gmail.com"></div>
+            <div><label class="block text-sm font-medium text-gray-700">Port</label><input id="smtp-port" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="587"></div>
+          </div>
+          <div class="mt-2"><label class="block text-sm font-medium text-gray-700">SMTP User</label><input id="smtp-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc.noc@gmail.com"></div>
+          <div class="mt-2"><label class="block text-sm font-medium text-gray-700">App Password</label><input id="smtp-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="smtp-status"></p></div>
+        </div>
+
+        <!-- Reply-to (both transports) -->
+        <div><label class="block text-sm font-medium text-gray-700">Reply-to address</label><input id="email-reply-to" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="you@example.com"><p class="text-xs text-gray-400 mt-1">Optional — recipient replies go here (your address).</p></div>
+
         <div><label class="block text-sm font-medium text-gray-700">Alert Recipient(s)</label><input id="smtp-alert" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="admin@example.com, oncall@example.com"><p class="text-xs text-gray-400 mt-1">Comma-separated — gets P1/P2 ticket alerts and device down/recovery alerts. Reports fall back to this list unless overridden below.</p></div>
 
         <!-- Report recipients (who gets what) -->
@@ -583,6 +610,25 @@
         <p id="sup-msg" class="text-sm"></p>
       </div>
     </div>
+
+    <div class="bg-white shadow rounded-lg p-6 mt-6">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-medium">Remote support (Tailscale)</h3>
+        <button onclick="loadRemoteSupport()" class="text-xs font-medium text-barenoc-600 hover:text-barenoc-800">↻ refresh</button>
+      </div>
+      <p class="text-xs text-gray-500 mt-1">Lets the BareNOC support team reach <b>this appliance only</b> over a secure Tailscale tunnel — no open ports, works through Starlink/CGNAT. <b>Off by default.</b> The support team can reach appliance nodes only, never the rest of your network.</p>
+      <label class="flex items-start gap-3 mt-4 cursor-pointer">
+        <input id="rs-enabled" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300" onchange="document.getElementById('rs-msg').textContent=''">
+        <span class="text-sm text-gray-700">Enable Remote support
+          <span class="block text-xs text-gray-400 mt-0.5" id="rs-gate-note"></span>
+        </span>
+      </label>
+      <div class="mt-3 flex items-center gap-3">
+        <button onclick="saveRemoteSupport()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white hover:bg-barenoc-700">Save Remote Support</button>
+        <span id="rs-msg" class="text-sm"></span>
+      </div>
+      <div id="rs-status" class="mt-3 text-sm text-gray-600">Loading…</div>
+    </div>
   </div>
 
 <script>
@@ -610,7 +656,7 @@ function switchTab(tab) {
   if (tab === 'tickets') loadTickets();
   if (tab === 'restrictions') loadRestrictions();
   if (tab === 'backups') loadBackups();
-  if (tab === 'support') loadSupport();
+  if (tab === 'support') { loadSupport(); loadRemoteSupport(); }
   if (tab === 'general') loadRemoteAccess();
 }
 
@@ -1166,13 +1212,29 @@ async function loadEmail() {
     document.getElementById('smtp-pass').value = d.smtp_password;
     document.getElementById('smtp-status').textContent = d.smtp_password_configured ? '✅ Password configured' : 'No password set';
     document.getElementById('smtp-alert').value = d.alert_email || '';
+    document.getElementById('email-reply-to').value = d.reply_to || '';
+    document.getElementById('notify-url').value = d.notify_url || '';
+    document.getElementById('notify-token').value = d.notify_token || '';
+    document.getElementById('notify-token-status').textContent = d.notify_token_configured ? '✅ Token configured' : 'No token set — vendor-managed email will not send until one is saved.';
     document.getElementById('email-digest-recipients').value = d.digest_recipients || '';
     document.getElementById('email-eod-recipients').value = d.eod_recipients || '';
     document.getElementById('email-digest-enabled').checked = !!d.report_morning_digest;
     document.getElementById('email-eod-enabled').checked = !!d.report_eod_summary;
     document.getElementById('email-digest-hour').value = String(d.digest_hour || 7);
     document.getElementById('email-eod-hour').value = String(d.eod_hour || 18);
+    var t = d.transport === 'smtp' ? 'smtp' : 'vendor';
+    document.getElementById(t === 'smtp' ? 'transport-smtp' : 'transport-vendor').checked = true;
+    transportChanged();
   } catch (e) { console.error(e); }
+}
+
+function transportChanged() {
+  var vendor = document.getElementById('transport-vendor').checked;
+  document.getElementById('vendor-block').classList.toggle('hidden', !vendor);
+  document.getElementById('smtp-block').classList.toggle('hidden', vendor);
+  document.getElementById('transport-privacy-note').textContent = vendor
+    ? '⚠️ Vendor-managed: alert/digest email payloads transit BareNOC’s notify service (Resend) to reach your inbox.'
+    : 'Self-hosted: email is sent directly from your own SMTP server — nothing transits BareNOC.';
 }
 
 // populate 0-23 hour selects once
@@ -1193,11 +1255,15 @@ async function saveEmail() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
       body: JSON.stringify({
+        transport: document.getElementById('transport-vendor').checked ? 'vendor' : 'smtp',
         smtp_host: document.getElementById('smtp-host').value,
         smtp_port: document.getElementById('smtp-port').value,
         smtp_user: document.getElementById('smtp-user').value,
         smtp_password: document.getElementById('smtp-pass').value,
         alert_email: document.getElementById('smtp-alert').value,
+        reply_to: document.getElementById('email-reply-to').value,
+        notify_url: document.getElementById('notify-url').value,
+        notify_token: document.getElementById('notify-token').value,
         digest_recipients: document.getElementById('email-digest-recipients').value,
         eod_recipients: document.getElementById('email-eod-recipients').value,
         report_morning_digest: document.getElementById('email-digest-enabled').checked,
@@ -1236,15 +1302,13 @@ async function testEmail() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
       body: JSON.stringify({
+        transport: document.getElementById('transport-vendor').checked ? 'vendor' : 'smtp',
         smtp_host: document.getElementById('smtp-host').value,
         smtp_port: document.getElementById('smtp-port').value,
         smtp_user: document.getElementById('smtp-user').value,
         smtp_password: document.getElementById('smtp-pass').value,
         alert_email: document.getElementById('smtp-alert').value,
-        google_client_id: document.getElementById('gmail-client-id').value,
-        google_client_secret: document.getElementById('gmail-client-secret').value,
-        google_refresh_token: document.getElementById('gmail-refresh-token').value,
-        google_sender: document.getElementById('gmail-sender').value
+        reply_to: document.getElementById('email-reply-to').value
       })
     });
     var d = await r.json();
@@ -1409,6 +1473,44 @@ async function saveIdentity() {
       msg.className = 'text-sm text-red-600';
     }
   } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Remote support (customer toggle) ──
+async function loadRemoteSupport() {
+  var el = document.getElementById('rs-status');
+  try {
+    var r = await fetch('/api/v1/settings/remote-support', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    document.getElementById('rs-enabled').checked = !!d.desired_enabled;
+    var gate = d.gate || {};
+    document.getElementById('rs-gate-note').textContent = (gate.open && gate.beta) ? 'Beta support grant active.' : (gate.open ? '' : gate.note);
+    var t = d.tailscale || {};
+    var st = d.state || {};
+    var online = (t.online || st.applied) ? '● online' : '○ offline';
+    var ip = t.tailscale_ip || st.tailscale_ip || '';
+    var name = t.hostname || st.hostname || 'bareNOC-<appliance-id>';
+    el.innerHTML = 'Node: <span class="font-mono text-xs">' + esc(name) + '</span>' + (ip ? ' <span class="font-mono text-xs">' + esc(ip) + '</span>' : '') + ' · ' + online;
+    if (st.error) el.innerHTML += '<div class="text-xs text-red-600 mt-1">' + esc(st.error) + '</div>';
+  } catch (e) { el.innerHTML = '<span class="text-red-600">Could not load remote support status</span>'; }
+}
+async function saveRemoteSupport() {
+  var msg = document.getElementById('rs-msg');
+  msg.textContent = ''; msg.className = 'text-sm';
+  try {
+    var r = await fetch('/api/v1/settings/remote-support', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ enabled: document.getElementById('rs-enabled').checked })
+    });
+    if (!r.ok) { var e = await r.json().catch(function () { return {}; }); throw new Error(e.detail || ('HTTP ' + r.status)); }
+    msg.textContent = '✅ Saved — applying within a minute.';
+    msg.className = 'text-sm text-green-600';
+    loadRemoteSupport();
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'text-sm text-red-600';
+    loadRemoteSupport();
+  }
 }
 
 // ── Remote Access (Tailscale) ──

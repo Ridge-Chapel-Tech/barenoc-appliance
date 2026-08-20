@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile BareNOC remote support desired state every minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

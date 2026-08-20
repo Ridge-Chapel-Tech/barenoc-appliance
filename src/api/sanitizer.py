@@ -13,7 +13,8 @@ BLOCKED_PATTERNS = [
     r"act as (if|though)",
 
     # ── Direct command execution ──
-    r"(rm|del|format|mkfs|dd) .*[/\\]",
+    r"\b(rm|del|mkfs|dd)\b .*[/\\]",      # \b = whole word: 'confirm' must NOT trigger
+    r"\bformat\b\s+(?:/|[a-z]:[\\/])",    # 'format /dev/sda' (a path follows), not 'format the output'
     r"chmod (777|755|ugo)",
     r"chown .*:",
     r"sudo .*passwd",

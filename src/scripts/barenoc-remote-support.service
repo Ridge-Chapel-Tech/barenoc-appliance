@@ -1,0 +1,8 @@
+[Unit]
+Description=BareNOC remote support reconciler (tailscale up/down + status)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/barenoc/scripts/tailscale_remote_support.sh reconcile
