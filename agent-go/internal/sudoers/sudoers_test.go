@@ -6,8 +6,8 @@ import (
 )
 
 func TestEntriesAreFullPaths(t *testing.T) {
-	if len(Entries) != 5 {
-		t.Fatalf("got %d entries, want 5", len(Entries))
+	if len(Entries) != 14 {
+		t.Fatalf("got %d entries, want 14", len(Entries))
 	}
 	for _, e := range Entries {
 		if !strings.HasPrefix(e, "/") {
@@ -24,7 +24,9 @@ func TestEntriesAreFullPaths(t *testing.T) {
 
 func TestRenderPinsExactSudoersLine(t *testing.T) {
 	want := "nocagent ALL=(root) NOPASSWD: /usr/bin/systemctl status *, /usr/bin/tail *, " +
-		"/usr/bin/journalctl *, /sbin/reboot, /usr/bin/apt-get -s upgrade\n"
+		"/usr/bin/journalctl *, /sbin/reboot, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, " +
+		"/usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/flatpak, /usr/bin/fwupdmgr, " +
+		"/usr/bin/snap, /usr/bin/rpm-ostree\n"
 	if got := Render(User); got != want {
 		t.Fatalf("Render(%q) = %q, want %q", User, got, want)
 	}
@@ -41,15 +43,24 @@ func TestRenderUsesProvidedUser(t *testing.T) {
 }
 
 func TestEntriesMatchInstallerContract(t *testing.T) {
-	// The P1b contract (BUILD_LIST §7 / task brief) is exactly these five
-	// capability-gated commands. If this set changes, agent_install.sh must
-	// change with it.
+	// The contract (BUILD_LIST §7 / task brief) is the capability-gated set:
+	// the status/log/reboot controls + the per-OS package managers + the other
+	// update sources. If this set changes, agent_install.sh must change with it.
 	want := map[string]bool{
 		"/usr/bin/systemctl status *": true,
 		"/usr/bin/tail *":             true,
 		"/usr/bin/journalctl *":       true,
 		"/sbin/reboot":                true,
-		"/usr/bin/apt-get -s upgrade": true,
+		"/usr/bin/apt":                true,
+		"/usr/bin/apt-get":            true,
+		"/usr/bin/dnf":                true,
+		"/usr/bin/yum":                true,
+		"/usr/bin/apk":                true,
+		"/usr/bin/zypper":             true,
+		"/usr/bin/flatpak":            true,
+		"/usr/bin/fwupdmgr":           true,
+		"/usr/bin/snap":               true,
+		"/usr/bin/rpm-ostree":         true,
 	}
 	for _, e := range Entries {
 		if !want[e] {

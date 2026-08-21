@@ -80,7 +80,7 @@ func TestBuildCommandUsesSudoFullPaths(t *testing.T) {
 		{Reboot, map[string]any{"confirm": true},
 			[]string{"sudo", "-n", "/sbin/reboot"}, true},
 		{CheckUpdates, nil,
-			[]string{"sudo", "-n", "/usr/bin/apt-get", "-s", "upgrade"}, true},
+			[]string{"/usr/bin/bash", "/opt/noc-agent/scripts/check_updates.sh"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

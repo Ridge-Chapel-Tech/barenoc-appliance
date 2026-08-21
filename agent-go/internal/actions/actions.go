@@ -33,7 +33,9 @@ type Spec struct {
 var Catalog = map[string]Spec{
 	CollectLogs:  {Name: CollectLogs, Sudo: true, Retryable: true, MaxDuration: 30 * time.Second},
 	Reboot:       {Name: Reboot, Sudo: true, Retryable: true, MaxDuration: 60 * time.Second},
-	CheckUpdates: {Name: CheckUpdates, Sudo: true, Retryable: true, MaxDuration: 60 * time.Second},
+	// Sudo stays true (the script escalates internally); the budget is larger
+	// because a multi-source check refreshes metadata + probes fwupd/flatpak/snap.
+	CheckUpdates: {Name: CheckUpdates, Sudo: true, Retryable: true, MaxDuration: 180 * time.Second},
 	ReportFacts:  {Name: ReportFacts, Sudo: false, Retryable: true, MaxDuration: 10 * time.Second},
 }
 
@@ -94,7 +96,13 @@ func BuildCommand(name string, params map[string]any) (argv []string, sudo bool,
 	case Reboot:
 		return []string{"sudo", "-n", "/sbin/reboot"}, true, nil
 	case CheckUpdates:
-		return []string{"sudo", "-n", "/usr/bin/apt-get", "-s", "upgrade"}, true, nil
+		// The multi-source check script (installed root-owned by
+		// agent_install.sh) explores the OS package manager + flatpak +
+		// firmware + snap + rpm-ostree and reports a per-source JSON. It
+		// escalates ONLY the commands that need root via `sudo -n`, so the
+		// outer command runs unprivileged (sudo=false) — least privilege is
+		// enforced by the nocagent sudoers allowlist, not by this argv.
+		return []string{"/usr/bin/bash", "/opt/noc-agent/scripts/check_updates.sh"}, false, nil
 	default:
 		return nil, false, nil
 	}

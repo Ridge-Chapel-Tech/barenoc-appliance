@@ -140,9 +140,30 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append(f"Enrollment did not complete: {out.get('error') or 'unknown error'}")
     elif action == "apply_patch":
         pm = out.get("package_manager") or "?"
-        avail = bool(out.get("updates_available"))
-        lines.append(f"Update check on {out.get('target','?')} ({pm}): "
-                     + ("updates available" if avail else "up to date"))
+        sources = out.get("sources")
+        total = out.get("total")
+        if total is None and isinstance(sources, dict):
+            total = sum(int(v) for v in sources.values()
+                        if isinstance(v, (int, float)) and v > 0)
+        avail = bool(total) if total is not None else bool(out.get("updates_available"))
+        if avail:
+            msg = f"{int(total)} update(s) available" if total is not None else "updates available"
+        else:
+            msg = "up to date"
+        lines.append(f"Update check on {out.get('target','?')} ({pm}): {msg}")
+        if isinstance(sources, dict) and sources:
+            labels = {
+                "apt": "OS packages", "dnf": "OS packages", "yum": "OS packages",
+                "apk": "OS packages", "zypper": "OS packages", "rpm": "OS packages",
+                "flatpak": "Flatpak", "firmware": "Firmware", "snap": "Snap",
+                "rpm_ostree": "rpm-ostree",
+            }
+            parts = []
+            for k, v in sources.items():
+                if isinstance(v, (int, float)) and v > 0:
+                    parts.append(f"{labels.get(k, k)}: {int(v)}")
+            if parts:
+                lines.append("  • " + ", ".join(parts))
         b64 = out.get("updates_b64") or ""
         if b64:
             import base64 as _b

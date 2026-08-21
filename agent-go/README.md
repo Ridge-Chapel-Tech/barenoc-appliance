@@ -33,14 +33,14 @@ feature; the appliance side (`src/api`) is in the same repo.
 |---|---|---|
 | `collect_logs` | `journalctl --no-pager -n <lines>` (fallback `tail`) | sudo, full path |
 | `reboot` | `/sbin/reboot` — **only when `params.confirm == true`** | sudo, full path |
-| `check_updates` | `apt-get -s upgrade` (read-only) | sudo, full path |
+| `check_updates` | `/opt/noc-agent/scripts/check_updates.sh` — multi-source read-only check (OS package manager + flatpak + firmware + snap + rpm-ostree) | script self-escalates via the scoped sudoers |
 | `report_facts` | local `facts.Collect()` (no command) | none |
 
 The sudoers grant (installed by `agent_install.sh`, mirrored in
 `internal/sudoers` — the unit test pins the exact line):
 
 ```
-nocagent ALL=(root) NOPASSWD: /usr/bin/systemctl status *, /usr/bin/tail *, /usr/bin/journalctl *, /sbin/reboot, /usr/bin/apt-get -s upgrade
+nocagent ALL=(root) NOPASSWD: /usr/bin/systemctl status *, /usr/bin/tail *, /usr/bin/journalctl *, /sbin/reboot, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/flatpak, /usr/bin/fwupdmgr, /usr/bin/snap, /usr/bin/rpm-ostree
 ```
 
 ## Layout

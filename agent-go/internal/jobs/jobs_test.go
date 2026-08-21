@@ -86,11 +86,11 @@ func TestExecuteRunsConfirmedJob(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("check_updates should succeed: %+v", res)
 	}
-	if len(calls) != 1 || !strings.Contains(calls[0], "/usr/bin/apt-get") {
-		t.Fatalf("expected apt-get via sudo, ran: %v", calls)
+	if len(calls) != 1 || !strings.Contains(calls[0], "/opt/noc-agent/scripts/check_updates.sh") {
+		t.Fatalf("expected the multi-source check script, ran: %v", calls)
 	}
-	if !strings.HasPrefix(calls[0], "sudo -n ") {
-		t.Fatalf("escalation must go through sudo -n: %q", calls[0])
+	if !strings.HasPrefix(calls[0], "/usr/bin/bash ") {
+		t.Fatalf("check_updates must run the script via bash (script self-escalates): %q", calls[0])
 	}
 	if res.ExitCode != 0 || res.DurationMs < 0 {
 		t.Fatalf("bad result metadata: %+v", res)

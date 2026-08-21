@@ -15,7 +15,7 @@ set -e
 
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo bash fix-device-sudoers.sh" >&2; exit 1; }
 
-LINE='barenoc ALL=(ALL) NOPASSWD: /usr/bin/cp, /usr/sbin/reboot, /usr/sbin/shutdown, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/journalctl, /usr/bin/log, /usr/bin/install, /usr/bin/systemctl, /usr/bin/tail, /usr/bin/curl'
+LINE='barenoc ALL=(ALL) NOPASSWD: /usr/bin/cp, /usr/sbin/reboot, /usr/sbin/shutdown, /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/flatpak, /usr/bin/fwupdmgr, /usr/bin/snap, /usr/bin/rpm-ostree, /usr/bin/journalctl, /usr/bin/log, /usr/bin/install, /usr/bin/systemctl, /usr/bin/tail, /usr/bin/curl'
 
 printf '%s\n' "$LINE" > /etc/sudoers.d/barenoc
 chmod 440 /etc/sudoers.d/barenoc

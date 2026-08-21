@@ -20,14 +20,17 @@ router = APIRouter(tags=["onboard"])
 
 SUDO_SCOPED = (
     "/usr/bin/cp, /usr/sbin/reboot, /usr/sbin/shutdown, /usr/bin/apt, /usr/bin/apt-get,"
-    " /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/journalctl,"
+    " /usr/bin/dnf, /usr/bin/yum, /usr/bin/apk, /usr/bin/zypper, /usr/bin/flatpak,"
+    " /usr/bin/fwupdmgr, /usr/bin/snap, /usr/bin/rpm-ostree, /usr/bin/journalctl,"
     " /usr/bin/log, /usr/bin/install, /usr/bin/systemctl, /usr/bin/tail, /usr/bin/curl"
 )
 # NOTE: sudoers requires FULLY-QUALIFIED paths (bare command names are a
 # parse error). cp is included so the appliance can sync its own agent runner
 # (sudo -u pi-agent cp) when it adopts the appliance as a device. Package
 # managers are per major OS flavor (apt/dnf/yum/apk/zypper) so apply_patch
-# works on every flavor; log is macOS (no journald).
+# works on every flavor; flatpak/fwupdmgr/snap/rpm-ostree are the other update
+# sources the multi-source check (check_updates_multi.sh) explores (read-only
+# checks; apply stays a separate gated action). log is macOS (no journald).
 
 
 def _app(request: Request) -> str:

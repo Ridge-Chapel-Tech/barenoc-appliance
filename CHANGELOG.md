@@ -15,6 +15,32 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.20.e] — 2026-08-20
+
+### Added
+- **Multi-source update check (08-20):** `src/scripts/check_updates_multi.sh` —
+  the update engine now explores ALL update sources, not just the OS package
+  manager (the App Center aggregates rpm + flatpak + firmware, which the engine
+  could not see). In addition to apt/dnf/yum/apk/zypper — now run WITH metadata
+  refresh so stale metadata never hides updates — it checks **flatpak**
+  (`flatpak remote-ls --updates`), **firmware** (`fwupdmgr get-updates`), **snap**
+  (`snap refresh --list`), and **rpm-ostree** (`rpm-ostree upgrade --check`,
+  atomic distros). The result reports a machine-readable per-source shape
+  (`sources` counts + `total` + `updates_available` + a base64 detail), where
+  "updates available" = any source non-zero. Read-only — apply stays a separate
+  gated action (the queued OS-aware lane).
+
+### Changed
+- **`apply_patch.sh`** delegates to the multi-source check (the SSH path relays
+  the per-source report), and the ticket/chat formatter surfaces the per-source
+  breakdown (e.g. "OS packages: 2, Firmware: 1").
+- **NOC_Agent `check_updates`** runs the same multi-source check via
+  `/opt/noc-agent/scripts/check_updates.sh` (installed by `agent_install.sh`)
+  instead of the apt-only `apt-get -s upgrade`.
+- **sudoers** (the appliance's `barenoc` grant + the NOC_Agent's `nocagent`
+  grant) now include the per-OS package managers and the other update sources
+  (flatpak/fwupdmgr/snap/rpm-ostree), gated to those tools only (never `ALL`).
+
 ## [2026.08.20.d] — 2026-08-20
 
 ### Fixed
