@@ -67,5 +67,51 @@ class ApplyPatchFormatTest(unittest.TestCase):
         self.assertNotIn("update(s) available", text)
 
 
+class ApplyUpdatesFormatTest(unittest.TestCase):
+    """The gated apply_updates result shape: per-source applied counts + the
+    reboot-needed flag. Never says 'rebooted' — it surfaces the flag only."""
+
+    def test_applied_counts_and_reboot_flag(self):
+        out = {
+            "package_manager": "dnf",
+            "applied": {"dnf": 2, "flatpak": 1, "firmware": 0, "snap": 0,
+                        "rpm_ostree": 0},
+            "total_applied": 3,
+            "reboot_needed": True,
+            "detail_b64": _b64("[dnf] applied (2)\n"),
+        }
+        text = _format_info_answer("apply_updates", out)
+        self.assertIn("3 update(s) applied", text)
+        self.assertIn("OS packages: 2", text)
+        self.assertIn("Flatpak: 1", text)
+        self.assertNotIn("Firmware", text)  # zero sources aren't listed
+        self.assertIn("reboot is needed", text)
+
+    def test_nothing_to_apply(self):
+        out = {
+            "package_manager": "apt",
+            "applied": {"apt": 0, "flatpak": 0, "firmware": 0, "snap": 0,
+                        "rpm_ostree": 0},
+            "total_applied": 0,
+            "reboot_needed": False,
+        }
+        text = _format_info_answer("apply_updates", out)
+        self.assertIn("nothing to apply", text)
+        self.assertNotIn("reboot", text)
+
+    def test_failed_sources_surfaced(self):
+        out = {
+            "package_manager": "dnf",
+            "applied": {"dnf": 2, "flatpak": 0, "firmware": 1, "snap": 0,
+                        "rpm_ostree": 0},
+            "total_applied": 2,
+            "failed": ["firmware"],
+            "reboot_needed": False,
+        }
+        text = _format_info_answer("apply_updates", out)
+        self.assertIn("failed: firmware", text)
+        self.assertIn("2 update(s) applied", text)
+
+
 if __name__ == "__main__":
     unittest.main()

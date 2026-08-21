@@ -78,6 +78,31 @@ func TestExecuteRefusesUnconfirmedReboot(t *testing.T) {
 	}
 }
 
+func TestExecuteRefusesUnconfirmedApplyUpdates(t *testing.T) {
+	var calls []string
+	res := Execute(Job{JobID: "7", Action: "apply_updates", Params: map[string]any{}, Nonce: "n7"},
+		time.Now(), recordExec(&calls))
+	if res.OK || len(calls) != 0 {
+		t.Fatalf("unconfirmed apply_updates must be refused: %+v calls=%v", res, calls)
+	}
+}
+
+func TestExecuteRunsConfirmedApplyUpdates(t *testing.T) {
+	var calls []string
+	res := Execute(
+		Job{JobID: "8", Action: "apply_updates", Params: map[string]any{"confirm": true}, Nonce: "n8"},
+		time.Now(), recordExec(&calls))
+	if !res.OK {
+		t.Fatalf("confirmed apply_updates should succeed: %+v", res)
+	}
+	if len(calls) != 1 || !strings.Contains(calls[0], "/opt/noc-agent/scripts/apply_updates.sh") {
+		t.Fatalf("expected the multi-source apply script, ran: %v", calls)
+	}
+	if !strings.HasPrefix(calls[0], "/usr/bin/bash ") {
+		t.Fatalf("apply_updates must run the script via bash (script self-escalates): %q", calls[0])
+	}
+}
+
 func TestExecuteRunsConfirmedJob(t *testing.T) {
 	var calls []string
 	res := Execute(

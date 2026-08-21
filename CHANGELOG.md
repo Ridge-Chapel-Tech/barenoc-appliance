@@ -15,6 +15,34 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.21.a] — 2026-08-21
+
+### Added
+- **Multi-source APPLY (08-21):** `apply_updates` — the gated counterpart to the
+  multi-source update check. The NOC_Agent gains an `apply_updates` action
+  (confirm-gated on BOTH the appliance and the agent — customer-requested only,
+  never autonomous-unprompted) that runs `src/scripts/apply_updates.sh` on the
+  endpoint: it re-runs the read-only check for a fresh per-source picture, then
+  applies each NON-zero source — the OS package manager
+  (`dnf -y update` / `apt-get -y upgrade` / yum / apk / zypper) + flatpak +
+  firmware (fwupd) + snap + rpm-ostree (the SAME multi-source family the check
+  explores). The result reports per-source applied counts + a `reboot_needed`
+  flag for kernel/atomic updates — the script **never reboots** (the flag is
+  surfaced; the customer decides when). The PATCH_ALLOWLIST stays the appliance's
+  firmware-ID gate; this is the endpoint OS apply (no overlap).
+- **Appliance dispatch:** `AGENT_ACTIONS` += `apply_updates` (with the
+  `confirm=true` validation gate) so the chat/pi flow can enqueue the apply for
+  agent devices, and the result formatter renders the applied counts +
+  reboot-needed flag.
+
+### Changed
+- **NOC_Agent `apply_updates`** runs `/opt/noc-agent/scripts/apply_updates.sh`
+  (installed root-owned next to the check script by `agent_install.sh`, embedded
+  heredoc = the canonical script — a CI drift test pins it). The sudoers
+  allowlist needs **no new tools** for apply: the .e grant already covers the
+  per-OS package managers + flatpak/fwupdmgr/snap/rpm-ostree at the tool level
+  (e.g. `dnf check-update` for the check and `dnf -y update` for the apply).
+
 ## [2026.08.20.e] — 2026-08-20
 
 ### Added

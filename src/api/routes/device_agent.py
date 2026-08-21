@@ -28,8 +28,10 @@ router = APIRouter(prefix="/api/v1/device", tags=["device"])
 
 # The P1b action set (design §6). The appliance validates here (allowlist);
 # the agent re-validates against its own embedded catalog — neither side alone
-# can widen the other.
-AGENT_ACTIONS = {"collect_logs", "reboot", "check_updates", "report_facts"}
+# can widen the other. apply_updates is the gated OS apply (customer-requested
+# only, confirm-gated on BOTH sides — it never runs autonomous-unprompted).
+AGENT_ACTIONS = {"collect_logs", "reboot", "check_updates", "apply_updates",
+                "report_facts"}
 
 _PULL_DEFAULT = 10
 _PULL_MAX = 50
@@ -61,6 +63,10 @@ def _validate_enqueue(action: str, params: dict) -> None:
             f"unknown agent action {action!r} (P1b set: {sorted(AGENT_ACTIONS)})")
     if action == "reboot" and not (params or {}).get("confirm"):
         raise ValueError("reboot requires params.confirm=true")
+    if action == "apply_updates" and not (params or {}).get("confirm"):
+        # Apply writes to the endpoint OS: the ticket's explicit request is
+        # required. Never enqueue autonomously (mirrors the reboot gate).
+        raise ValueError("apply_updates requires params.confirm=true")
 
 
 def enqueue_job(db: Session, device_id: int, action: str, params: dict = None,

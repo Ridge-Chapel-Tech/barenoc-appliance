@@ -34,6 +34,7 @@ feature; the appliance side (`src/api`) is in the same repo.
 | `collect_logs` | `journalctl --no-pager -n <lines>` (fallback `tail`) | sudo, full path |
 | `reboot` | `/sbin/reboot` — **only when `params.confirm == true`** | sudo, full path |
 | `check_updates` | `/opt/noc-agent/scripts/check_updates.sh` — multi-source read-only check (OS package manager + flatpak + firmware + snap + rpm-ostree) | script self-escalates via the scoped sudoers |
+| `apply_updates` | `/opt/noc-agent/scripts/apply_updates.sh` — **only when `params.confirm == true`**; re-runs the check and applies each non-zero source (same multi-source family). Never reboots — surfaces `reboot_needed` only | script self-escalates via the scoped sudoers |
 | `report_facts` | local `facts.Collect()` (no command) | none |
 
 The sudoers grant (installed by `agent_install.sh`, mirrored in

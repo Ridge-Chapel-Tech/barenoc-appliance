@@ -12,8 +12,12 @@ const User = "nocagent"
 // Entries are the exact commands the agent is allowed to escalate to.
 // Fully-qualified paths only — a bare command name is a sudoers parse error.
 // The per-OS package managers + the other update sources are the read-only
-// multi-source check (check_updates → /opt/noc-agent/scripts/check_updates.sh);
-// gated at the tool level (never ALL) — apply stays a separate gated action.
+// multi-source check (check_updates → /opt/noc-agent/scripts/check_updates.sh)
+// AND the gated apply (apply_updates → /opt/noc-agent/scripts/apply_updates.sh)
+// — the SAME tools, so the tool-level grant covers both (e.g. `dnf check-update`
+// for the check and `dnf -y update` for the apply). Gated at the tool level
+// (never ALL); the apply is additionally confirm-gated in the catalog + the
+// appliance, and the script never reboots (reboot_needed is a surfaced flag).
 var Entries = []string{
 	"/usr/bin/systemctl status *",
 	"/usr/bin/tail *",

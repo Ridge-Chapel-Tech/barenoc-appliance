@@ -45,7 +45,11 @@ func TestRenderUsesProvidedUser(t *testing.T) {
 func TestEntriesMatchInstallerContract(t *testing.T) {
 	// The contract (BUILD_LIST §7 / task brief) is the capability-gated set:
 	// the status/log/reboot controls + the per-OS package managers + the other
-	// update sources. If this set changes, agent_install.sh must change with it.
+	// update sources. The same tool-level grant serves BOTH the read-only
+	// multi-source check AND the gated apply_updates (e.g. `dnf check-update`
+	// vs `dnf -y update`), so the entries did NOT need to grow for apply — the
+	// apply is confirm-gated in the catalog + the appliance instead. If this
+	// set changes, agent_install.sh must change with it.
 	want := map[string]bool{
 		"/usr/bin/systemctl status *": true,
 		"/usr/bin/tail *":             true,

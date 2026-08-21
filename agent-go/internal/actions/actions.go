@@ -17,6 +17,7 @@ const (
 	CollectLogs  = "collect_logs"
 	Reboot       = "reboot"
 	CheckUpdates = "check_updates"
+	ApplyUpdates = "apply_updates"
 	ReportFacts  = "report_facts"
 )
 
@@ -36,6 +37,15 @@ var Catalog = map[string]Spec{
 	// Sudo stays true (the script escalates internally); the budget is larger
 	// because a multi-source check refreshes metadata + probes fwupd/flatpak/snap.
 	CheckUpdates: {Name: CheckUpdates, Sudo: true, Retryable: true, MaxDuration: 180 * time.Second},
+	// apply_updates is the gated counterpart: it re-runs the check and applies
+	// each non-zero source. The outer command runs unprivileged (sudo=false) and
+	// the script self-escalates via the scoped sudoers — but unlike the check it
+	// WRITES, so the catalog (here) AND the appliance both require
+	// params.confirm=true before it can run. Never autonomous-unprompted. A full
+	// OS update can take minutes; the budget is generous (the job deadline is
+	// the separate outer cap). Retryable is safe: package managers + fwupd/snap
+	// are idempotent, and a mid-apply timeout re-runs to a consistent state.
+	ApplyUpdates: {Name: ApplyUpdates, Sudo: false, Retryable: true, MaxDuration: 30 * time.Minute},
 	ReportFacts:  {Name: ReportFacts, Sudo: false, Retryable: true, MaxDuration: 10 * time.Second},
 }
 
@@ -56,6 +66,12 @@ func Validate(name string, params map[string]any) error {
 		// reboot is destructive: only when the appliance explicitly confirms.
 		if !truthy(params["confirm"]) {
 			return fmt.Errorf("reboot requires params.confirm=true")
+		}
+	case ApplyUpdates:
+		// apply writes to the endpoint OS: customer-requested only. The same
+		// confirm gate as reboot — never autonomous-unprompted.
+		if !truthy(params["confirm"]) {
+			return fmt.Errorf("apply_updates requires params.confirm=true")
 		}
 	case CollectLogs:
 		if _, err := Lines(params); err != nil {
@@ -103,6 +119,12 @@ func BuildCommand(name string, params map[string]any) (argv []string, sudo bool,
 		// outer command runs unprivileged (sudo=false) — least privilege is
 		// enforced by the nocagent sudoers allowlist, not by this argv.
 		return []string{"/usr/bin/bash", "/opt/noc-agent/scripts/check_updates.sh"}, false, nil
+	case ApplyUpdates:
+		// The gated multi-source apply script (installed root-owned next to the
+		// check script) re-runs the check and applies each non-zero source. It
+		// self-escalates via the same scoped sudoers, so the outer command runs
+		// unprivileged. Validate() already enforced params.confirm=true.
+		return []string{"/usr/bin/bash", "/opt/noc-agent/scripts/apply_updates.sh"}, false, nil
 	default:
 		return nil, false, nil
 	}

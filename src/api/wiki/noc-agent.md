@@ -35,6 +35,7 @@ certificate (mTLS) and executes safe, approved actions locally.
 |-----|--------------|
 | `collect_logs` | Gathers recent logs from the device |
 | `check_updates` | Reports what could be updated (read-only — never installs) |
+| `apply_updates` | Applies updates the check found (confirm-gated; never reboots — flags `reboot_needed` instead) |
 | `report_facts` | Re-reports host facts |
 | `reboot` | Reboots the device (confirm-gated, capability-scoped) |
 

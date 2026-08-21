@@ -30,6 +30,16 @@ def _assistant_name() -> str:
     return name or "Lily"
 
 
+# Per-source display labels shared by the apply_patch (check) and apply_updates
+# (apply) formatters.
+_SOURCE_LABELS = {
+    "apt": "OS packages", "dnf": "OS packages", "yum": "OS packages",
+    "apk": "OS packages", "zypper": "OS packages", "rpm": "OS packages",
+    "flatpak": "Flatpak", "firmware": "Firmware", "snap": "Snap",
+    "rpm_ostree": "rpm-ostree",
+}
+
+
 def _result_detail_text(result) -> str:
     """Human-readable text for a successful job's output (raw_output → pi
     reports / script stdout; JSON dicts get pretty-printed)."""
@@ -152,16 +162,10 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             msg = "up to date"
         lines.append(f"Update check on {out.get('target','?')} ({pm}): {msg}")
         if isinstance(sources, dict) and sources:
-            labels = {
-                "apt": "OS packages", "dnf": "OS packages", "yum": "OS packages",
-                "apk": "OS packages", "zypper": "OS packages", "rpm": "OS packages",
-                "flatpak": "Flatpak", "firmware": "Firmware", "snap": "Snap",
-                "rpm_ostree": "rpm-ostree",
-            }
             parts = []
             for k, v in sources.items():
                 if isinstance(v, (int, float)) and v > 0:
-                    parts.append(f"{labels.get(k, k)}: {int(v)}")
+                    parts.append(f"{_SOURCE_LABELS.get(k, k)}: {int(v)}")
             if parts:
                 lines.append("  • " + ", ".join(parts))
         b64 = out.get("updates_b64") or ""
@@ -171,6 +175,30 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             for ln in text.splitlines()[:25]:
                 if ln.strip():
                     lines.append(f"  {ln[:160]}")
+    elif action == "apply_updates":
+        pm = out.get("package_manager") or "?"
+        applied = out.get("applied") or {}
+        total = out.get("total_applied")
+        if total is None and isinstance(applied, dict):
+            total = sum(int(v) for v in applied.values()
+                        if isinstance(v, (int, float)) and v > 0)
+        target = out.get("target") or "the device"
+        if total:
+            lines.append(f"Updates applied on {target} ({pm}): {int(total)} update(s) applied")
+        else:
+            lines.append(f"Update apply on {target} ({pm}): nothing to apply — already up to date")
+        if isinstance(applied, dict) and applied:
+            parts = []
+            for k, v in applied.items():
+                if isinstance(v, (int, float)) and v > 0:
+                    parts.append(f"{_SOURCE_LABELS.get(k, k)}: {int(v)}")
+            if parts:
+                lines.append("  • " + ", ".join(parts))
+        failed = out.get("failed") or []
+        if failed:
+            lines.append("  ⚠ failed: " + ", ".join(str(f) for f in failed))
+        if out.get("reboot_needed"):
+            lines.append("  🔁 A reboot is needed to finish — I won't reboot it myself; you decide when.")
     elif action == "batch":
         res = out.get("results") or []
         total = out.get("total", len(res))

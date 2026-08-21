@@ -218,9 +218,24 @@ class DeviceAgentJobsTest(unittest.TestCase):
         enqueue_job(db, did, "reboot", {"confirm": True}, ttl_seconds=600)
         db.close()
 
+    def test_enqueue_apply_updates_requires_confirm(self):
+        did = _add_device("AgentA")
+        db = SessionLocal()
+        # Apply writes to the endpoint OS — customer-requested only (the gate).
+        with self.assertRaises(ValueError):
+            enqueue_job(db, did, "apply_updates", {})
+        with self.assertRaises(ValueError):
+            enqueue_job(db, did, "apply_updates", {"confirm": False})
+        job = enqueue_job(db, did, "apply_updates", {"confirm": True},
+                          ttl_seconds=1800)
+        self.assertEqual(job.action, "apply_updates")
+        self.assertEqual(job.params, {"confirm": True})
+        db.close()
+
     def test_agent_action_set_is_exactly_p1b(self):
         self.assertEqual(AGENT_ACTIONS,
-                         {"collect_logs", "reboot", "check_updates", "report_facts"})
+                         {"collect_logs", "reboot", "check_updates",
+                          "apply_updates", "report_facts"})
 
 
 class DeviceAgentRouteBindingTest(unittest.TestCase):

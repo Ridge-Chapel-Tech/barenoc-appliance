@@ -3,7 +3,7 @@ package actions
 import "testing"
 
 func TestKnownAndValidate(t *testing.T) {
-	for _, name := range []string{CollectLogs, Reboot, CheckUpdates, ReportFacts} {
+	for _, name := range []string{CollectLogs, Reboot, CheckUpdates, ApplyUpdates, ReportFacts} {
 		if !Known(name) {
 			t.Fatalf("%q should be known", name)
 		}
@@ -35,6 +35,21 @@ func TestValidateRebootRequiresConfirm(t *testing.T) {
 	}
 	if err := Validate(Reboot, map[string]any{"confirm": "true"}); err != nil {
 		t.Fatalf("reboot with confirm='true' should pass, got %v", err)
+	}
+}
+
+func TestValidateApplyUpdatesRequiresConfirm(t *testing.T) {
+	if err := Validate(ApplyUpdates, nil); err == nil {
+		t.Fatal("apply_updates without confirm should fail")
+	}
+	if err := Validate(ApplyUpdates, map[string]any{"confirm": false}); err == nil {
+		t.Fatal("apply_updates with confirm=false should fail")
+	}
+	if err := Validate(ApplyUpdates, map[string]any{"confirm": true}); err != nil {
+		t.Fatalf("apply_updates with confirm=true should pass, got %v", err)
+	}
+	if err := Validate(ApplyUpdates, map[string]any{"confirm": "true"}); err != nil {
+		t.Fatalf("apply_updates with confirm='true' should pass, got %v", err)
 	}
 }
 
@@ -81,6 +96,8 @@ func TestBuildCommandUsesSudoFullPaths(t *testing.T) {
 			[]string{"sudo", "-n", "/sbin/reboot"}, true},
 		{CheckUpdates, nil,
 			[]string{"/usr/bin/bash", "/opt/noc-agent/scripts/check_updates.sh"}, false},
+		{ApplyUpdates, map[string]any{"confirm": true},
+			[]string{"/usr/bin/bash", "/opt/noc-agent/scripts/apply_updates.sh"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,6 +133,15 @@ func TestBuildCommandReportFactsHasNoCommand(t *testing.T) {
 func TestBuildCommandRejectsUnconfirmedReboot(t *testing.T) {
 	if _, _, err := BuildCommand(Reboot, nil); err == nil {
 		t.Fatal("expected error for unconfirmed reboot")
+	}
+}
+
+func TestBuildCommandRejectsUnconfirmedApplyUpdates(t *testing.T) {
+	if _, _, err := BuildCommand(ApplyUpdates, nil); err == nil {
+		t.Fatal("expected error for unconfirmed apply_updates")
+	}
+	if _, _, err := BuildCommand(ApplyUpdates, map[string]any{"confirm": false}); err == nil {
+		t.Fatal("expected error for apply_updates with confirm=false")
 	}
 }
 
