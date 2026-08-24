@@ -12,9 +12,22 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 import base64
+import os
 
 from control_key import ensure_control_key
 from step_ca import device_cn, root_fingerprint
+
+# The canonical root-trust installer — kept byte-identical to
+# src/scripts/trust_root.sh (a CI drift test pins the two). The served
+# onboarding script embeds it verbatim so the endpoint runs the SAME
+# verify-and-anchor logic as agent_install.sh (issue #105: correct root only,
+# self-clean stale anchors, verify the trust lands).
+_TRUST_ROOT_SH = ""
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "trust_root.sh")) as _f:
+        _TRUST_ROOT_SH = _f.read().rstrip("\n")
+except Exception:
+    _TRUST_ROOT_SH = ""
 
 router = APIRouter(tags=["onboard"])
 
@@ -68,38 +81,8 @@ def onboard_root_ca():
     return PlainTextResponse(pem, media_type="application/x-pem-file")
 
 
-def _browser_trust_block(os_name: str) -> str:
-    """The OPT-IN "trust the BareNOC root in this machine's browsers" step.
-
-    Default OFF; explicit consent only; never installs silently. The returned
-    shell text contains no brace characters, so it can be interpolated into an
-    f-string (the surrounding script templates) without escaping.
-    """
-    if os_name == "mac":
-        resolve_home = (
-            'FF_HOME=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | sed -n "s/^NFSHomeDirectory: //p")\n'
-        )
-        os_install = (
-            '  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /etc/barenoc-ca/root_ca.crt\n'
-        )
-        undo = 'sudo security delete-certificate -c "BareNOC Internal CA Root"'
-        ff_glob = '"$FF_HOME/Library/Application Support/Firefox/Profiles/"*'
-    else:
-        resolve_home = (
-            'FF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)\n'
-        )
-        os_install = (
-            '  install -d -m 0755 /usr/local/share/ca-certificates\n'
-            '  install -m 0644 /etc/barenoc-ca/root_ca.crt /usr/local/share/ca-certificates/barenoc-root.crt\n'
-            '  if command -v update-ca-certificates >/dev/null 2>&1; then\n'
-            '    update-ca-certificates\n'
-            '  else\n'
-            '    echo "  !!! update-ca-certificates not found (non-Debian?) — root copied but not activated"\n'
-            '  fi\n'
-        )
-        undo = 'rm /usr/local/share/ca-certificates/barenoc-root.crt && update-ca-certificates'
-        ff_glob = '"$FF_HOME/.mozilla/firefox/"*'
-
+def _mac_trust_block() -> str:
+    """macOS: trust via the System keychain + a curl verify (no openssl dep)."""
     return (
         "# --- Optional: trust the BareNOC root CA in this machine's browsers ---\n"
         "TRUST_ROOT=0\n"
@@ -125,31 +108,71 @@ def _browser_trust_block(os_name: str) -> str:
         'if [ "$TRUST_ROOT" = "1" ]; then\n'
         '  echo "==> Trusting the BareNOC root CA (opt-in) — $APP will show as secure"\n'
         '  echo "    Scope: only certificates signed by the BareNOC CA. Undo anytime with:"\n'
-        "  echo '      " + undo + "'\n"
-        "  FF_HOME=\"$HOME\"\n"
-        '  if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then\n'
-        "    " + resolve_home +
-        '    [ -n "$FF_HOME" ] || FF_HOME="$HOME"\n'
-        "  fi\n"
-        + os_install +
-        '  if command -v certutil >/dev/null 2>&1; then\n'
-        "    for d in " + ff_glob + "; do\n"
-        '      [ -d "$d" ] || continue\n'
-        '      [ -f "$d/cert9.db" ] || [ -f "$d/cert8.db" ] || continue\n'
-        '      if certutil -A -n "BareNOC Internal CA Root" -t "C,," -i /etc/barenoc-ca/root_ca.crt -d "sql:$d" >/dev/null 2>&1; then\n'
-        '        echo "    Firefox: trusted in profile $d"\n'
-        "      else\n"
-        '        echo "    Firefox: import into $d failed (non-fatal)"\n'
-        "      fi\n"
-        "    done\n"
+        "  echo '      sudo security delete-certificate -c \"BareNOC Internal CA Root\"'\n"
+        '  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /etc/barenoc-ca/root_ca.crt\n'
+        '  echo "  Verify (should print 200 with no -k):"\n'
+        '  CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$APP" 2>/dev/null || true)\n'
+        '  if [ "$CODE" = "200" ]; then\n'
+        '    echo "  ✓ curl (no -k): $APP -> HTTP 200"\n'
         "  else\n"
-        '    echo "  !!! Firefox NOT covered: certutil missing."\n'
-        '    echo "      Manual: certutil -A -n \\"BareNOC Internal CA Root\\" -t \\"C,,\\" -i /etc/barenoc-ca/root_ca.crt -d sql:<profile-dir>"\n'
+        '    echo "  ✗ curl (no -k): $APP -> HTTP $CODE (still untrusted)"\n'
         "  fi\n"
-        '  echo "  Verify (should print \'HTTP/1.1 200 OK\' with no -k):"\n'
-        '  curl -sI "$APP" 2>/dev/null | head -1 || echo "  (could not reach $APP over HTTPS)"\n'
         "fi\n"
     )
+
+
+def _linux_trust_block() -> str:
+    """Linux: embed + run the canonical trust_root.sh — verify the root signs
+    the served chain, self-clean stale anchors, install into the right store
+    (update-ca-trust on Fedora/RHEL, update-ca-certificates on Debian/Ubuntu),
+    then verify the trust lands."""
+    return (
+        "# --- Optional: trust the BareNOC signing root in this machine's browsers ---\n"
+        "TRUST_ROOT=0\n"
+        'if [ "$1" = "--trust-root" ]; then\n'
+        "  TRUST_ROOT=1\n"
+        "fi\n"
+        "TRUST_TMP=$(mktemp)\n"
+        "cat > \"$TRUST_TMP\" <<'BARENOC_TRUST_ROOT_SH'\n"
+        + _TRUST_ROOT_SH + "\n"
+        "BARENOC_TRUST_ROOT_SH\n"
+        "TRUST_RC=0\n"
+        'if [ "$TRUST_ROOT" = "1" ]; then\n'
+        '  bash "$TRUST_TMP" --yes "$APP" || TRUST_RC=$?\n'
+        "else\n"
+        '  bash "$TRUST_TMP" "$APP" || TRUST_RC=$?\n'
+        "fi\n"
+        'rm -f "$TRUST_TMP"\n'
+        'if [ "$TRUST_RC" = "0" ]; then\n'
+        '  echo "  ✓ Browser trust done."\n'
+        'elif [ "$TRUST_RC" = "2" ]; then\n'
+        '  echo "  (browser trust declined/skipped — re-run with --trust-root to opt in)"\n'
+        "else\n"
+        '  echo "  ✗ Browser trust FAILED — the web UI may still show \'Not Secure\'."\n'
+        "fi\n"
+    )
+
+
+def _browser_trust_block(os_name: str) -> str:
+    """The OPT-IN "trust the BareNOC root in this machine's browsers" step.
+
+    Default OFF; explicit consent only; never installs silently. Linux embeds
+    + runs the canonical src/scripts/trust_root.sh (mirrored at
+    routes/trust_root.sh): it verifies the fetched root actually signs the
+    served web cert chain (never an unrelated root or a leaf), removes stale
+    barenoc-root anchors it previously added, installs into the right store,
+    and proves the trust lands. macOS uses the System keychain directly. The
+    returned shell text is a plain string (inserted via {trust}), so brace
+    characters are fine.
+    """
+    if os_name == "mac":
+        return _mac_trust_block()
+    if not _TRUST_ROOT_SH:
+        return (
+            "# --- Optional: browser trust ---\n"
+            'echo "  !!! browser trust unavailable (missing trust_root.sh) — re-download the onboarding script"\n'
+        )
+    return _linux_trust_block()
 
 
 def _linux_script(app_url: str) -> str:
@@ -239,6 +262,7 @@ HEART
 chmod +x /usr/local/bin/barenoc-device-heartbeat.sh
 ( crontab -l 2>/dev/null | grep -v barenoc-device-heartbeat; echo "*/10 * * * * /usr/local/bin/barenoc-device-heartbeat.sh" ) | crontab -
 
+{trust}
 echo "==> Verifying the handshake — talking back to BareNOC over mTLS"
 sleep 2
 printf '{{"hostname": "%s"}}' "$(hostname)" > /tmp/barenoc-report.json
@@ -264,7 +288,6 @@ else
   fi
 fi
 
-{trust}
 echo "==> Done. This device is now adopted by BareNOC (it appears online within a minute)."
 """
 
@@ -324,6 +347,7 @@ HEART
 chmod +x /usr/local/bin/barenoc-device-heartbeat.sh
 ( crontab -l 2>/dev/null | grep -v barenoc-device-heartbeat; echo "*/10 * * * * /usr/local/bin/barenoc-device-heartbeat.sh" ) | crontab -
 
+{trust}
 echo "==> Verifying the handshake — talking back to BareNOC over mTLS"
 sleep 2
 printf '{{"hostname": "%s"}}' "$(hostname)" > /tmp/barenoc-report.json
@@ -345,7 +369,6 @@ else
   fi
 fi
 
-{trust}
 echo "==> Done. This device is now adopted by BareNOC."
 """
 
@@ -483,9 +506,12 @@ def onboard_page(request: Request):
     and installs a renew+report heartbeat. Everything runs on the appliance — no internet needed.</p>
   <p class="mt-2 text-xs text-gray-500">🔒 <b>Optional (default No):</b> the script asks whether to trust the BareNOC
     root CA in this machine's browsers so <code>https://&lt;appliance-ip&gt;</code> and <code>app.barenoc.com</code>
-    stop showing &ldquo;Not Secure&rdquo;. It <b>only</b> affects certificates signed by the BareNOC CA — nothing
-    else. Undo: <code>rm /usr/local/share/ca-certificates/barenoc-root.crt && update-ca-certificates</code>
-    (Linux) / <code>sudo security delete-certificate -c "BareNOC Internal CA Root"</code> (macOS).</p>
+    stop showing &ldquo;Not Secure&rdquo;. It verifies the root actually signs the served cert, removes any stale
+    anchors it previously added, then verifies the trust lands. It <b>only</b> affects certificates signed by
+    the BareNOC CA — nothing else. Undo (Linux): <code>rm /etc/pki/ca-trust/source/anchors/barenoc-root.crt &&
+    update-ca-trust</code> (Fedora/RHEL) or <code>rm /usr/local/share/ca-certificates/barenoc-root.crt &&
+    update-ca-certificates</code> (Debian/Ubuntu) — macOS: <code>sudo security delete-certificate -c
+    "BareNOC Internal CA Root"</code>.</p>
 </div>
 <script>
 function pick() {{

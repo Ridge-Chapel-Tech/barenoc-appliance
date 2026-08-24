@@ -115,7 +115,7 @@ if [[ ! -s "$ENV" ]]; then
   ADMIN_PW=""
   [ -f "$B/.admin-seed" ] && ADMIN_PW="$(cat "$B/.admin-seed")"
   ADMIN_PW="${ADMIN_PW:-$(openssl rand -base64 12 | tr '+/' '_-')}"
-  IP="$(detect_ip)"; IP="${IP:-192.168.4.207}"
+  IP="$(detect_ip)"; IP="${IP:-192.0.2.207}"
   GW="$(ip route | awk '/default/{print $3; exit}')"
   GW="${GW:-$(echo "$IP" | awk -F. '{print $1"."$2"."$3".1"}')}"
   SUBNET="$(echo "$IP" | awk -F. '{print $1"."$2"."$3".0/24"}')"
@@ -198,7 +198,7 @@ echo "==> bootstrap: nginx certs"
 mkdir -p "$B/volumes/nginx/certs"
 cp "$CA_VOL/certs/root_ca.crt" "$B/volumes/nginx/certs/ca-root.crt"
 ADMINPW="$(cat "$CA_VOL/password-in")"
-IP="$(env_get APPLIANCE_IP)"; IP="${IP:-192.168.4.207}"
+IP="$(env_get APPLIANCE_IP)"; IP="${IP:-192.0.2.207}"
 
 CERT="$B/volumes/nginx/certs/stepca-intermediate.crt"
 if [ ! -s "$CERT" ] || ! openssl x509 -in "$CERT" -noout -ext subjectAltName 2>/dev/null | grep -q stepca.barenoc.local; then
@@ -247,7 +247,7 @@ fi
 
 # ── 7. CoreDNS Corefile ────────────────────────────────────────────────────
 echo "==> bootstrap: CoreDNS Corefile"
-IP="$(env_get APPLIANCE_IP)"; IP="${IP:-192.168.4.207}"
+IP="$(env_get APPLIANCE_IP)"; IP="${IP:-192.0.2.207}"
 HOST="$(env_get APPLIANCE_HOST)"; HOST="${HOST:-app.barenoc.com}"
 mkdir -p "$B/volumes/dns"
 cat > "$B/volumes/dns/Corefile" <<CORE

@@ -424,7 +424,7 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
         finally:
             s.close()
         # Multi-VLAN discovery: DISCOVERY_SUBNETS is a comma list of CIDRs
-        # (e.g. 192.168.4.0/24,192.168.8.0/24). Legacy DISCOVERY_SUBNET
+        # (e.g. 10.0.4.0/24,10.0.8.0/24). Legacy DISCOVERY_SUBNET
         # (a bare 3-octet prefix) still works. Default: derive the LAN from
         # APPLIANCE_IP (installer + Settings always know it) — the old
         # 192.168.0.0/24 hard default made "Scan Network" scan the wrong

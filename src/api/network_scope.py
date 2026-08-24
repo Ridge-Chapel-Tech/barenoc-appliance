@@ -1,8 +1,8 @@
 """Network-scope guards — ranges that must NEVER be scanned, discovered,
 claimed, or adopted.
 
-The 2026-08-19 incident: a friend's box discovered the user's Starlink WAN
-address (100.99.121.62 — inside 100.64.0.0/10) because the discovery ping
+The 2026-08-19 incident: a remote box discovered a Starlink WAN
+address inside 100.64.0.0/10 because the discovery ping
 found it reachable over a tailnet link, and it ended up in the device
 inventory. 100.64.0.0/10 is RFC 6598 CGNAT space — the SAME range Tailscale
 uses for its overlay addresses — so it is never a customer LAN address and

@@ -584,7 +584,7 @@ def _port_macs(pt: dict) -> list:
 
 def _effective_port_profile(pt: dict, ov: dict) -> dict:
     """The port's EFFECTIVE name/native/tagged — the port_overrides entry wins
-    when it sets the field (the 08-19 HouseSwitch port 7 fix: the override set
+    when it sets the field (a switch-port fix: the override set
     native=Default while the port_table had no native, so the 'no profile'
     rule fired on a CONFIGURED port)."""
     pt = pt or {}
@@ -1019,7 +1019,7 @@ def execute_scan(db, run_id: int, config: dict = None, cancel_event=None,
 
 def build_vlan_context(snapshot: dict) -> list:
     """Per-device, per-port VLAN context for the run detail — the STORY
-    ('native WiFi vlan5 (.5.1/24), tagged Kids(9)/RCTF(10)') beside the
+    ('native WiFi (10.0.5.1/24), tagged IoT(9)/Video(10)') beside the
     discovery + findings so the optimize flow is visibly subnet-aware."""
     vlan_map = snapshot.get("vlan_map") or build_vlan_map(snapshot.get("networks") or [])
     out = []

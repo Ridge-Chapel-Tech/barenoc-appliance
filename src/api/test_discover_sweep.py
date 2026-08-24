@@ -4,7 +4,7 @@
 Pins the two 08-19 fixes:
   - a sweep finishes quickly (parallel + capped) and emits PROGRESS notes;
   - 100.64.0.0/10 (CGNAT + Tailscale overlay) is never swept — the buddy's
-    Starlink 100.99.121.62 case.
+    Starlink CGNAT link case.
 
 Runs discover.sh directly (it is a host-side script, but its embedded Python
 uses only the stdlib and `ping`, both available in CI and in the api image).
@@ -36,9 +36,9 @@ class DiscoverSweepTest(unittest.TestCase):
         self.assertEqual(out["count"], 0)
 
     def test_starlink_address_pinned(self):
-        # 100.99.121.62 is inside 100.64.0.0/10 — it must be skipped even as
+        # a CGNAT 100.64.0.0/10 address — it must be skipped even as
         # part of a wider sweep.
-        r, out = _run("100.99.0.0/30")
+        r, out = _run("100.64.0.0/30")
         self.assertEqual(out["skipped_cgnat"], 2)
         self.assertEqual(out["count"], 0)
 

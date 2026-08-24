@@ -152,7 +152,7 @@ Then inside the VM:
 ### The real deploy path (from the dev box)
 
 ```bash
-cd ~/Projects/BareNOC
+cd <bareNOC-repo>
 git pull           # get the latest code
 ./deploy.sh        # rsync → rebuild → health-check → agent creds → runner restart
 ```

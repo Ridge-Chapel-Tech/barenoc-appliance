@@ -257,18 +257,18 @@ class DeviceAdoptionTest(unittest.TestCase):
         from types import SimpleNamespace as NS
         db = SessionLocal()
         r = snmp_sweep_results({"found": [
-            {"ip": "192.168.4.200", "sysname": "core-switch", "vendor": "Cisco",
+            {"ip": "192.0.2.200", "sysname": "core-switch", "vendor": "Cisco",
              "sysdescr": "Cisco IOS switch"},
-            {"ip": "192.168.4.201", "sysname": "printer1", "sysdescr": "HP LaserJet"},
+            {"ip": "192.0.2.201", "sysname": "printer1", "sysdescr": "HP LaserJet"},
         ]}, db=db, user=NS(role="agent"))
         self.assertEqual(r["added"], 2)
         db = SessionLocal()
-        sw = db.query(Device).filter(Device.ip_address == "192.168.4.200").first()
+        sw = db.query(Device).filter(Device.ip_address == "192.0.2.200").first()
         self.assertEqual(sw.name, "core-switch")
         self.assertEqual(sw.device_type, "switch")
         self.assertFalse(sw.claimed)
         # update path: re-sweep with a type refinement
-        r2 = snmp_sweep_results({"found": [{"ip": "192.168.4.200", "sysname": "core-switch",
+        r2 = snmp_sweep_results({"found": [{"ip": "192.0.2.200", "sysname": "core-switch",
                                             "sysdescr": "Cisco IOS switch", "vendor": "Cisco"}]},
                                 db=db, user=NS(role="agent"))
         self.assertEqual(r2["updated"], 1)

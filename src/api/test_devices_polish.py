@@ -132,36 +132,38 @@ class DevicesPolishTemplateTest(unittest.TestCase):
         # mermaid@10.9.8 — |, ", ( and ) all throw).
         self.assertIn(".replace(/[^0-9]/g, '')", html)
 
-    # Real prod topology payload (GitHub #50 reporter's device set — 6 devices,
-    # 5 links, 0 clients), embedded so CI locks the exact generated graph.
+    # Anonymized topology payload (6 devices, 5 links, 0 clients) — the
+    # original prod fixture was scrubbed 2026-08-24 (real MACs/IPs/device
+    # names must never ship in the public tree). Same shape + connectivity so
+    # CI still locks the exact generated graph.
     _TOPOLOGY_FIXTURE = {
         "devices": [
-            {"name": "Office Wifi", "ip": "192.168.5.199", "mac": "0c:ea:14:54:c2:05",
+            {"name": "Office AP", "ip": "192.0.2.10", "mac": "aa:bb:cc:00:00:01",
              "model": "UAPL6", "type": "ap", "status": "online", "vendor": "Ubiquiti",
-             "uplink_mac": "0c:ea:14:b5:26:7b", "uplink_remote_port": 1},
-            {"name": "Ridge Chapel Tiny Farm", "ip": "100.99.121.62", "mac": "74:fa:29:17:b7:95",
+             "uplink_mac": "aa:bb:cc:00:00:02", "uplink_remote_port": 1},
+            {"name": "Edge Gateway", "ip": "192.0.2.1", "mac": "aa:bb:cc:00:00:03",
              "model": "UCGMAX", "type": "gateway", "status": "online", "vendor": "Ubiquiti",
              "uplink_mac": "", "uplink_remote_port": None},
-            {"name": "U6 Mesh", "ip": "192.168.1.41", "mac": "1c:6a:1b:64:dd:70",
+            {"name": "Hallway AP", "ip": "192.0.2.11", "mac": "aa:bb:cc:00:00:04",
              "model": "U6M", "type": "ap", "status": "offline", "vendor": "Ubiquiti",
-             "uplink_mac": "28:70:4e:d5:f5:73", "uplink_remote_port": 1},
-            {"name": "Mini Rack Switch", "ip": "192.168.1.187", "mac": "0c:ea:14:b5:26:7b",
+             "uplink_mac": "aa:bb:cc:00:00:05", "uplink_remote_port": 1},
+            {"name": "Core Switch", "ip": "192.0.2.2", "mac": "aa:bb:cc:00:00:02",
              "model": "USL8LPB", "type": "switch", "status": "online", "vendor": "Ubiquiti",
-             "uplink_mac": "74:fa:29:17:b7:95", "uplink_remote_port": 4},
-            {"name": "HouseSwitch", "ip": "192.168.1.227", "mac": "28:70:4e:d5:f5:73",
+             "uplink_mac": "aa:bb:cc:00:00:03", "uplink_remote_port": 4},
+            {"name": "Annex Switch", "ip": "192.0.2.3", "mac": "aa:bb:cc:00:00:05",
              "model": "USL8LPB", "type": "switch", "status": "online", "vendor": "Ubiquiti",
-             "uplink_mac": "74:fa:29:17:b7:95", "uplink_remote_port": 1},
-            {"name": "U7 Outdoor", "ip": "192.168.5.144", "mac": "1c:6a:1b:95:22:f0",
+             "uplink_mac": "aa:bb:cc:00:00:03", "uplink_remote_port": 1},
+            {"name": "Yard AP", "ip": "192.0.2.12", "mac": "aa:bb:cc:00:00:06",
              "model": "UKPW", "type": "ap", "status": "online", "vendor": "Ubiquiti",
-             "uplink_mac": "0c:ea:14:b5:26:7b", "uplink_remote_port": 2},
+             "uplink_mac": "aa:bb:cc:00:00:02", "uplink_remote_port": 2},
         ],
         "clients": [],
         "links": [
-            {"from": "0c:ea:14:b5:26:7b", "to": "0c:ea:14:54:c2:05", "port": 1},
-            {"from": "28:70:4e:d5:f5:73", "to": "1c:6a:1b:64:dd:70", "port": 1},
-            {"from": "74:fa:29:17:b7:95", "to": "0c:ea:14:b5:26:7b", "port": 4},
-            {"from": "74:fa:29:17:b7:95", "to": "28:70:4e:d5:f5:73", "port": 1},
-            {"from": "0c:ea:14:b5:26:7b", "to": "1c:6a:1b:95:22:f0", "port": 2},
+            {"from": "aa:bb:cc:00:00:02", "to": "aa:bb:cc:00:00:01", "port": 1},
+            {"from": "aa:bb:cc:00:00:05", "to": "aa:bb:cc:00:00:04", "port": 1},
+            {"from": "aa:bb:cc:00:00:03", "to": "aa:bb:cc:00:00:02", "port": 4},
+            {"from": "aa:bb:cc:00:00:03", "to": "aa:bb:cc:00:00:05", "port": 1},
+            {"from": "aa:bb:cc:00:00:02", "to": "aa:bb:cc:00:00:06", "port": 2},
         ],
     }
 
@@ -169,12 +171,12 @@ class DevicesPolishTemplateTest(unittest.TestCase):
         out = self._run_topology_builder(self._TOPOLOGY_FIXTURE)
         expected = "\n".join([
             "graph TD",
-            'd0["Office Wifi<br/>Access Point · Ubiquiti · UAPL6"]:::ap',
-            'd1["Ridge Chapel Tiny Farm<br/>Gateway · Ubiquiti · UCGMAX"]:::gw',
-            'd2["U6 Mesh<br/>Access Point · Ubiquiti · U6M · offline"]:::ap',
-            'd3["Mini Rack Switch<br/>Switch · Ubiquiti · USL8LPB"]:::sw',
-            'd4["HouseSwitch<br/>Switch · Ubiquiti · USL8LPB"]:::sw',
-            'd5["U7 Outdoor<br/>Access Point · Ubiquiti · UKPW"]:::ap',
+            'd0["Office AP<br/>Access Point · Ubiquiti · UAPL6"]:::ap',
+            'd1["Edge Gateway<br/>Gateway · Ubiquiti · UCGMAX"]:::gw',
+            'd2["Hallway AP<br/>Access Point · Ubiquiti · U6M · offline"]:::ap',
+            'd3["Core Switch<br/>Switch · Ubiquiti · USL8LPB"]:::sw',
+            'd4["Annex Switch<br/>Switch · Ubiquiti · USL8LPB"]:::sw',
+            'd5["Yard AP<br/>Access Point · Ubiquiti · UKPW"]:::ap',
             "class d2 off",
             "d3 -->|1| d0",
             "d4 -->|1| d2",

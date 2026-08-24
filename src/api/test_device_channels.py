@@ -219,7 +219,7 @@ class DeviceResponseNullChannelsTest(unittest.TestCase):
         from schemas import DeviceResponse
         import datetime
         base = dict(
-            id=1, name="Old Device", hostname="old", ip_address="192.168.4.9",
+            id=1, name="Old Device", hostname="old", ip_address="192.0.2.9",
             device_type="other", status="online", claimed=True,
             tags=[], created_at=datetime.datetime.utcnow(),
         )

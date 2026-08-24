@@ -15,6 +15,44 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.24.a] — 2026-08-24
+
+### Security
+- **Privacy sanitization (2026-08-24):** scrubbed all personal/private
+  identifiers from the shipped (public) tree — local dev paths
+  (`/home/…/Projects/…`) in `validate_wiki_mermaid.mjs/.md` and
+  `docs/operations/update_pipeline.md`, real home-network topology embedded
+  in test fixtures (real MACs/IPs/device names — `test_devices_polish.py`,
+  `test_network_opt.py`, `test_unifi_sync.py`, `test_network_scope.py`,
+  `test_alerting.py`, `test_link_monitor.py`, agent + worker tests), the real
+  Starlink WAN IP (`100.99.x.x` → RFC 6598 example), real VLAN names/subnets
+  (WiFi/Kids/RCTF/.5.x/.8.x → generic `10.0.x` scheme), the hardcoded prod
+  appliance IP (`192.168.4.207` → `192.0.2.207` placeholder), and real device
+  names in code comments/docstrings (HouseSwitch/Mini Rack/U6 Mesh/Office
+  Wifi/U7 Outdoor → generic). Public-repo publish commits now use a neutral
+  `bareNOC release bot <release@barenoc.com>` identity. The website repo
+  (bareNOC.com) is scrubbed in a parallel change (no personal social/email).
+
+### Fixed
+- **Root-trust anchored the WRONG certs (issue #105):** the root-trust opt-in
+  (agent_install.sh + the served /onboard scripts) previously anchored
+  whatever `/onboard/root-ca.crt` returned without verifying it — on a box
+  where that was an unrelated root or a leaf, the store ended up with the
+  wrong anchors while the real signing root (`BareNOC Internal CA Root CA`,
+  the step-ca root that signs the served web cert chain) was missing, so
+  Chrome/curl kept rejecting `https://<appliance>`. The installer now verifies
+  the candidate is a self-signed CA root that actually chains to the served
+  web cert (never an unrelated root or a leaf), removes any stale
+  `barenoc-root*.crt` anchors a previous version added, installs into the
+  correct store (`update-ca-trust` on Fedora/RHEL, `update-ca-certificates` on
+  Debian/Ubuntu), and verifies the trust lands (`openssl verify` + `curl`
+  without `-k`) — no more “installed but still red”.
+- **Ordering (issue #105):** the “installation complete” confirmation now comes
+  AFTER the cert-accept/root-trust step — completion is the last step and the
+  flow no longer suggests the device is done until the trust step finishes
+  (the served onboarding script previously popped the “onboarded” dialog before
+  the trust prompt).
+
 ## [2026.08.21.a] — 2026-08-21
 
 ### Added

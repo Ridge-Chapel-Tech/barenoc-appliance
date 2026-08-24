@@ -238,7 +238,7 @@ class AutoAdoptTest(unittest.TestCase):
             "n_prod": {"name": "Production", "vlan": 4},
         }
         device = {
-            "name": "Mini Rack Switch", "mac": "aa:bb:cc:dd:ee:01", "_id": "sw1",
+            "name": "Core Switch", "mac": "aa:bb:cc:dd:ee:01", "_id": "sw1",
             "type": "usw",
             "uplink": {"uplink_mac": "", "uplink_remote_port": None},
             "port_overrides": [{"port_idx": 1, "native_networkconf_id": "n_wifi",
@@ -247,9 +247,9 @@ class AutoAdoptTest(unittest.TestCase):
                                  "name": "Port 1"}],
             "port_table": [{"port_idx": 1, "native_networkconf_id": "n_wifi"}],
         }
-        ap = {"name": "Office Wifi", "mac": "aa:bb:cc:00:00:01", "type": "uap",
+        ap = {"name": "Office AP", "mac": "aa:bb:cc:00:00:01", "type": "uap",
               "uplink": {"uplink_mac": "aa:bb:cc:dd:ee:01", "uplink_remote_port": 1,
-                          "uplink_device_name": "Mini Rack Switch"}}
+                          "uplink_device_name": "Core Switch"}}
         written = {}
 
         def fake_request(method, path, data=None, headers=None):
@@ -411,15 +411,15 @@ class SyncIpRefreshTest(unittest.TestCase):
     def test_existing_device_ip_and_hostname_refresh(self):
         init_db()
         db = SessionLocal()
-        db.add(Device(name="U6 Mesh", hostname=None, ip_address="192.168.1.41",
+        db.add(Device(name="AP-01", hostname=None, ip_address="192.0.2.41",
                       mac_address="aa:bb:cc:00:00:77", device_type="ap",
                       status="unreachable", claimed=True, unifi_managed=True,
                       device_group="default"))
         db.commit()
         db.close()
 
-        devs = [{"name": "U6 Mesh", "hostname": "u6-mesh", "ip": "192.168.5.41",
-                 "mac": "aa:bb:cc:00:00:77", "type": "ap", "model": "U6 Mesh",
+        devs = [{"name": "AP-01", "hostname": "ap-01", "ip": "192.0.2.41",
+                 "mac": "aa:bb:cc:00:00:77", "type": "ap", "model": "U6M",
                  "status": "online"}]
         fake = FakeClient(devs, [])
         db = SessionLocal()
@@ -431,8 +431,8 @@ class SyncIpRefreshTest(unittest.TestCase):
             unifi_sync.sync_from_unifi(db=db, user=SimpleNamespace(username="tester"))
         db.expire_all()
         rec = db.query(Device).filter(Device.mac_address == "aa:bb:cc:00:00:77").first()
-        self.assertEqual(rec.ip_address, "192.168.5.41")   # stale .1.41 -> live .5.41
-        self.assertEqual(rec.hostname, "u6-mesh")
+        self.assertEqual(rec.ip_address, "192.0.2.41")
+        self.assertEqual(rec.hostname, "ap-01")
         self.assertEqual(rec.status, "online")
         db.close()
 

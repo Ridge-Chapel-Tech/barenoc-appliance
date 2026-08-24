@@ -98,11 +98,11 @@ class AgentCredentialsTest(unittest.TestCase):
 
     def test_build_cmd_enroll_device(self):
         # target + resolved ssh creds + optional ttl
-        cmd = runner._build_cmd("enroll_device", "192.168.4.99", {})
+        cmd = runner._build_cmd("enroll_device", "192.0.2.99", {})
         self.assertEqual(cmd[0], "bash")
         self.assertTrue(cmd[1].endswith("enroll_device.sh"))
         self.assertEqual(cmd[-1], "600")
-        cmd = runner._build_cmd("enroll_device", "192.168.4.99", {"ttl": 300})
+        cmd = runner._build_cmd("enroll_device", "192.0.2.99", {"ttl": 300})
         self.assertEqual(cmd[-1], "300")
 
     # ── SSH credential resolution (stored device creds for SSH actions) ──
@@ -516,7 +516,7 @@ class ProgressTonePoolTest(unittest.TestCase):
             "sudo sed -i s/foo/bar/ /etc/hosts",
             "POST https://localhost/api/v1/jobs/result with bearer token",
             "user barenoc uid 1001 gid 1001 NOPASSWD: ALL",
-            "192.168.4.207 ssh root@0.0.0.0",
+            "192.0.2.207 ssh root@0.0.0.0",
             "chmod 777 /opt/barenoc/volumes/secrets/llm_provider.json",
         ]
         for raw in adversarial:

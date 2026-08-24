@@ -886,7 +886,7 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
         result["github_enabled"] = _env_bool(env.get("GITHUB_LOGIN_ENABLED", ""))
         result["google_enabled"] = _env_bool(env.get("GOOGLE_LOGIN_ENABLED", ""))
         # Appliance identity + DNS helper (defaults when unset)
-        ip = result.get("appliance_ip") or "192.168.4.207"
+        ip = result.get("appliance_ip") or "192.0.2.207"
         host = result.get("appliance_host") or "app.barenoc.com"
         domain = result.get("appliance_domain") or "barenoc.com"
         result["appliance_ip"] = ip

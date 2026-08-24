@@ -284,7 +284,7 @@ class WanSingleTicketTest(unittest.TestCase):
         _clean()
 
     def test_wan_probe_promotes_same_ticket_no_duplicate(self):
-        gw = _add_device("gateway", "192.168.1.1", dtype="gateway", notify=False)
+        gw = _add_device("gateway", "10.0.0.1", dtype="gateway", notify=False)
         now = datetime.datetime.utcnow()
         db = SessionLocal()
         t = Ticket(ticket_id="TKT-WAN-1", title="Link flap: gateway wan",
@@ -300,7 +300,7 @@ class WanSingleTicketTest(unittest.TestCase):
 
         mon = InternetMonitor()
         mon._last_email = time.time()   # suppress the probe's alert email
-        cfg = {"gateway": "192.168.1.1", "host": "1.1.1.1"}
+        cfg = {"gateway": "10.0.0.1", "host": "1.1.1.1"}
         with patch("alerting.send_email", return_value=(True, "")):
             mon._outage("isp_down", cfg)
 
@@ -319,7 +319,7 @@ class WanSingleTicketTest(unittest.TestCase):
     def test_flap_that_recovers_stays_p2(self):
         """A WAN flap that recovers before the probe confirms is never promoted
         by the probe (the probe only fires on 3 consecutive failures)."""
-        gw = _add_device("gateway", "192.168.1.1", dtype="gateway", notify=False)
+        gw = _add_device("gateway", "10.0.0.1", dtype="gateway", notify=False)
         now = datetime.datetime.utcnow()
         db = SessionLocal()
         t = Ticket(ticket_id="TKT-WAN-2", title="Link flap: gateway wan",
@@ -345,7 +345,7 @@ class WanSingleTicketTest(unittest.TestCase):
         episode's lifecycle: the link monitor must not auto-close it (UniFi WAN
         reads 'ok' during an upstream ISP outage), and the probe's _recovered
         closes the ticket + episode on confirmed recovery."""
-        gw = _add_device("gateway", "192.168.1.1", dtype="gateway", notify=False)
+        gw = _add_device("gateway", "10.0.0.1", dtype="gateway", notify=False)
         now = datetime.datetime.utcnow()
         db = SessionLocal()
         t = Ticket(ticket_id="TKT-WAN-3", title="Link flap: gateway wan",
@@ -361,7 +361,7 @@ class WanSingleTicketTest(unittest.TestCase):
 
         mon = InternetMonitor()
         mon._last_email = time.time()
-        cfg = {"gateway": "192.168.1.1", "host": "1.1.1.1"}
+        cfg = {"gateway": "10.0.0.1", "host": "1.1.1.1"}
         with patch("alerting.send_email", return_value=(True, "")):
             mon._outage("isp_down", cfg)
 

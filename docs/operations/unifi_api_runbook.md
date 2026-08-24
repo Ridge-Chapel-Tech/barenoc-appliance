@@ -38,7 +38,7 @@ document the wire-level behavior for new work.
 | WLAN rename/move | `PUT rest/wlanconf/{id}` | send the **full record** so the stored PSK survives |
 | Port profiles | `GET rest/portconf` | native/tagged network ids |
 | Switch ports | `GET stat/device` → `port_table` | `port_idx`, `native_networkconf_id`, `tagged_networkconf_id` |
-| Client → port | `GET stat/sta` → `sw_mac` + `sw_port` | how we resolved 192.0.2.64 → Mini Rack Switch port 7 |
+| Client → port | `GET stat/sta` → `sw_mac` + `sw_port` | how we resolved 192.0.2.64 → a switch port 7 |
 | Known clients | `GET rest/user` | **no `ip` field** — uses `last_ip` / `fixed_ip`; live IP only in `stat/sta` |
 | Firewall groups | `GET/POST/PUT rest/firewallgroup` | only **`address-group`** accepted (see §5) |
 | Firewall rules | `POST rest/firewallrule` | **BLOCKED** on this firmware — see §6 |
@@ -48,14 +48,14 @@ document the wire-level behavior for new work.
 
 Create network (works):
 ```json
-{"name":"Management","purpose":"corporate","ip_subnet":"192.168.8.1/24",
+{"name":"Mgmt","purpose":"corporate","ip_subnet":"10.0.8.1/24",
  "vlan_enabled":true,"vlan":8,"dhcpd_enabled":true,
- "dhcpd_start":"192.168.8.6","dhcpd_stop":"192.168.8.254"}
+ "dhcpd_start":"10.0.8.6","dhcpd_stop":"10.0.8.254"}
 ```
 
 Create WLAN (needs `ap_group_ids` from any existing WLAN):
 ```json
-{"name":"RCTF-Guest","enabled":false,"security":"wpapsk","wpa_mode":"wpa2",
+{"name":"Guest","enabled":false,"security":"wpapsk","wpa_mode":"wpa2",
  "networkconf_id":"<guest-net-id>","is_guest":true,
  "ap_group_ids":["<existing-ap-group-id>"]}
 ```
@@ -72,7 +72,7 @@ Create address group (works):
 
 `stat/sta` entries for wired clients carry `sw_mac` (switch MAC) + `sw_port`
 (port index) + `network_id`/`vlan`. This is how BareNOC answered "which port
-faces 192.0.2.64" → Mini Rack Switch (`aa:bb:cc:dd:ee:ff`) **port 7**.
+faces 192.0.2.64" → a switch (`aa:bb:cc:dd:ee:ff`) **port 7**.
 
 ## 5. Firewall groups — type gotcha
 

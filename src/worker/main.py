@@ -991,7 +991,7 @@ def _device_inventory_context(db) -> str:
 def _recent_user_context(ticket, limit: int = 4) -> str:
     """The customer's latest comments — a real technician reads the whole
     thread, so the latest instructions must steer the next decision (e.g. a
-    follow-up 'also do Office Wifi' after the original request)."""
+    follow-up 'also do the Office AP' after the original request)."""
     msgs = [n.get("detail") or "" for n in _notes_list(ticket)
             if n.get("event") == "user_message"]
     msgs = msgs[-limit:]

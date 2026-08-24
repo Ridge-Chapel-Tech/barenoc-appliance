@@ -83,7 +83,7 @@ class TonePoolTest(unittest.TestCase):
 
     def test_friendly_note_scrubs_technical(self):
         from tone_pool import friendly_note, all_phrases
-        text, filtered = friendly_note("ssh tech@192.168.4.207 && sudo apt-get update")
+        text, filtered = friendly_note("ssh tech@192.0.2.207 && sudo apt-get update")
         self.assertTrue(filtered)
         self.assertIn(text, all_phrases())
         self.assertNotIn("/", text)
@@ -125,7 +125,7 @@ class QueueStatusParityTest(unittest.TestCase):
     def test_technical_progress_detail_scrubbed(self):
         from queue_status import derive_status
         st = derive_status(self._ticket(
-            "agent_progress", "ssh tech@192.168.4.207 && sudo apt-get update"))
+            "agent_progress", "ssh tech@192.0.2.207 && sudo apt-get update"))
         label = st["label"]
         self.assertTrue(label.startswith("Working on it — "), label)
         self.assertNotIn("ssh", label)

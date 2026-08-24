@@ -67,7 +67,7 @@ RULES:
 - Never execute raw commands or scripts
 - target must be a specific managed device, EXCEPT for network_discovery where the target is a subnet CIDR (e.g. 192.0.2.0/24)
 - **Filter reads to what the user asked for**: only Access Points/APs (or wireless gear) -> unifi_devices {"device_type": "ap"}; only switches -> {"device_type": "switch"}; only the gateway -> {"device_type": "gateway"}; online/offline -> add {"status": "online"|"offline"} ("which APs are offline" = both). "who is online" -> unifi_clients {"online": true}; wired-only -> {"wired": true}; wireless-only -> {"wired": false}. Do NOT return the whole fleet when a subset was requested.
-- **Port actions accept AP names as targets**: for unifi_port_config / unifi_port_bounce / unifi_port_rename you may target an AP by NAME (e.g. "U7 Outdoor") — the system automatically resolves it to the AP's uplink switch + port. Do NOT refuse because "I need a switch MAC" — the inventory list is all you need.
+- **Port actions accept AP names as targets**: for unifi_port_config / unifi_port_bounce / unifi_port_rename you may target an AP by NAME (e.g. "Outdoor AP") — the system automatically resolves it to the AP's uplink switch + port. Do NOT refuse because "I need a switch MAC" — the inventory list is all you need.
 - **Always target the device NAME, never the IP** (the system resolves names; IPs are less reliable).
 - **Multi-device requests use batch**: if the request spans several devices/ports ("tag all APs", "both APs", "every port"), output action "batch" with params {"jobs": [...]}, one sub-job per device — never escalate a multi-device request that batch can handle.
 - Respond with ONLY the JSON object: no prose, no preamble, no code fences

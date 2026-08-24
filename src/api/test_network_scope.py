@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tests for the tunnel/CGNAT network-scope guard.
 
-Pins the 2026-08-19 Starlink case: the friend's box discovered the user's
-Starlink WAN address 100.99.121.62 over a tailnet link. That address (and
+Pins the 2026-08-19 Starlink case: a remote box discovered a Starlink WAN
+address over a tailnet link (CGNAT 100.64.0.0/10). That address (and
 everything in 100.64.0.0/10) must never be scanned, discovered, claimed, or
 adopted. Real customer LAN ranges (10/8, 172.16/12, 192.168/16) stay valid.
 
@@ -16,7 +16,7 @@ import network_scope
 
 class TunnelCgnatGuardTest(unittest.TestCase):
     def test_starlink_case_pinned(self):
-        self.assertTrue(network_scope.is_tunnel_or_cgnat("100.99.121.62"))
+        self.assertTrue(network_scope.is_tunnel_or_cgnat("100.99.0.5"))
 
     def test_cgnat_bounds(self):
         self.assertTrue(network_scope.is_tunnel_or_cgnat("100.64.0.0"))
@@ -24,7 +24,7 @@ class TunnelCgnatGuardTest(unittest.TestCase):
         self.assertTrue(network_scope.is_tunnel_or_cgnat("100.100.100.100"))
 
     def test_private_lan_stays_valid(self):
-        for ip in ("192.168.4.207", "10.0.0.2", "172.16.0.1", "192.0.2.10"):
+        for ip in ("192.0.2.207", "10.0.0.2", "172.16.0.1", "192.0.2.10"):
             self.assertFalse(network_scope.is_tunnel_or_cgnat(ip), ip)
 
     def test_ipv6_not_excluded(self):
@@ -38,26 +38,26 @@ class TunnelCgnatGuardTest(unittest.TestCase):
         self.assertTrue(network_scope.is_tunnel_or_cgnat(None))
 
     def test_zone_index_stripped(self):
-        self.assertFalse(network_scope.is_tunnel_or_cgnat("192.168.4.1%eth0"))
+        self.assertFalse(network_scope.is_tunnel_or_cgnat("192.0.2.1%eth0"))
 
     def test_subnet_overlap(self):
         self.assertTrue(network_scope.subnet_overlaps_tunnel("100.64.0.0/24"))
         self.assertTrue(network_scope.subnet_overlaps_tunnel("100.99.0.0/16"))
-        self.assertFalse(network_scope.subnet_overlaps_tunnel("192.168.4.0/24"))
+        self.assertFalse(network_scope.subnet_overlaps_tunnel("192.0.2.0/24"))
 
     def test_filter_valid_hosts(self):
         self.assertEqual(
-            network_scope.filter_valid_hosts(["192.168.4.1", "100.99.121.62",
+            network_scope.filter_valid_hosts(["192.0.2.1", "100.99.0.5",
                                                "10.0.0.5"]),
-            ["192.168.4.1", "10.0.0.5"],
+            ["192.0.2.1", "10.0.0.5"],
         )
 
     def test_excluded_reason(self):
         self.assertEqual(
-            network_scope.excluded_reason("100.99.121.62"),
+            network_scope.excluded_reason("100.99.0.5"),
             "cgnat/tunnel (100.64.0.0/10)",
         )
-        self.assertIsNone(network_scope.excluded_reason("192.168.4.1"))
+        self.assertIsNone(network_scope.excluded_reason("192.0.2.1"))
 
 
 if __name__ == "__main__":

@@ -13,11 +13,11 @@ plaintext warning through (it is never auto-selected by the fingerprint
 recommendation).
 
 Usage (stdin JSON, stdout JSON):
-  echo '{"op":"get","target":"192.168.4.20","version":"2c","community":"public",
+  echo '{"op":"get","target":"10.0.4.20","version":"2c","community":"public",
          "oid":"1.3.6.1.2.1.1.1.0"}' | python3 snmp_executor.py
 
 v3 example:
-  {"op":"get","target":"192.168.4.20","version":"3",
+  {"op":"get","target":"10.0.4.20","version":"3",
    "user":"noc","auth_proto":"SHA","auth_pass":"...",
    "priv_proto":"AES","priv_pass":"...","oid":"1.3.6.1.2.1.1.1.0"}
 """

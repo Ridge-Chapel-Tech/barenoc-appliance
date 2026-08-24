@@ -1,4 +1,6 @@
 import { readdirSync, readFileSync } from 'fs';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { JSDOM } from 'jsdom';
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>');
@@ -10,7 +12,8 @@ global.Element = dom.window.Element;
 const { default: mermaid } = await import('mermaid');
 mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
 
-const dir = '/home/yery/Projects/BareNOC/src/api/wiki';
+// Repo-relative: this script lives at <repo>/src/scripts; the wiki is at <repo>/src/api/wiki.
+const dir = resolve(dirname(fileURLToPath(import.meta.url)), '../api/wiki');
 const files = readdirSync(dir).filter(f => f.endsWith('.md'));
 let total = 0, ok = 0, failures = [];
 for (const f of files) {

@@ -89,7 +89,7 @@ MGMT_VLAN_ID = 1
 # ── per-port discovery + classification (08-19 dead-end/loop detection) ──
 # Best-effort: FDB/LLDP are 404 on this firmware, so the port_table counters
 # (mac_table_count + rx/tx packet + multicast counters) are the signal. The
-# thresholds below are tests-pinnable — the 08-19 Mini Rack port 4 flood
+# thresholds below are tests-pinnable — a dead-end port 4 flood
 # (up @1G, 0 MACs, rx≈1, tx_multicast≈1.4M) must classify as dead_end.
 PORT_DEAD_END_MAX_RX_PACKETS = 10      # rx below this = "no real received traffic"
 PORT_DEAD_END_MIN_TX_MULTICAST = 1000  # tx_multicast above this = a multicast flood
@@ -100,7 +100,7 @@ PORT_UNUSED_MAX_TX_MULTICAST = 10
 PORT_CONNECTED_MIN_PACKETS = 10        # real RX/TX above this = a device is here
 
 # ── traffic archetype (device identification WITHOUT packet capture) ──────
-# The 08-19 HouseSwitch port 7 false positive: a port carrying a Google/Nest
+# A port carrying a Google/Nest
 # router's WAN was inferred as "switch" (from the switch's own device type)
 # and told to move to Management — stranding the Google WiFi. The archetype
 # now classifies what is ON the port from the controller's exposed counters:
@@ -1311,8 +1311,8 @@ def build_vlan_map(networks) -> dict:
 
 
 def subnet_short(subnet) -> str:
-    """'192.168.5.1/24' -> '.5.1/24' (the story's compact form — the third
-    octet onward, matching the site's 'WiFi vlan5 .5.x' convention)."""
+    """'10.0.5.1/24' -> '.5.1/24' (the story's compact form — the third
+    octet onward, matching a 'WiFi 10.0.5.x' convention)."""
     s = str(subnet or "").strip()
     if not s:
         return ""
@@ -1337,7 +1337,7 @@ def _find_map_entry(vlan_map, vlan=None, name=None) -> "dict | None":
 
 
 def network_entry_str(entry) -> str:
-    """'WiFi vlan5 (.5.1/24)' / 'Default (.1.1/24)' — a map entry as prose."""
+    """'WiFi (10.0.5.1/24)' / 'Default (10.0.1.1/24)' — a map entry as prose."""
     entry = entry or {}
     name = entry.get("name") or "network"
     vlan = entry.get("vlan")
@@ -1352,7 +1352,7 @@ def network_entry_str(entry) -> str:
 
 
 def network_label(vlan, vlan_map) -> str:
-    """'Kids(9)' — name + vlan id for the tagged-list story."""
+    """'IoT(9)' — name + vlan id for the tagged-list story."""
     entry = _find_map_entry(vlan_map, vlan=vlan)
     name = (entry or {}).get("name") or (f"VLAN {vlan}" if vlan is not None else "Default")
     if vlan is not None:
@@ -1361,8 +1361,8 @@ def network_label(vlan, vlan_map) -> str:
 
 
 def vlan_story(port, vlan_map) -> str:
-    """The port's VLAN context as prose — 'native WiFi vlan5 (.5.1/24),
-    tagged Kids(9)/RCTF(10)'. ``port`` carries the collector's enriched
+    """The port's VLAN context as prose — 'native WiFi (10.0.5.1/24),
+    tagged IoT(9)/Video(10)'. ``port`` carries the collector's enriched
     ``native_network``/``native_vlan``/``tagged_vlans`` fields."""
     vlan_map = vlan_map or {}
     port = port or {}
@@ -1415,7 +1415,7 @@ def port_profile_action(dev, port, vlan_map) -> "str | None":
 
     Conservative first: a port classified router/AP-like (edge device) or
     UNKNOWN is NEVER told to change networks — the action says verify before
-    any change (the 08-19 HouseSwitch port 7 incident: a Google/Nest router's
+    any change (a Google/Nest router's
     WAN was inferred as 'switch' and told to move to Management, which would
     have stranded it). Only a confidently classified host/switch gets a
     network suggestion, and an uplink always gets the full VLAN trunk."""
@@ -1462,7 +1462,7 @@ def _port_desc(p) -> str:
 def port_label(dev, p) -> str:
     """Canonical port naming for findings and tickets: '<dev.name> Port <idx>'
     with the port's description in parentheses when one exists — e.g.
-    'HouseSwitch Port 7 (Google WAN)'. Display-only: the finding key is
+    'Switch-02 Port 7 (Google WAN)'. Display-only: the finding key is
     unchanged."""
     label = f"{dev.get('name') or 'unknown'} Port {p.get('port_idx')}"
     desc = _port_desc(p)
@@ -1485,7 +1485,7 @@ def port_has_profile(p) -> bool:
     (including the untagged/corporate Default — whose ``native_vlan`` is None
     but whose ``native_network`` is 'Default') or a tagged set.
 
-    The 08-19 HouseSwitch port 7 regression: the override set native=Default,
+    A switch-port regression: the override set native=Default,
     but the collector only read the port_table (native_vlan=None, no tagged)
     so the 'no profile' rule fired on a CONFIGURED port."""
     p = p or {}
@@ -1504,7 +1504,7 @@ def classify_port(port) -> str:
     'down', 'dead_end', 'unused', 'connected'.
 
     * ``dead_end`` — UP + no learned MACs + negligible RX + a multicast flood
-      (the 08-19 Mini Rack port 4 loop/dead-end signature).
+      (a dead-end port loop signature).
     * ``unused``   — UP + no learned MACs + ~zero traffic both ways.
     * ``connected``— a device is here (learned MACs and/or real RX/TX), or we
       cannot rule it out (conservative default).
@@ -1536,8 +1536,7 @@ def classify_archetype(port) -> str:
     'router_ap', 'host', or 'unknown'.
 
     * router_ap — 1 learned MAC + heavy bidirectional traffic (or a high
-      multicast rate): a router/AP-like edge device (the 08-19 HouseSwitch
-      port 7 Google/Nest WAN).
+      multicast rate): a router/AP-like edge device (a Google/Nest WAN port).
     * switch    — many learned MACs (a downstream switch/trunk).
     * host      — 1 learned MAC, modest traffic.
     * unknown   — anything we cannot classify confidently. NEVER guessed.

@@ -86,7 +86,7 @@ class AlertScopeTest(unittest.TestCase):
 class InternetMonitorTest(unittest.TestCase):
     """Internet link probe → P1 outage ticket (dedup) → auto-close on recovery."""
 
-    CFG = {"enabled": True, "gateway": "192.168.1.1", "host": "1.1.1.1",
+    CFG = {"enabled": True, "gateway": "10.0.0.1", "host": "1.1.1.1",
            "interval": 0, "confirm": 2}
 
     def setUp(self):
@@ -102,7 +102,7 @@ class InternetMonitorTest(unittest.TestCase):
     def _probe(self, gw_ok: bool, inet_ok: bool):
         with patch("alerting._probe_config", return_value=dict(self.CFG)), \
              patch.object(self.mon, "_ping",
-                          side_effect=lambda h: gw_ok if h == "192.168.1.1" else inet_ok):
+                          side_effect=lambda h: gw_ok if h == "10.0.0.1" else inet_ok):
             for _ in range(2):
                 self.mon._last_check = 0
                 self.mon.check()

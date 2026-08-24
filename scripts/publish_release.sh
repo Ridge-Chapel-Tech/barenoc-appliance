@@ -83,6 +83,10 @@ if [ "$DRY" = "1" ]; then
 fi
 
 SRC_SHA="$(git -C "$SRC" rev-parse --short HEAD)"
+export GIT_AUTHOR_NAME="bareNOC release bot"
+export GIT_AUTHOR_EMAIL="release@barenoc.com"
+export GIT_COMMITTER_NAME="bareNOC release bot"
+export GIT_COMMITTER_EMAIL="release@barenoc.com"
 git commit -q -m "release sync from private dev repo @ $SRC_SHA
 
 Approved-for-release tree — see scripts/publish_release.sh for the contract."

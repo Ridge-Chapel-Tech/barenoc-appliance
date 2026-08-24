@@ -438,8 +438,9 @@ The web UI certificate is signed by the BareNOC Internal CA — not a public CA 
 browser that hasn't been told about the private root still shows &ldquo;Not Secure&rdquo; on
 `https://<appliance-ip>` and `https://app.<domain>`. The device onboarding scripts
 (`/onboard`, Linux + macOS) and the Linux agent installer (`agent_install.sh`) offer an
-**explicit, default-OFF** opt-in that installs the BareNOC root into the machine's trust
-store (+ Firefox, best-effort) so the padlock goes green for non-technical users:
+**explicit, default-OFF** opt-in that anchors the BareNOC **signing root** (the step-ca
+root that actually signs the served web cert chain — `BareNOC Internal CA Root CA`) into
+the machine's trust store (+ Firefox, best-effort) so the padlock goes green:
 
 ```bash
 # when prompted — answer y to opt in:
@@ -450,6 +451,13 @@ sudo bash bareNOC-onboard.sh --trust-root          # served Linux script
 bash bareNOC-onboard-mac.sh --trust-root           # served macOS script
 ```
 
+**What the installer now checks (issue #105):** it verifies the fetched root is a
+self-signed CA root that actually signs the served web cert chain (never an unrelated
+root or a leaf), removes any stale `barenoc-root*.crt` anchors a previous version added,
+installs into the right store (`update-ca-trust` on Fedora/RHEL, `update-ca-certificates`
+on Debian/Ubuntu), then verifies the trust lands (`openssl verify` + `curl` without `-k`).
+The trust step runs **before** the “onboarded” confirmation — completion is the last step.
+
 **Security tradeoff (one line):** trusting this private root makes HTTPS to the
 appliance trusted, and it **only** affects certificates signed by the BareNOC CA —
 nothing else. It is never done silently (always opt-in).
@@ -457,7 +465,9 @@ nothing else. It is never done silently (always opt-in).
 **Undo:**
 
 ```bash
-# Linux
+# Linux — Fedora/RHEL
+sudo rm /etc/pki/ca-trust/source/anchors/barenoc-root.crt && sudo update-ca-trust
+# Linux — Debian/Ubuntu
 sudo rm /usr/local/share/ca-certificates/barenoc-root.crt && sudo update-ca-certificates
 # macOS
 sudo security delete-certificate -c "BareNOC Internal CA Root"

@@ -459,7 +459,7 @@ class TargetValidationWordingTest(unittest.TestCase):
         from action_validator import MANAGED_DEVICES
         self._saved = dict(MANAGED_DEVICES)
         MANAGED_DEVICES.clear()
-        MANAGED_DEVICES["gateway"] = {"id": 1, "ip": "192.168.1.1",
+        MANAGED_DEVICES["gateway"] = {"id": 1, "ip": "192.0.2.1",
                                       "type": "router", "hostname": None}
 
     def tearDown(self):
@@ -483,7 +483,7 @@ class TargetValidationWordingTest(unittest.TestCase):
 
     def test_ip_and_subnet_still_pass(self):
         from action_validator import validate_target
-        self.assertTrue(validate_target("192.168.1.50")[0])
+        self.assertTrue(validate_target("192.0.2.50")[0])
         self.assertTrue(validate_target("192.168.1.0/24")[0])
 
     def test_find_subnet_extracts_cidr(self):

@@ -28,7 +28,7 @@
       <div class="mt-4 space-y-4">
         <div><label class="block text-sm font-medium text-gray-700">Site ID</label><input id="gen-site-id" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
         <div><label class="block text-sm font-medium text-gray-700">Customer Name</label><input id="gen-customer" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
-        <div><label class="block text-sm font-medium text-gray-700">Discovery subnets</label><input id="gen-discovery-subnets" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="192.168.4.0/24,192.168.8.0/24"><p class="text-xs text-gray-400 mt-1">Comma-separated CIDRs the "Scan Network" button sweeps (defaults to this appliance's own /24).</p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Discovery subnets</label><input id="gen-discovery-subnets" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="10.0.4.0/24,10.0.8.0/24"><p class="text-xs text-gray-400 mt-1">Comma-separated CIDRs the "Scan Network" button sweeps (defaults to this appliance's own /24).</p></div>
         <div><label class="block text-sm font-medium text-gray-700">Parallel agent jobs</label><input id="gen-runner-concurrency" type="number" min="1" max="8" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="2"><p class="text-xs text-gray-400 mt-1">How many agent jobs run in parallel (verify / scan / pi tasks). Applies after the runner restarts (next deploy or <code>sudo systemctl restart pi-agent-runner</code>).</p></div>
         <div><label class="block text-sm font-medium text-gray-700" for="gen-tz">Timezone</label>
           <select id="gen-tz" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></select>
@@ -1422,7 +1422,7 @@ async function loadIdentity() {
     document.getElementById('id-group-admin').value = d.group_admin || '';
     document.getElementById('id-group-operator').value = d.group_operator || '';
     // appliance identity + DNS helper
-    document.getElementById('id-app-ip').value = d.appliance_ip || '192.168.4.207';
+    document.getElementById('id-app-ip').value = d.appliance_ip || '192.0.2.207';
     document.getElementById('id-app-domain').value = d.appliance_domain || 'bareNOC.com';
     document.getElementById('id-app-host').value = d.appliance_host || 'app.bareNOC.com';
     document.getElementById('id-dns-record').textContent = d.dns_record || '';

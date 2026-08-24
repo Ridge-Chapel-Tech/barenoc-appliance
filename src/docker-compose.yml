@@ -151,8 +151,8 @@ services:
     ports:
       # Bind to the appliance's LAN IP only — 0.0.0.0:53 collides with
       # systemd-resolved's loopback DNS stubs on the host.
-      - "${APPLIANCE_IP:-192.168.4.207}:53:53/udp"
-      - "${APPLIANCE_IP:-192.168.4.207}:53:53/tcp"
+      - "${APPLIANCE_IP:-192.0.2.207}:53:53/udp"
+      - "${APPLIANCE_IP:-192.0.2.207}:53:53/tcp"
     volumes:
       - /opt/barenoc/volumes/dns:/config
     command: ["-conf", "/config/Corefile"]

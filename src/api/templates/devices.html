@@ -194,7 +194,7 @@
         <pre id="api-register-cmd" class="bg-gray-900 text-gray-100 rounded p-2 mt-1 text-[11px] overflow-x-auto">curl -sk -X POST https://&lt;appliance&gt;/api/v1/devices \
   -H "Authorization: Bearer &lt;token&gt;" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"lab-switch","ip_address":"192.168.4.20","device_type":"switch","channels":["vendor_api"]}'</pre>
+  -d '{"name":"lab-switch","ip_address":"10.0.4.20","device_type":"switch","channels":["vendor_api"]}'</pre>
         <button onclick="copyText('api-register-cmd')" class="text-barenoc-600 text-[11px]">copy</button>
       </div>
       <p class="text-xs text-gray-500">The token is a short-lived session token (60 min) — log in again for a fresh one. A device registered this way is <b>claimed</b> (owned) immediately; connect a control channel (<code>channels</code>, SSH/SNMP creds, or the agent) to make it controllable. Optional fields match the add-device form (<code>vendor</code>, <code>model</code>, <code>mac_address</code>, <code>tags</code>, <code>device_group</code>, <code>ssh_user</code>, <code>ssh_key</code>, <code>snmp_community</code>).</p>

@@ -266,7 +266,7 @@ def main():
     # 11. unifi_port_config flows through the worker path (write action)
     os.environ["LLM_POLICY_PROFILE"] = "autonomous"
     reset_policy_cache()
-    t = make_ticket("tag Storage vlan on port 7 of the mini rack switch", "P3")
+    t = make_ticket("tag Storage vlan on port 7 of the core switch", "P3")
     db = SessionLocal()
     verdict = Verdict(lawful="yes", action_class="unifi_port_config", risk="medium",
                       checks={"legal": True, "doable": True, "safe": True, "in_scope": True},
@@ -320,7 +320,7 @@ def main():
     # 13. NEW WRITE: unifi_restart goes to the approval queue in strict
     os.environ["LLM_POLICY_PROFILE"] = "strict"
     reset_policy_cache()
-    t = make_ticket("restart the U6 Mesh AP", "P2")
+    t = make_ticket("restart the AP-01 access point", "P2")
     db = SessionLocal()
     verdict = Verdict(lawful="yes", action_class="unifi_restart", risk="medium",
                       checks={"legal": True, "doable": True, "safe": True, "in_scope": True},
@@ -346,7 +346,7 @@ def main():
     reset_policy_cache()
     from models import Device as _D
     _db = SessionLocal()
-    _db.add(_D(name="Office Wifi", ip_address="10.0.0.9", device_type="ap",
+    _db.add(_D(name="Office AP", ip_address="10.0.0.9", device_type="ap",
                status="online", claimed=True, unifi_managed=True,
                device_group="default", mac_address="aa:bb:cc:00:00:0f"))
     _db.commit()
@@ -366,7 +366,7 @@ def main():
     ok("autonomous low-conf write -> customer assigned", t.assigned_to == "customer", t.assigned_to or "")
     notes = t.work_notes or ""
     ok("review message lists adopted gear", "Here's what I found on your network" in notes
-       and "Office Wifi" in notes, notes[-200:])
+       and "Office AP" in notes, notes[-200:])
     db.close()
     os.environ.pop("LLM_POLICY_PROFILE", None)
     os.environ.pop("LLM_POLICY_JUDGE_REQUIRED", None)
@@ -376,7 +376,7 @@ def main():
     os.environ["LLM_POLICY_PROFILE"] = "autonomous"
     os.environ["LLM_POLICY_JUDGE_REQUIRED"] = "false"
     reset_policy_cache()
-    t = make_ticket("bounce every port on the mini rack switch", "P3")
+    t = make_ticket("bounce every port on the core switch", "P3")
     db = SessionLocal()
     batch_resp = LLMResponse(action="batch", target="", params={"jobs": [
         {"action": "unifi_port_bounce", "target": "aa:bb:cc:dd:ee:01",
@@ -406,7 +406,7 @@ def main():
     # 16. BATCH under strict -> held for approval (requires_approval in file)
     os.environ["LLM_POLICY_PROFILE"] = "strict"
     reset_policy_cache()
-    t = make_ticket("bounce every port on the mini rack switch", "P2")
+    t = make_ticket("bounce every port on the core switch", "P2")
     db = SessionLocal()
     with patch("judge.judge_request", return_value=Verdict(
             lawful="yes", action_class="batch", risk="high",
@@ -488,7 +488,7 @@ def main():
     db = SessionLocal()
     tt = db.query(Ticket).filter(Ticket.id == t.id).first()
     worker.add_note(tt, "agent_failed",
-                    "unifi_port_config on U7 Outdoor failed: target must be a switch MAC")
+                    "unifi_port_config on Outdoor AP failed: target must be a switch MAC")
     db.commit()
     dev_resp2 = LLMResponse(action="unifi_port_config", target="aa:bb:cc:dd:ee:01",
                             params={"port_idx": 2, "tagged": ["WiFi"]},
@@ -781,7 +781,7 @@ def main():
     # unresolvable device name — scan the subnet + note the name miss.
     from action_validator import MANAGED_DEVICES as _MD
     _MD.clear()
-    _MD["gateway"] = {"id": 1, "ip": "192.168.1.1", "type": "router",
+    _MD["gateway"] = {"id": 1, "ip": "192.0.2.1", "type": "router",
                       "hostname": None}
     t = make_ticket("ping sweep 192.168.1.0/24", "find live hosts on the subnet")
     db = SessionLocal()
@@ -810,7 +810,7 @@ def main():
     # request still fails — but with the friendly product message in chat, and
     # the technical inventory detail kept in the ticket note/log.
     _MD.clear()
-    _MD["gateway"] = {"id": 1, "ip": "192.168.1.1", "type": "router",
+    _MD["gateway"] = {"id": 1, "ip": "192.0.2.1", "type": "router",
                       "hostname": None}
     t = make_ticket("ping switch-01", "is it up")
     db = SessionLocal()

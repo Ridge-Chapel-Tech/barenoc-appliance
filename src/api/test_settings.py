@@ -312,7 +312,7 @@ class BackupsSectionTest(unittest.TestCase):
 
     def test_identity_appliance_defaults(self):
         r = s.get_section("identity", user=SimpleNamespace(role="admin"))
-        self.assertEqual(r["appliance_ip"], "192.168.4.207")
+        self.assertEqual(r["appliance_ip"], "192.0.2.207")
         self.assertEqual(r["appliance_host"], "app.barenoc.com")
         self.assertIs(r["passkey_viable"], True)
         self.assertIn("app.barenoc.com", r["hosts_lines"])
@@ -523,10 +523,10 @@ class RemoteSupportKeyTest(unittest.TestCase):
         with open(secret, "w") as f:
             json.dump({"auth_key": self.FAKE_KEY}, f)
         with open(state, "w") as f:
-            json.dump({"applied": True, "tailscale_ip": "100.99.121.62",
+            json.dump({"applied": True, "tailscale_ip": "100.99.0.5",
                        "hostname": "bareNOC-abc", "error": None}, f)
         with open(os.path.join(tmp, "self.json"), "w") as f:
-            json.dump({"online": True, "tailscale_ip": "100.99.121.62",
+            json.dump({"online": True, "tailscale_ip": "100.99.0.5",
                        "hostname": "bareNOC-abc"}, f)
         with patch.object(s, "REMOTE_SUPPORT_DIR", tmp), \
              patch.object(s, "REMOTE_SUPPORT_DESIRED", desired), \
@@ -538,7 +538,7 @@ class RemoteSupportKeyTest(unittest.TestCase):
         self.assertTrue(d["key_configured"])
         self.assertEqual(d["auth_key"], "••••••••")
         self.assertTrue(d["joined"])
-        self.assertEqual(d["tailscale"]["tailscale_ip"], "100.99.121.62")
+        self.assertEqual(d["tailscale"]["tailscale_ip"], "100.99.0.5")
 
     def test_status_key_absent_not_joined(self):
         import tempfile as _tf

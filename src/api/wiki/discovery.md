@@ -57,4 +57,4 @@ shown on its card — so "192.0.2.64" becomes "Proxmox VE server (port 3128)".
 
 For wired clients, UniFi reports *which switch port they're on*. Ask the AI or
 use the API: `GET /api/v1/unifi/client/{ip}/port` — e.g. `192.0.2.64` →
-Mini Rack Switch **port 7**.
+Annex Switch **port 7**.

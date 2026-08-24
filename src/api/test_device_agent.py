@@ -41,7 +41,7 @@ AGENT_BODY = {
     "os": "ubuntu-24.04",
     "kernel": "6.8.0-136",
     "macs": ["aa:bb:cc:dd:ee:ff"],
-    "ips": ["192.168.4.55"],
+    "ips": ["192.0.2.55"],
     "uptime_s": 12345,
     "disk_free_gb": 812.5,
     "agent_version": "0.1.0-p1a",
@@ -126,7 +126,7 @@ class AgentReportTest(unittest.TestCase):
         self.assertEqual(facts["os"], "ubuntu-24.04")
         self.assertEqual(facts["kernel"], "6.8.0-136")
         self.assertEqual(facts["macs"], ["aa:bb:cc:dd:ee:ff"])
-        self.assertEqual(facts["ips"], ["192.168.4.55"])
+        self.assertEqual(facts["ips"], ["192.0.2.55"])
         self.assertEqual(facts["uptime_s"], 12345)
         self.assertEqual(facts["disk_free_gb"], 812.5)
         # Agent adoption must NOT provision SSH credentials (the agent IS the

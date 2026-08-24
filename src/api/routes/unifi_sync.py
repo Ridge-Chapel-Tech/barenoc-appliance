@@ -339,7 +339,7 @@ def topology(db: Session = Depends(get_db), user: User = Depends(get_current_use
     UniFi-managed) devices, with their device-to-device uplink links.
     Endpoint clients are not part of the topology (they live in the list).
 
-    Offline adopted gear (e.g. a U6 Mesh AP that has dropped off the
+    Offline adopted gear (e.g. an AP that has dropped off the
     controller) is still relevant and must appear, marked offline — even when
     the controller's live stat/device omits it.
     """
@@ -795,8 +795,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             c_skipped += 1
             continue
         if network_scope.is_tunnel_or_cgnat(uc["ip"]):
-            # 100.64.0.0/10 = CGNAT/Tailscale overlay (the 08-19 Starlink
-            # 100.99.121.62 case) — never a client record.
+            # 100.64.0.0/10 = CGNAT/Tailscale overlay — never a client record.
             c_skipped += 1
             continue
         # Skip noisy anonymous clients — but keep ONLINE anonymous ones

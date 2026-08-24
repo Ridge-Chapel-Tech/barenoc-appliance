@@ -57,7 +57,7 @@ func TestJobsURLs(t *testing.T) {
 func TestReportBodyShape(t *testing.T) {
 	f := facts.Facts{
 		Hostname: "box1", OS: "ubuntu-24.04", Kernel: "6.8.0-136",
-		MACs: []string{"aa:bb:cc:dd:ee:ff"}, IPs: []string{"192.168.4.55"},
+		MACs: []string{"aa:bb:cc:dd:ee:ff"}, IPs: []string{"192.0.2.55"},
 		UptimeS: 123, DiskFreeGB: 812.5,
 	}
 	body := NewReportBody(f)

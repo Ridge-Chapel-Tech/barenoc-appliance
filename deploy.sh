@@ -165,7 +165,7 @@ ssh "$VM" 'set -e
   sudo mkdir -p /opt/barenoc/volumes/nginx/certs
   CERT=/opt/barenoc/volumes/nginx/certs/barenoc.crt
   KEY=/opt/barenoc/volumes/nginx/certs/barenoc.key
-  IP="$(grep -E "^APPLIANCE_IP=" /opt/barenoc/.env | head -1 | cut -d= -f2-)"; IP="${IP:-192.168.4.207}"
+  IP="$(grep -E "^APPLIANCE_IP=" /opt/barenoc/.env | head -1 | cut -d= -f2-)"; IP="${IP:-192.0.2.207}"
   ISSUER_HASH="$(openssl x509 -in "$CERT" -noout -issuer_hash 2>/dev/null || true)"
   SUBJECT_HASH="$(openssl x509 -in "$CERT" -noout -subject_hash 2>/dev/null || true)"
   if [ ! -s "$CERT" ] || [ ! -s "$KEY" ] || [ "$ISSUER_HASH" = "$SUBJECT_HASH" ] || \
@@ -221,7 +221,7 @@ ssh "$VM" 'bash -s' <<'RENDER'
 set -u
 ENV=/opt/barenoc/.env
 get() { grep -E "^$1=" "$ENV" | head -1 | cut -d= -f2-; }
-IP="${APPLIANCE_IP:-$(get APPLIANCE_IP)}"; IP="${IP:-192.168.4.207}"
+IP="${APPLIANCE_IP:-$(get APPLIANCE_IP)}"; IP="${IP:-192.0.2.207}"
 HOST="${APPLIANCE_HOST:-$(get APPLIANCE_HOST)}"; HOST="${HOST:-app.barenoc.com}"
 mkdir -p /opt/barenoc/volumes/dns
 cat > /opt/barenoc/volumes/dns/Corefile <<CORE
