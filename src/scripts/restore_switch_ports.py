@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EMERGENCY RESTORE — Mini Rack Switch port_overrides.
+"""EMERGENCY RESTORE — a switch port_overrides.
 
 A test write replaced the switch's port_overrides with a single port, wiping
 the others (the VM's port 6 lost its native VLAN). This restores the EXACT
@@ -107,7 +107,7 @@ def main():
         print("port overrides restored. Waiting for the switch to reapply (~30s)...")
     else:
         print("RESTORE FAILED — please restore in the UniFi UI instead: "
-              "Mini Rack Switch -> Ports, set ports 2,5,6,7 native to the network "
+              "A switch -> Ports, set ports 2,5,6,7 native to the network "
               "matching their device (check each port's device), port 1 native WiFi "
               "+ excluded list, port 4 forward all.")
 

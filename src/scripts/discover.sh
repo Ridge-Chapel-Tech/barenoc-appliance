@@ -15,7 +15,7 @@
 # x.x.x.x/24") used to run sequentially and hang the worker against the 600s
 # pi timeout. Now they run ~20 pings at a time with -W 1 -c 1 short timeouts,
 # a host cap, progress notes, and NEVER sweep 100.64.0.0/10 (CGNAT + Tailscale
-# overlay — the buddy's Starlink 100.99.121.62 case). A /24 finishes in a few
+# overlay — a CGNAT Starlink link case). A /24 finishes in a few
 # seconds.
 #
 # Env knobs (both hot-read by this script):
