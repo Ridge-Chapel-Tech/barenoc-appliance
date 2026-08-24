@@ -28,8 +28,8 @@ Categories per release:
   Starlink WAN IP (`100.99.x.x` → RFC 6598 example), real VLAN names/subnets
   (WiFi/Kids/RCTF/.5.x/.8.x → generic `10.0.x` scheme), the hardcoded prod
   appliance IP (`192.168.4.207` → `192.0.2.207` placeholder), and real device
-  names in code comments/docstrings (HouseSwitch/Mini Rack/U6 Mesh/Office
-  Wifi/U7 Outdoor → generic). Public-repo publish commits now use a neutral
+  names in code comments/docstrings (→ generic). Public-repo publish commits now
+  use a neutral
   `bareNOC release bot <release@barenoc.com>` identity. The website repo
   (bareNOC.com) is scrubbed in a parallel change (no personal social/email).
 
@@ -208,8 +208,8 @@ Categories per release:
   `PROGRESS:` notes and aborts sweeps cleanly at the job timeout (a /24
   finishes in seconds, never hangs the worker/pi session).
 - **CGNAT/Tailscale discovery exclusion:** 100.64.0.0/10 (RFC 6598 CGNAT +
-  Tailscale overlay) is never scanned, discovered, claimed, or adopted — the
-  buddy's Starlink 100.99.121.62 case is pinned in tests.
+  Tailscale overlay) is never scanned, discovered, claimed, or adopted — a
+  Starlink CGNAT-link case is pinned in tests.
 ## [2026.08.20.c] — 2026-08-20
 
 ### Added
@@ -267,8 +267,7 @@ Categories per release:
     `unknown` that is never guessed.
   - **Conservative rule:** a `router_ap` or `unknown` port is NEVER told to
     change networks — its suggested action is "likely a router/AP — left on the
-    default network; verify before any change" (the 08-19 HouseSwitch port 7
-    Google/Nest WAN regression, which previously guessed "switch" → Management).
+    default network; verify before any change" (a Google/Nest WAN port regression, which previously guessed "switch" → Management).
   - **OUI best-effort:** a small embedded vendor table (Google/Nest, Apple,
     Ubiquiti, + common top OUIs) maps a learnable port MAC to "likely X gear",
     failing gracefully when the firmware hides port→MAC.
@@ -282,7 +281,7 @@ Categories per release:
 ### Fixed
 - **False "no assigned network" on an overridden port** — the UniFi collector
   now reads each port's EFFECTIVE native/tagged/name from its `port_overrides`
-  entry when set (HouseSwitch port 7 has native=Default via its override), and
+  entry when set (a port has native=Default via its override), and
   the no-profile rule treats a native (including the untagged Default) or a
   tagged set as a working profile — configured ports are no longer findings.
 
@@ -315,7 +314,7 @@ Categories per release:
   uplink mapping (port → known AP/switch name). Each port is classified
   best-effort as connected / dead_end / unused / down, and two new rules fire:
   `hyg.dead_end_port` (warning, high-risk — no devices learned + multicast
-  flooding, the 08-19 Mini Rack port 4 loop/dead-end signature) and
+  flooding, a dead-end port loop signature) and
   `hyg.unused_port_up` (info — link up but no devices; disable for hygiene).
   The run detail now shows the per-port discovery alongside the findings.
 - **Merge-safe port disable** — `UniFiClient.set_port_disabled` + the
@@ -350,7 +349,7 @@ Categories per release:
   now use the canonical `<device> Port <idx> (<description>)` naming — the device
   name plus the UniFi port `name` field (its description) in parentheses when one
   exists — across finding titles/details and the Optimize ticket change-plan
-  (e.g. "HouseSwitch Port 7 (Google WAN): no assigned network" instead of
+  (e.g. "Switch-02 Port 7 (Google WAN): no assigned network" instead of
   "Port with no assigned network on Port 1"). Display-only: finding keys and the
   `interface` (port idx) field are unchanged.
 
@@ -465,7 +464,7 @@ Categories per release:
 ### Fixed
 - **NetOpt tuning (sync-IP refresh + controller-live authority + score calibration)** —
   the 08-18 live incident where NetOpt scored the home network 0 and flagged
-  `rel.offline_gear` on a UP U6 Mesh because the appliance's device record held
+  `rel.offline_gear` on an AP because the appliance's device record held
   a stale pre-VLAN-move IP. Three layers: (1) the UniFi sync now refreshes the
   controller's **LIVE IP** (`config_network.ip` / device `ip`) **and hostname**
   on every sync, not just status/last_seen; (2) for `unifi_managed` devices the
