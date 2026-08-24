@@ -15,6 +15,17 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.24.b] — 2026-08-24
+
+### Fixed
+- **Starlink phantom dish survives updates on boxes with the collector disabled
+  (08-24):** the 08-20 phantom purge only ran inside the telemetry collector
+  loop — a box with `STARLINK_ENABLED=false` never purged, so the fabricated
+  'Starlink Dish' record persisted across updates (forum thread 9eaa106e).
+  The API now runs an unconditional startup sweep (`purge_phantom_dish_at_startup`)
+  that removes no-config dish records on every boot — real configured dishes in
+  an outage keep their record. Startup-purge test added.
+
 ## [2026.08.24.a] — 2026-08-24
 
 ### Security

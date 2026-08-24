@@ -452,6 +452,26 @@ class DeviceTest(unittest.TestCase):
         self.assertIsNotNone(db.get(Device, pid))
         db.close()
 
+    def test_startup_purge_removes_phantom_even_when_disabled(self):
+        """The startup sweep removes a phantom dish record even when the
+        telemetry collector is disabled (the 08-24 fix: the collector-only
+        purge never ran on boxes with STARLINK_ENABLED=false, so the
+        fabricated record survived updates — forum thread 9eaa106e)."""
+        db = SessionLocal()
+        pid = st.ensure_dish_device(db, "192.168.100.1:9200")
+        db.close()
+        self.assertIsNotNone(db.get(Device, pid))
+        old = os.environ.get("STARLINK_ENABLED")
+        os.environ["STARLINK_ENABLED"] = "false"
+        try:
+            st.purge_phantom_dish_at_startup()
+        finally:
+            if old is None:
+                os.environ.pop("STARLINK_ENABLED", None)
+            else:
+                os.environ["STARLINK_ENABLED"] = old
+        self.assertIsNone(db.get(Device, pid))
+
 
 # ═══════════════════════════════ route gating ═══════════════════════════════
 

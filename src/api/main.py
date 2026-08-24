@@ -280,6 +280,8 @@ async def lifespan(app: FastAPI):
     _write_provider_secret()  # sync the pi-agent provider key at startup
     from routes.settings import _remount_net_backup
     _remount_net_backup()  # reconnect the NAS backup share (best-effort)
+    from starlink import purge_phantom_dish_at_startup
+    purge_phantom_dish_at_startup()  # self-clean fabricated dish records (08-20 phantom)
     yield
     logger.info("Shutting down BareNOC API...")
 

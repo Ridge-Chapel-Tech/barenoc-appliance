@@ -308,6 +308,24 @@ def _configured_address() -> str:
     return (os.environ.get("STARLINK_ADDRESS") or "").strip()
 
 
+def purge_phantom_dish_at_startup() -> None:
+    """Startup sweep: remove dish records on boxes with no real dish, even when
+    the telemetry collector is disabled or has never run (the 08-20 phantom fix
+    only purged inside the collector loop — boxes that updated but had
+    STARLINK_ENABLED=false kept the fabricated 'Starlink Dish' record; see
+    forum thread 9eaa106e). A real configured dish in an outage keeps its
+    record (the purge's keep rule). Idempotent + crash-safe."""
+    try:
+        db = SessionLocal()
+        try:
+            scfg = starlink_config()
+            _purge_phantom_dish(db, scfg["address"])
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("starlink startup phantom purge failed: %s", e)
+
+
 def _purge_phantom_dish(db, address: str) -> None:
     """Remove dish device records that have no real dish behind them.
 
