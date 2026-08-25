@@ -31,6 +31,20 @@ UPDATE_REQ = os.path.join(STATUS_DIR, "update_request.json")
 ROLLBACK_REQ = os.path.join(STATUS_DIR, "rollback_request.json")
 SCHEDULE_FILE = os.path.join(STATUS_DIR, "update_schedule.conf")
 
+# Auto-update is ON by default (2026-08-25 user directive). Single source of
+# truth for the default schedule: a weekly maintenance window — Sunday
+# (day 0, the scheduler's 0=Sunday semantics) at 03:00 LOCAL time (appliance
+# TZ). Safe because releases >= v2026.08.25.a are MANDATORY-SIG: the apply
+# verifies a detached GPG signature before touching anything (fail-closed).
+DEFAULT_UPDATE_SCHEDULE = {
+    "mode": "recurring",
+    "enabled": True,
+    "day": "0",    # 0=Sunday..6=Saturday (matches netopt's weekly default)
+    "hour": 3,     # 03:00 local
+    "when": "",
+    "fired": "",
+}
+
 MANIFEST_URL = os.getenv(
     "UPDATE_MANIFEST_URL", "https://barenoc.com/downloads/versions.json")
 
@@ -393,6 +407,28 @@ def _write_schedule(conf: dict):
             f.write(f"fired={fired}\n")
     except Exception as e:
         raise HTTPException(500, f"could not save the schedule: {e}")
+
+
+def ensure_default_update_schedule() -> dict:
+    """Write the DEFAULT_UPDATE_SCHEDULE ONCE — only when update_schedule.conf
+    does not exist. The conf file's existence (enabled OR explicitly disabled)
+    is the permanent opt-out marker: no future release can flip it back.
+
+    Used by two paths (idempotent, never overwrites):
+      - fresh installs: the setup wizard's completion sweep, and
+      - upgrades: the API-startup migration for boxes that never configured
+        anything (loompafoo's class).
+
+    Returns {"written": bool, "reason": str} — never raises (a startup
+    migration must not take the API down)."""
+    path = os.path.join(STATUS_DIR, "update_schedule.conf")
+    if os.path.exists(path):
+        return {"written": False, "reason": "schedule conf already exists (preserved)"}
+    try:
+        _write_schedule(dict(DEFAULT_UPDATE_SCHEDULE))
+        return {"written": True, "reason": "wrote the default auto-update schedule"}
+    except Exception as e:
+        return {"written": False, "reason": f"could not write the default schedule: {e}"}
 
 
 @router.post("/notify")

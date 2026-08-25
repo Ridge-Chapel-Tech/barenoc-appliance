@@ -120,6 +120,30 @@ class ScheduleLogicTest(unittest.TestCase):
             post = self._run(sched, {})
         post.assert_called_once_with("/updates/now", {}, "tok")
 
+    def test_disabled_schedule_never_queues(self):
+        sched = {"enabled": False, "mode": "recurring", "day": "0", "hour": 3}
+        post = self._run(sched, {})
+        post.assert_not_called()
+
+    def test_recurring_day_zero_fires_on_sunday(self):
+        # day 0 = Sunday (the default auto-update window). 2026-08-23 is a
+        # Sunday — assert no off-by-one against the default hour 3.
+        with patch.object(main, "_local_now",
+                          return_value=datetime.datetime(2026, 8, 23, 3, 0)):
+            sched = {"enabled": True, "mode": "recurring", "day": "0", "hour": 3}
+            last = {}
+            post = self._run(sched, last)
+        post.assert_called_once_with("/updates/now", {}, "tok")
+        self.assertEqual(last["update"], "0-2026-08-23")
+
+    def test_recurring_day_zero_skips_monday(self):
+        # The following day (Monday) must NOT fire for the Sunday default.
+        with patch.object(main, "_local_now",
+                          return_value=datetime.datetime(2026, 8, 24, 3, 0)):
+            sched = {"enabled": True, "mode": "recurring", "day": "0", "hour": 3}
+            post = self._run(sched, {})
+        post.assert_not_called()
+
 
 class StartupGuardTest(unittest.TestCase):
     def test_ready_on_first_attempt(self):

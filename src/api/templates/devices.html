@@ -35,10 +35,12 @@
     <select id="filter-status" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
       <option value="">All</option><option value="online">Online</option><option value="offline">Offline</option>
       <option value="warning">Warning</option><option value="pending">Pending</option><option value="unreachable">Unreachable</option>
+      <option value="unknown">Unknown</option>
     </select>
     <select id="filter-group" onchange="fetchDevices(0)" class="rounded-md border-gray-300 text-sm">
       <option value="">All Groups</option>
     </select>
+    <button id="online-toggle" onclick="toggleOnlineOnly()" title="Show only devices that are online right now (status == online). One click; composes as an AND with the other filters." class="rounded-full border border-gray-300 px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-50">🟢 Show online only</button>
     <button id="monitored-chip" onclick="toggleMonitored()" title="Show only devices with the 🔔 monitor toggle ON (notify_state_changes)" class="rounded-full border border-gray-300 px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-50">🔔 Monitored</button>
     <span id="device-count" class="text-sm text-gray-500 self-center"></span>
   </div>
@@ -338,7 +340,56 @@ var currentOffset = 0;
 var currentLimit = 24;
 var currentTotal = 0;
 var monitoredOnly = false;
+var onlineOnly = false;
 var revealedIdentifies = {};
+
+// ── Online status sort/filter (forum 3ffc900b: "sort/show found devices by
+// whether they are online"). Shared by the Onboarded grid AND the Unclaimed
+// groups so the online-first order is identical in every rendered list. ──
+var TYPE_ORDER = { 'server': 0, 'workstation': 1, 'printer': 2, 'gateway': 3, 'switch': 4, 'ap': 5 };
+
+function ipSort(a, b) {
+  var pa = (a.ip_address || '').split('.').map(Number);
+  var pb = (b.ip_address || '').split('.').map(Number);
+  for (var i = 0; i < 4; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0); }
+  return 0;
+}
+
+// Online devices first, then the rest in IP order.
+// status: online | offline | warning | pending | unreachable | unknown | unclaimed
+function onlineFirst(a, b) {
+  return (a.status === 'online' ? 0 : 1) - (b.status === 'online' ? 0 : 1) || ipSort(a, b);
+}
+
+// Endpoints (UniFi clients): online bucket first, then the established type
+// order WITHIN each bucket (servers -> workstations -> printers -> gateways ->
+// switches -> APs), IP as the final tiebreak. The type order inside a bucket
+// is never regressed.
+function onlineThenType(a, b) {
+  var oa = a.status === 'online' ? 0 : 1;
+  var ob = b.status === 'online' ? 0 : 1;
+  if (oa !== ob) return oa - ob;
+  var ta = TYPE_ORDER.hasOwnProperty(a.device_type) ? TYPE_ORDER[a.device_type] : 8;
+  var tb = TYPE_ORDER.hasOwnProperty(b.device_type) ? TYPE_ORDER[b.device_type] : 8;
+  if (ta !== tb) return ta - tb;
+  return ipSort(a, b);
+}
+
+// One-click "show online / show all" toggle — works in BOTH views (Onboarded
+// grid + Unclaimed groups). ON forces status=online (an AND with the other
+// filters); OFF restores whatever the status select says (default: all).
+function toggleOnlineOnly() {
+  onlineOnly = !onlineOnly;
+  var btn = document.getElementById('online-toggle');
+  if (onlineOnly) {
+    btn.className = 'rounded-full border px-3 py-1 text-sm font-medium bg-green-100 border-green-300 text-green-800';
+    btn.textContent = '🟢 Online only (ON)';
+  } else {
+    btn.className = 'rounded-full border border-gray-300 px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-50';
+    btn.textContent = '🟢 Show online only';
+  }
+  fetchDevices(0);
+}
 
 function statusClasses(s) {
   var border = s === 'online' ? 'border-green-500' : s === 'offline' ? 'border-red-500' : s === 'warning' ? 'border-yellow-500' : 'border-gray-300';
@@ -391,6 +442,7 @@ function toggleMonitored() {
 async function loadUnclaimed() {
   try {
     var _st = document.getElementById('filter-status').value;
+    if (onlineOnly) _st = 'online';
     var resp = await fetch('/api/v1/devices?claimed=false&limit=500' + (_st ? '&status=' + encodeURIComponent(_st) : ''), { headers: { 'Authorization': 'Bearer ' + getToken() } });
     var data = await resp.json();
     var devices = data.devices || [];
@@ -398,25 +450,10 @@ async function loadUnclaimed() {
     if (devices.length === 0) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
 
-    function ipSort(a, b) {
-      var pa = a.ip_address.split('.').map(Number), pb = b.ip_address.split('.').map(Number);
-      for (var i = 0; i < 4; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0); }
-      return 0;
-    }
-    function onlineFirst(a, b) { return (a.status === 'online' ? 0 : 1) - (b.status === 'online' ? 0 : 1) || ipSort(a, b); }
-    // Endpoints sorted by device type first (servers -> workstations -> printers -> unknown)
-    var TYPE_ORDER = { 'server': 0, 'workstation': 1, 'printer': 2, 'gateway': 3, 'switch': 4, 'ap': 5 };
-    function typeFirst(a, b) {
-      var ta = TYPE_ORDER.hasOwnProperty(a.device_type) ? TYPE_ORDER[a.device_type] : 8;
-      var tb = TYPE_ORDER.hasOwnProperty(b.device_type) ? TYPE_ORDER[b.device_type] : 8;
-      if (ta !== tb) return ta - tb;
-      return onlineFirst(a, b);
-    }
-
     var groups = [
       { label: 'Network Infrastructure', hint: 'UniFi-managed gateways, switches, APs', sort: onlineFirst,
         list: devices.filter(function(d) { return d.unifi_managed === true; }) },
-      { label: 'Endpoints (UniFi clients)', hint: 'Computers, servers, phones, IoT seen on the network', sort: typeFirst,
+      { label: 'Endpoints (UniFi clients)', hint: 'Computers, servers, phones, IoT seen on the network', sort: onlineThenType,
         list: devices.filter(function(d) { return d.unifi_managed !== true && (d.tags || []).indexOf('unifi-client') >= 0; }) },
       { label: 'Identified — ready to claim', hint: 'Fingerprinted (OS/ports known); take ownership to claim', sort: onlineFirst,
         list: devices.filter(function(d) { return d.unifi_managed !== true && (d.tags || []).indexOf('unifi-client') < 0 && d.fingerprint && d.fingerprint.count > 0; }) },
@@ -560,6 +597,7 @@ async function fetchDevices(offset) {
   var t = document.getElementById('filter-type').value;
   var st = document.getElementById('filter-status').value;
   var grp = document.getElementById('filter-group').value;
+  if (onlineOnly) st = 'online';
   if (s) params.push('search=' + encodeURIComponent(s));
   if (t) params.push('device_type=' + t);
   if (st) params.push('status=' + st);
@@ -577,6 +615,7 @@ async function fetchDevices(offset) {
     var data = await resp.json();
     var devices = data.devices || [];
     if (monitoredOnly) devices = devices.filter(function(d) { return d.notify_state_changes; });
+    devices.sort(onlineFirst);
     currentTotal = monitoredOnly ? devices.length : (data.total || 0);
     var grid = document.getElementById('devices-grid');
     grid.innerHTML = '';

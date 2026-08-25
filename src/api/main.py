@@ -283,6 +283,18 @@ async def lifespan(app: FastAPI):
     _remount_net_backup()  # reconnect the NAS backup share (best-effort)
     from starlink import purge_phantom_dish_at_startup
     purge_phantom_dish_at_startup()  # self-clean fabricated dish records (08-20 phantom)
+    # Auto-update default-on migration (2026-08-25): existing boxes get the
+    # default schedule ONCE — only when no update_schedule.conf exists. A box
+    # that already configured anything (enabled OR disabled) is never touched.
+    # The gate pre-writes enabled=false on its own prod/test VMs before
+    # deploying, so those stay manual. Never raises (best-effort).
+    try:
+        from routes.updates import ensure_default_update_schedule
+        result = ensure_default_update_schedule()
+        if result.get("written"):
+            logger.info("Updates: wrote the default auto-update schedule (no conf existed)")
+    except Exception:
+        pass
     # Pre-generate the appliance device-control keypair (idempotent) so the
     # GET /control-key + /onboard/script handlers are pure reads — a lazy
     # generate-on-first-GET would make a GET mutate the secrets volume.

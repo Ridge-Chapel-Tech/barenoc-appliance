@@ -14,7 +14,7 @@ and unchanged in function.
 | **Network** | UniFi controller URL + credentials, auto-sync, auto-adopt | [Network Discovery](/wiki/discovery) |
 | **Devices** | Device inventory + onboarding (link to the Devices page) | [Devices](/wiki/devices) |
 | **Tickets** | Check-in + auto-close lifecycle per priority | [Tickets](/wiki/tickets) |
-| **Updates** | Check / schedule / rollback (link to System → Updates) | [Updates](/wiki/updates) |
+| **Updates** | Auto-update (on by default) · check / schedule / rollback (link to System → Updates) | [Updates](/wiki/updates) |
 | **Backups** | USB backup schedule, network (NAS) copy, first-time stick setup | [Backups](/wiki/backups) |
 
 ### Advanced
@@ -35,7 +35,7 @@ Some settings live on other pages:
 
 | Setting | Where |
 |---------|-------|
-| Updates (check / schedule / rollback) | **System → Updates** — [Updates](/wiki/updates) |
+| Updates (auto-update / check / schedule / rollback) | **System → Updates** — [Updates](/wiki/updates) |
 | Support / bug-report bundle | **System → Support** — [Support / Bug Report](/wiki/support) |
 | Device control channels + 🔔 monitor toggle | **Devices** page — [Devices](/wiki/devices) |
 | Network Optimization schedule | **Dashboard → Network Optimization** — [Network Optimization](/wiki/network-optimization) |

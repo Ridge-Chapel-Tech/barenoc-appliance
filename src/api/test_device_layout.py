@@ -34,7 +34,7 @@ def _add(name, ip, claimed=True, **kw):
     db = SessionLocal()
     d = Device(name=name, ip_address=ip,
                device_type=kw.pop("device_type", "switch"),
-               status="online", claimed=claimed, **kw)
+               status=kw.pop("status", "online"), claimed=claimed, **kw)
     db.add(d)
     db.commit()
     did = d.id
@@ -119,6 +119,49 @@ class TwoStateListTest(unittest.TestCase):
         r = _list(claimed=True)
         cam = next(d for d in r["devices"] if d["name"] == "mon-cam")
         self.assertIn("monitor", cam["channels"])
+
+
+class StatusFilterTest(unittest.TestCase):
+    """GET /api/v1/devices?status=… filters BOTH claimed and unclaimed — the
+    route binding behind the Devices-page online-only toggle (forum
+    3ffc900b)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+        _add("on-claimed", "10.0.1.1", claimed=True, status="online")
+        _add("off-claimed", "10.0.1.2", claimed=True, status="offline")
+        _add("warn-claimed", "10.0.1.3", claimed=True, status="warning")
+        _add("on-unclaimed", "10.0.1.4", claimed=False, status="online")
+        _add("off-unclaimed", "10.0.1.5", claimed=False, status="offline")
+
+    def test_status_online_filters_claimed(self):
+        r = _list(claimed=True, status="online")
+        self.assertEqual([d["name"] for d in r["devices"]], ["on-claimed"])
+
+    def test_status_online_filters_unclaimed(self):
+        r = _list(claimed=False, status="online")
+        self.assertEqual([d["name"] for d in r["devices"]], ["on-unclaimed"])
+
+    def test_status_offline_filters_both(self):
+        r = _list(claimed=True, status="offline")
+        self.assertEqual([d["name"] for d in r["devices"]], ["off-claimed"])
+        r2 = _list(claimed=False, status="offline")
+        self.assertEqual([d["name"] for d in r2["devices"]], ["off-unclaimed"])
+
+    def test_status_online_returns_only_online(self):
+        # Across BOTH claimed and unclaimed, status=online returns only online.
+        r = _list(status="online")
+        names = [d["name"] for d in r["devices"]]
+        self.assertEqual(sorted(names), ["on-claimed", "on-unclaimed"])
+        self.assertTrue(all(d["status"] == "online" for d in r["devices"]))
+
+    def test_no_status_returns_all(self):
+        r = _list()
+        self.assertEqual(len(r["devices"]), 5)
 
 
 if __name__ == "__main__":

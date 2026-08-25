@@ -302,7 +302,8 @@ def setup_complete(data: Optional[SetupCompleteRequest] = None,
                    user: User = Depends(_admin_gate_or_first_run)):
     """Finish setup: stamp SETUP_COMPLETE + write the home defaults for every
     skipped step (timezone from the wizard's browser, site name, LLM egress,
-    autonomous + pi flag, UniFi auto-discover, backups-on-local).
+    autonomous + pi flag, UniFi auto-discover, backups-on-local, auto-update
+    on by default).
 
     The express wizard sends {timezone, site_name, llm_egress}; the advanced
     9-step path sends nothing and still receives the defaults for anything it
@@ -319,6 +320,11 @@ def setup_complete(data: Optional[SetupCompleteRequest] = None,
         llm_egress=data.llm_egress,
     )
     _write_env_file(env)
+    # Auto-update ON by default (2026-08-25): a fresh install lands on the
+    # default weekly schedule (Sunday 03:00 local) with zero Advanced-page
+    # visits. Idempotent — never overwrites an existing (opted-out) conf.
+    from routes import updates as _updates
+    _updates.ensure_default_update_schedule()
     # Backups: on, local defaults (Wednesday 02:00) — the host poller reads
     # this conf; a BYO Docker host simply ignores it (no appliance host).
     _write_backup_conf({

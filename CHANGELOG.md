@@ -15,6 +15,29 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.25.d] — 2026-08-25
+
+### Added
+- **Devices — online-only toggle + online-first sort:** a one-click
+  **Show online only / Show all** toggle on the Devices page (works in both the
+  Onboarded grid and the Unclaimed groups) narrows to `status == online` and
+  composes as an AND with the existing search/type/group/monitor filters.
+  Device lists now sort online-first in every rendered group/list (the
+  Onboarded grid included); endpoints keep their type order within the
+  online/offline buckets. The status select gained an **Unknown** option.
+  `GET /api/v1/devices?status=` filters both claimed and unclaimed (route
+  binding covered by tests).
+### Changed
+- **Auto-update on by default:** a fresh install (or a box that updates to this
+  release without ever touching the schedule) now gets a default weekly update
+  schedule — **Sunday 03:00 local time** — written at API startup and by the
+  setup-wizard completion sweep. The schedule conf's existence is the permanent
+  opt-out marker: an existing conf (enabled or explicitly disabled) is never
+  overwritten. Opt out is one click in System → Updates (the **Auto-update**
+  toggle). Safe because releases ≥ v2026.08.25.a are GPG-signed and verified
+  before apply (fail-closed).
+>>>>>>> origin/feat/updates-default-on
+
 ## [2026.08.25.c] — 2026-08-25
 
 ### Added

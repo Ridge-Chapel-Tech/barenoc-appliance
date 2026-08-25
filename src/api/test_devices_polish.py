@@ -16,6 +16,7 @@ the JS uses. Wire into scripts/run_tests.sh + CI.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -78,6 +79,80 @@ class DevicesPolishTemplateTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, "node failed: " + proc.stderr)
         return proc.stdout
+
+    def _run_sorter(self, comparator, devices):
+        """Execute the SHIPPED sort helpers (ipSort / onlineFirst /
+        onlineThenType) against a device fixture so the assertion locks the
+        real JS code path, not a Python re-implementation."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available — cannot execute the shipped sorters")
+        html = self._read("devices.html")
+        m = re.search(r"var TYPE_ORDER = \{[^}]*\};", html)
+        self.assertIsNotNone(m, "TYPE_ORDER not found in devices.html")
+        script = (
+            self._extract_js_function(html, "ipSort") + "\n"
+            + self._extract_js_function(html, "onlineFirst") + "\n"
+            + self._extract_js_function(html, "onlineThenType") + "\n"
+            + m.group(0) + "\n"
+            + "var devs = " + json.dumps(devices) + ";\n"
+            + "devs.sort(" + comparator + ");\n"
+            + "process.stdout.write(devs.map(function(d){ return d.name; }).join('|'));\n"
+        )
+        proc = subprocess.run([node, "-e", script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, "node failed: " + proc.stderr)
+        return proc.stdout
+
+    def test_online_first_sort_puts_online_devices_first(self):
+        devices = [
+            {"name": "off-low", "ip_address": "10.0.0.10", "status": "offline"},
+            {"name": "on-high", "ip_address": "10.0.0.90", "status": "online"},
+            {"name": "on-low", "ip_address": "10.0.0.1", "status": "online"},
+            {"name": "warn-mid", "ip_address": "10.0.0.5", "status": "warning"},
+        ]
+        out = self._run_sorter("onlineFirst", devices)
+        # online bucket first (IP ascending), then the rest in IP order.
+        self.assertEqual(out, "on-low|on-high|warn-mid|off-low")
+
+    def test_endpoint_sort_online_bucket_then_type_order(self):
+        devices = [
+            {"name": "off-server", "ip_address": "10.0.0.1", "status": "offline", "device_type": "server"},
+            {"name": "on-ap", "ip_address": "10.0.0.2", "status": "online", "device_type": "ap"},
+            {"name": "on-server", "ip_address": "10.0.0.3", "status": "online", "device_type": "server"},
+            {"name": "off-workstation", "ip_address": "10.0.0.4", "status": "offline", "device_type": "workstation"},
+            {"name": "on-switch", "ip_address": "10.0.0.5", "status": "online", "device_type": "switch"},
+        ]
+        out = self._run_sorter("onlineThenType", devices)
+        # online bucket first (type order server < switch < ap preserved),
+        # then the offline bucket (server < workstation preserved).
+        self.assertEqual(out, "on-server|on-switch|on-ap|off-server|off-workstation")
+
+    def test_online_only_toggle_wired_into_both_views(self):
+        html = self._read("devices.html")
+        # The one-click "show online / show all" toggle control exists…
+        self.assertIn('id="online-toggle"', html)
+        self.assertIn('function toggleOnlineOnly', html)
+        self.assertIn("var onlineOnly = false;", html)
+        # …and BOTH views AND it onto their status filter (Onboarded + Unclaimed).
+        self.assertIn("if (onlineOnly) st = 'online';", html)
+        self.assertIn("if (onlineOnly) _st = 'online';", html)
+        # Default = show all: the status select stays the source unless toggled.
+        self.assertIn("var st = document.getElementById('filter-status').value;", html)
+        self.assertIn("var _st = document.getElementById('filter-status').value;", html)
+
+    def test_onboarded_grid_sorts_online_first(self):
+        html = self._read("devices.html")
+        self.assertIn("devices.sort(onlineFirst);", html)
+
+    def test_endpoints_use_online_then_type_sort(self):
+        html = self._read("devices.html")
+        self.assertIn("sort: onlineThenType", html)
+        # The old type-first comparator (type before online) is gone.
+        self.assertNotIn("function typeFirst", html)
+
+    def test_status_select_includes_unknown(self):
+        html = self._read("devices.html")
+        self.assertIn('<option value="unknown">Unknown</option>', html)
 
     def test_check_now_button_removed(self):
         html = self._read("system.html")

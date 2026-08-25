@@ -28,6 +28,7 @@ from database import SessionLocal, init_db  # noqa: E402
 from models import User  # noqa: E402
 from auth import hash_password  # noqa: E402
 from routes import setup as setup_routes  # noqa: E402
+from routes import updates as updates_routes  # noqa: E402
 import main as api_main  # noqa: E402
 
 
@@ -177,6 +178,20 @@ class CompleteEndpointTest(unittest.TestCase):
         self.assertEqual(conf["USB_BACKUP_ENABLED"], "true")
         self.assertEqual(conf["USB_BACKUP_DAY"], "3")
         self.assertEqual(conf["USB_BACKUP_HOUR"], "2")
+
+    def test_complete_writes_default_update_schedule(self):
+        """Auto-update default-on (2026-08-25): a fresh install's completion
+        path writes the default schedule (enabled, Sunday 03:00 local)."""
+        tmp = tempfile.mkdtemp(prefix="setup-updates-")
+        with patch.object(updates_routes, "STATUS_DIR", tmp):
+            r, env, conf = self._complete({}, {"timezone": "America/New_York"})
+        self.assertIs(r["complete"], True)
+        self.assertTrue(os.path.exists(os.path.join(tmp, "update_schedule.conf")))
+        with open(os.path.join(tmp, "update_schedule.conf")) as f:
+            content = f.read()
+        self.assertIn("enabled=true", content)
+        self.assertIn("day=0", content)
+        self.assertIn("hour=3", content)
 
 
 if __name__ == "__main__":

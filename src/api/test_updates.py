@@ -369,6 +369,66 @@ class ScheduleConfV2Test(unittest.TestCase):
         self.assertEqual(r["schedule"]["fired"], "")
 
 
+class DefaultScheduleTest(unittest.TestCase):
+    """Auto-update ON by default (2026-08-25): the default schedule constant +
+    ensure_default_update_schedule is idempotent — writes once when the conf is
+    absent, never overwrites an existing (enabled OR disabled) conf."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="updates-default-")
+        self._dir = patch.object(updates, "STATUS_DIR", self.tmp)
+        self._dir.start()
+
+    def tearDown(self):
+        self._dir.stop()
+
+    def test_default_constant_is_weekly_sunday_3am(self):
+        d = updates.DEFAULT_UPDATE_SCHEDULE
+        self.assertEqual(d["mode"], "recurring")
+        self.assertTrue(d["enabled"])
+        self.assertEqual(d["day"], "0")   # 0 = Sunday
+        self.assertEqual(d["hour"], 3)    # 03:00 local
+        self.assertEqual(d["when"], "")
+        self.assertEqual(d["fired"], "")
+
+    def test_default_writes_when_absent(self):
+        r = updates.ensure_default_update_schedule()
+        self.assertTrue(r["written"])
+        sc = updates._read_schedule()
+        self.assertTrue(sc["enabled"])
+        self.assertEqual(sc["mode"], "recurring")
+        self.assertEqual(sc["day"], "0")
+        self.assertEqual(sc["hour"], 3)
+
+    def test_existing_disabled_conf_untouched_byte_for_byte(self):
+        path = os.path.join(self.tmp, "update_schedule.conf")
+        content = "mode=recurring\nenabled=false\nday=1\nhour=2\nwhen=\nfired=\n"
+        with open(path, "w") as f:
+            f.write(content)
+        r = updates.ensure_default_update_schedule()
+        self.assertFalse(r["written"])
+        with open(path) as f:
+            self.assertEqual(f.read(), content)
+
+    def test_existing_custom_enabled_conf_untouched_byte_for_byte(self):
+        path = os.path.join(self.tmp, "update_schedule.conf")
+        content = "mode=recurring\nenabled=true\nday=daily\nhour=5\nwhen=\nfired=\n"
+        with open(path, "w") as f:
+            f.write(content)
+        r = updates.ensure_default_update_schedule()
+        self.assertFalse(r["written"])
+        with open(path) as f:
+            self.assertEqual(f.read(), content)
+
+    def test_day_hour_semantics_no_off_by_one(self):
+        # The default day 0 (Sunday) must line up with the scheduler's
+        # conversion: Sunday.weekday()==6 -> (6+1)%7 == 0.
+        sunday = datetime.datetime(2026, 8, 23)  # a known Sunday
+        self.assertEqual(sunday.weekday(), 6)
+        self.assertEqual((sunday.weekday() + 1) % 7,
+                         int(updates.DEFAULT_UPDATE_SCHEDULE["day"]))
+
+
 class ScheduleUiV2TemplateTest(unittest.TestCase):
     """System → Updates schedule section gains the mode toggle + one-time
     picker + current-schedule display + Cancel (static template checks)."""
@@ -396,6 +456,14 @@ class ScheduleUiV2TemplateTest(unittest.TestCase):
         html = self._read("system.html")
         self.assertIn('function updSchedSummary', html)
         self.assertIn('updModeChange', html)
+
+    def test_autoupdate_optout_label_present(self):
+        # The schedule toggle IS the opt-out — clearly labeled one-click off.
+        html = self._read("system.html")
+        self.assertIn('id="upd-sched-enable"', html)
+        self.assertIn('Auto-update', html)
+        self.assertIn('Uncheck to opt out', html)
+        self.assertIn('Auto-update is off.', html)
 
 
 class SignaturePlumbingTest(unittest.TestCase):

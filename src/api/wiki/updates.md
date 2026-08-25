@@ -27,12 +27,25 @@ in-progress update shows live **progress** (stage + percentage); when it
 finishes, the running version has already flipped and the card settles back to
 "up to date".
 
+## Auto-update (on by default)
+
+BareNOC auto-updates **on by default**. A fresh install, or a box that
+updates to this release without ever touching the schedule, gets a weekly
+maintenance window — **Sunday at 03:00 local time**. When a new release is
+available it is applied automatically in that window. This is safe because
+every release since v2026.08.25.a is **GPG-signed and verified before it is
+applied** (fail-closed — an unsigned or tampered release is never applied).
+
+**To opt out:** System → Updates → uncheck **Auto-update** (one click). That
+persists `enabled=false` and is never flipped back by a later update — once
+you opt out, you stay opted out until you turn it back on.
+
 ## Schedule
 
 Schedule updates instead of clicking **Update now**:
 
 - **Recurring** — daily, or a specific weekday, at a local hour (e.g. Monday
-  02:00). Default suggestion: 02:00.
+  02:00). The out-of-the-box default is **Sunday 03:00**.
 - **One-time** — apply the next available release at a specific local date/time.
   It fires once, then clears itself.
 
