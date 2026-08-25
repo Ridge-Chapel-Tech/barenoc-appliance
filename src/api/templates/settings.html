@@ -5,20 +5,29 @@
   <h1 class="text-2xl font-semibold text-gray-900">Settings</h1>
   <p class="mt-1 text-sm text-gray-500">System configuration, accounts, and integrations.</p>
 
-  <!-- Tabs -->
+  <!-- Tabs (home sees a flat, small set; everything else lives under Advanced) -->
   <div class="mt-4 border-b">
-    <nav class="flex gap-4">
+    <nav class="flex gap-4 flex-wrap">
       <button onclick="switchTab('general')" id="tab-general" class="px-3 py-2 text-sm font-medium border-b-2 border-barenoc-600 text-barenoc-700">General</button>
-      <button onclick="switchTab('users')" id="tab-users" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Users</button>
-      <button onclick="switchTab('llm')" id="tab-llm" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">API Keys</button>
-      <button onclick="switchTab('email')" id="tab-email" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Email</button>
-      <button onclick="switchTab('unifi')" id="tab-unifi" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">UniFi</button>
-      <button onclick="switchTab('identity')" id="tab-identity" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Identity</button>
+      <button onclick="switchTab('unifi')" id="tab-unifi" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Network</button>
+      <a href="/devices" id="tab-devices" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Devices</a>
       <button onclick="switchTab('tickets')" id="tab-tickets" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Tickets</button>
-      <button onclick="switchTab('restrictions')" id="tab-restrictions" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Restrictions</button>
-      <button onclick="switchTab('security')" id="tab-security" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Security</button>
+      <a href="/system#updates" id="tab-updates" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Updates</a>
       <button onclick="switchTab('backups')" id="tab-backups" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Backups</button>
-      <button onclick="switchTab('support')" id="tab-support" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Support</button>
+      <button onclick="switchAdvTab('llm')" id="tab-advanced" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Advanced</button>
+    </nav>
+  </div>
+
+  <!-- Advanced sub-tabs (LLM providers, security, identity, restrictions, …) -->
+  <div id="advanced-tabs" class="hidden mt-2 border-b border-gray-100">
+    <nav class="flex gap-4 flex-wrap">
+      <button onclick="switchAdvTab('llm')" id="advtab-llm" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">LLM Providers</button>
+      <button onclick="switchAdvTab('email')" id="advtab-email" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Email</button>
+      <button onclick="switchAdvTab('identity')" id="advtab-identity" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Identity</button>
+      <button onclick="switchAdvTab('restrictions')" id="advtab-restrictions" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Restrictions</button>
+      <button onclick="switchAdvTab('security')" id="advtab-security" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Security</button>
+      <button onclick="switchAdvTab('support')" id="advtab-support" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Support</button>
+      <button onclick="switchAdvTab('users')" id="advtab-users" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Users</button>
     </nav>
   </div>
 
@@ -679,29 +688,58 @@ function getToken() { return localStorage.getItem('access_token'); }
 function esc(t) { if (!t) return ''; return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 var currentTab = 'general';
+var currentAdvTab = null;
+
+function setTabButton(tab, active) {
+  var btn = document.getElementById('tab-' + tab);
+  if (btn) {
+    btn.className = active
+      ? 'px-3 py-2 text-sm font-medium border-b-2 border-barenoc-600 text-barenoc-700'
+      : 'px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700';
+  }
+}
+
 function switchTab(tab) {
-  currentTab = tab;  document.querySelectorAll('[id^="panel-"]').forEach(function(p) {
+  currentTab = tab;
+  currentAdvTab = null;
+  document.getElementById('advanced-tabs').classList.add('hidden');
+  document.querySelectorAll('[id^="panel-"]').forEach(function(p) {
     var t = p.id.replace('panel-', '');
     p.classList.toggle('hidden', t !== tab);
-    var btn = document.getElementById('tab-' + t);
-    if (btn) {
-      btn.className = t === tab
+  });
+  ['general', 'unifi', 'tickets', 'backups'].forEach(function(t) { setTabButton(t, t === tab); });
+  setTabButton('advanced', false);
+  if (tab === 'general') { loadGeneral(); loadRemoteAccess(); }
+  if (tab === 'unifi') loadUnifi();
+  if (tab === 'tickets') loadTickets();
+  if (tab === 'backups') loadBackups();
+}
+
+function switchAdvTab(tab) {
+  currentTab = 'advanced';
+  currentAdvTab = tab;
+  document.getElementById('advanced-tabs').classList.remove('hidden');
+  document.querySelectorAll('[id^="panel-"]').forEach(function(p) {
+    var t = p.id.replace('panel-', '');
+    p.classList.toggle('hidden', t !== tab);
+  });
+  ['general', 'unifi', 'tickets', 'backups'].forEach(function(t) { setTabButton(t, false); });
+  setTabButton('advanced', true);
+  ['llm', 'email', 'identity', 'restrictions', 'security', 'support', 'users'].forEach(function(t) {
+    var b = document.getElementById('advtab-' + t);
+    if (b) {
+      b.className = t === tab
         ? 'px-3 py-2 text-sm font-medium border-b-2 border-barenoc-600 text-barenoc-700'
         : 'px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700';
     }
   });
   if (tab === 'users') loadUsers();
-  if (tab === 'general') loadGeneral();
   if (tab === 'llm') loadLLM();
   if (tab === 'email') loadEmail();
-  if (tab === 'unifi') loadUnifi();
   if (tab === 'identity') loadIdentity();
-  if (tab === 'tickets') loadTickets();
   if (tab === 'restrictions') loadRestrictions();
   if (tab === 'security') loadSecurity();
-  if (tab === 'backups') loadBackups();
   if (tab === 'support') { loadSupport(); loadRemoteSupport(); }
-  if (tab === 'general') loadRemoteAccess();
 }
 
 // ── Support (forum submit) ──
@@ -1446,7 +1484,7 @@ async function testUnifi() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  loadRemoteAccess(); switchTab('general'); });
+  switchTab('general'); });
 
 // ── Identity (Pocket ID / passkeys) ──
 async function loadIdentity() {

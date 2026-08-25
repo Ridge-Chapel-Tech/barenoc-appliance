@@ -31,6 +31,7 @@ flowchart LR
 | [Link Stability](/wiki/link-stability) | Flap/outage monitor — the 🔔 toggle, graduated tickets, auto-close |
 | [Chat Client](/wiki/chat-client) | The AIM-style desktop chat app |
 | [Security](/wiki/security) | Passwords, passkeys, management lockdown |
+| [Compliance Controls](/wiki/compliance) | Toggleable governance panel — LLM egress, MFA, retention, audit, attestation export |
 | [Network Optimization](/wiki/network-optimization) | Scheduled read-only audit — score + findings for your gear |
 | [Autonomy Policy](/wiki/autonomy) | How much the AI may do on its own — per deployment |
 | [Settings](/wiki/settings) | Overview of every Settings tab (LLM, UniFi, alerts, backups, identity) |

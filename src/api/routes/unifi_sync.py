@@ -93,7 +93,7 @@ def get_config(user: User = Depends(require_role("admin"))):
         "password_configured": bool(cfg["password"]),
         "api_key_configured": bool(cfg["api_key"]),
         "auth": "api_key" if cfg["api_key"] else ("password" if cfg["password"] else None),
-        "autosync_enabled": _env_bool(env.get("UNIFI_AUTOSYNC_ENABLED", "")),
+        "autosync_enabled": _env_bool(env.get("UNIFI_AUTOSYNC_ENABLED", "true")),
         "autosync_interval": _env_int(env.get("UNIFI_AUTOSYNC_INTERVAL_MIN", "5"), 5),
         # Auto-adopt: UniFi-managed network devices are claimed automatically
         # once the controller connection works (default ON).

@@ -904,7 +904,7 @@ def get_section(section: str, user: User = Depends(require_role("admin"))):
     if section == "unifi":
         result["password_configured"] = bool(env.get("UNIFI_PASSWORD"))
         result["password"] = "••••••••" if result["password_configured"] else ""
-        result["autosync_enabled"] = _env_bool(env.get("UNIFI_AUTOSYNC_ENABLED", ""))
+        result["autosync_enabled"] = _env_bool(env.get("UNIFI_AUTOSYNC_ENABLED", "true"))
         result["autosync_interval"] = _env_int(env.get("UNIFI_AUTOSYNC_INTERVAL_MIN", "5"), 5)
         result["auto_adopt"] = _env_bool(env.get("UNIFI_AUTO_ADOPT", "true") or "true")
     if section == "identity":

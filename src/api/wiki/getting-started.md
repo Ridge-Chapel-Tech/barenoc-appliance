@@ -1,5 +1,24 @@
 # Getting Started
 
+## First-run setup wizard
+
+On a fresh install you land on the **express setup wizard** — four steps:
+
+1. **Admin account** — create the first admin.
+2. **Network** — UniFi controller credentials (with the auto-discover preview right
+   there).
+3. **Name & share** — site name, the chat URL + QR, and the **LLM choice**:
+   **Cloud (recommended — best answers)** vs **Local only (no data leaves your
+   network)** — the same egress toggle the [Compliance Controls](/wiki/compliance)
+   panel uses.
+4. **Done** — you land on the dashboard with the defaults already applied
+   (autonomous AI, UniFi auto-sync on, alerts off until you add a recipient).
+
+Everything you skip gets a **sane default** + a "change it in Settings" link.
+If you want the full nine-step flow (timezone, email, autonomy, backups,
+adoption, share), open the **"Advanced setup"** expander — it restores the
+complete path. Most people never need it.
+
 ## Identity & DNS (set at install)
 
 Passkey login needs a **real domain** — Chrome/Edge/Safari refuse passkeys on
@@ -107,7 +126,7 @@ ssh barenoc@<vm-100.x-ip>        # BareNOC VM
 | `/` → `/dashboard` | Portal home |
 | `/tickets` | Ticket queue |
 | `/devices` | Device inventory + onboarding |
-| `/settings` | Settings (UniFi, email, identity, users) |
+| `/settings` | Settings (General · Network · Devices · Tickets · Updates · Backups — everything else under **Advanced**) |
 | `/wiki` | This wiki |
 
 > **Tip:** if you ever see "Invalid or expired token", your session (60 min)

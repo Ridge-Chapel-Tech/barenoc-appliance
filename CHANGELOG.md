@@ -15,6 +15,31 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.25.c] — 2026-08-25
+
+### Added
+- **Express setup wizard (home track):** the first-run wizard now defaults to a
+  4-step express path (admin account → network/UniFi with an auto-discover
+  preview → name & share the chat → done) instead of the 9-step flow. Every
+  skipped step writes a correct home default at `/setup/complete` (cloud LLM
+  egress, autonomous + `PI_AGENT_ENABLED`, UniFi auto-sync/auto-adopt on,
+  backups on local, email off until a recipient is added, browser-detected
+  timezone). The "Advanced setup" expander restores the full 9-step path.
+- **Settings grouped for home:** Settings tabs are now a flat, small set
+  (General · Network · Devices · Tickets · Updates · Backups) with everything
+  else (LLM providers, Email, Identity, Restrictions, Security, Support, Users)
+  under an **Advanced** sub-tab — no functionality lost, all reachable in ≤2
+  clicks.
+- **Setup-complete reassurance card:** a one-time "Setup complete — your network
+  is being watched" card on first dashboard login after the wizard (links to
+  the getting-started guide).
+
+### Changed
+- **Home defaults sweep:** `LLM_POLICY_PROFILE=autonomous`,
+  `PI_AGENT_ENABLED=true` and `UNIFI_AUTOSYNC_ENABLED=true` now ship active in
+  `.env.example` (fresh installs start autonomous + auto-discovering); the
+  UniFi auto-sync default is on when unset across settings, sync, and scheduler.
+
 ## [2026.08.25.b] — 2026-08-25
 
 ### Added

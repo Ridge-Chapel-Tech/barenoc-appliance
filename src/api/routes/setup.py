@@ -1,9 +1,14 @@
 """First-run setup wizard — /api/v1/setup/status, /account, /complete.
 
-The wizard walks a fresh install through the minimal config (one sitting):
-admin account (set-your-own — first-run only), LLM key, timezone, site name +
-alert email, autonomy profile, backups, first device, and the shareable chat
-URL. Until SETUP_COMPLETE is set the wizard + account endpoint are PUBLIC
+The wizard walks a fresh install through setup in one sitting. Two
+presentations, one engine:
+  - EXPRESS (home default): 4 steps — admin account → network (UniFi) →
+    name & share the chat → done. Every skipped step writes a correct home
+    default at /setup/complete (cloud LLM, autonomous + pi flag, UniFi
+    auto-discover, backups on, email off, browser-detected TZ).
+  - ADVANCED (the "Advanced setup" expander): the full 9-step path.
+
+Until SETUP_COMPLETE is set the wizard + account endpoint are PUBLIC
 (no admin session exists yet); afterwards everything is admin-gated.
 """
 
@@ -16,7 +21,8 @@ import re
 from auth import require_role, create_access_token, hash_password
 from database import get_db
 from models import Device, User
-from routes.settings import _read_backup_conf, _read_env_file, _write_env_file
+from routes.settings import (
+    _read_backup_conf, _read_env_file, _write_backup_conf, _write_env_file)
 from typing import Optional
 
 router = APIRouter(prefix="/api/v1/setup", tags=["setup"])
@@ -33,6 +39,16 @@ class SetupAccountRequest(BaseModel):
 class SetupOsPasswordRequest(BaseModel):
     """Rotate the appliance OS login (barenoc) without touching the app admin."""
     password: str = Field(..., min_length=8, max_length=128)
+
+
+class SetupCompleteRequest(BaseModel):
+    """Optional payload for /setup/complete (the express wizard sends the
+    browser-detected timezone + site name + LLM egress choice; the advanced
+    9-step path sends nothing and still receives the home defaults for any
+    step it skipped)."""
+    timezone: Optional[str] = None
+    site_name: Optional[str] = None
+    llm_egress: Optional[str] = None  # "cloud" | "local"
 
 
 def _rotate_os_password(password: str) -> None:
@@ -103,6 +119,12 @@ def _llm_configured(env: dict) -> bool:
     return False
 
 
+def _unifi_configured(env: dict) -> bool:
+    """UniFi creds present (URL + password or API key)."""
+    return bool((env.get("UNIFI_PASSWORD") or "").strip()
+                or (env.get("UNIFI_API_KEY") or "").strip())
+
+
 def _status_dict(env: dict, request: Request, db: Session) -> dict:
     llm_configured = _llm_configured(env)
     base = str(request.base_url).rstrip("/")
@@ -118,6 +140,8 @@ def _status_dict(env: dict, request: Request, db: Session) -> dict:
             "site_name": bool((env.get("CUSTOMER_NAME") or "").strip()),
             "email": bool((env.get("ALERT_EMAIL") or "").strip()),
             "autonomy": bool((env.get("LLM_POLICY_PROFILE") or "").strip()),
+            # express-wizard network step: UniFi creds present
+            "network": _unifi_configured(env),
             # appliance data is auto-backed-up every 6h (provision/deploy cron)
             # — informational, not a user toggle; USB/snapshot layers are
             # Settings → Backups (needs the guide's host-side setup).
@@ -126,6 +150,56 @@ def _status_dict(env: dict, request: Request, db: Session) -> dict:
         "chat_url": f"{base}/chat",
         "devices_count": 0,
     }
+
+
+def apply_home_defaults(env: dict, timezone: Optional[str] = None,
+                        site_name: Optional[str] = None,
+                        llm_egress: Optional[str] = None) -> dict:
+    """Write the best-for-home defaults for every technical choice the
+    express wizard does not collect. Mutates + returns env.
+
+    Home defaults (locked v2, 08-25):
+      - autonomy  = autonomous (full power) + the pi flag ON
+      - UniFi     = auto-discover on + auto-adopt on (adoption happens
+                    silently once creds exist)
+      - TZ        = browser auto-detect (passed from the wizard)
+      - site name = the wizard's "name your network" value
+      - LLM egress = cloud (default) — the two-choice card maps to the SAME
+                    compliance control the Security panel toggles
+      - email     = OFF until a recipient is added (ALERT_EMAIL untouched)
+      - backups   = on, local defaults (USB schedule written separately)
+    Values already present (e.g. an advanced-path choice) are never overwritten.
+    """
+    if not (env.get("LLM_POLICY_PROFILE") or "").strip():
+        env["LLM_POLICY_PROFILE"] = "autonomous"
+        env["PI_AGENT_ENABLED"] = "true"  # bare value — the 08-17 pi-flag fix
+
+    # UniFi auto-discover/auto-adopt are home defaults; explicit false wins.
+    env.setdefault("UNIFI_AUTOSYNC_ENABLED", "true")
+    env.setdefault("UNIFI_AUTO_ADOPT", "true")
+
+    if timezone:
+        tz = str(timezone).strip()
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(tz)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown timezone '{tz}' — use an IANA name like America/New_York")
+        env["TZ"] = tz
+
+    if site_name and str(site_name).strip():
+        env["CUSTOMER_NAME"] = str(site_name).strip()
+
+    # The express LLM card drives the SAME compliance control the Security
+    # panel uses (COMPLIANCE_LLM_EGRESS + the effective LLM_EGRESS mirror).
+    if llm_egress in ("cloud", "local"):
+        import compliance
+        compliance.set_control("llm_egress", llm_egress, env=env, persist=False)
+
+    env["SETUP_COMPLETE"] = "true"
+    return env
 
 
 def _admin_gate_or_first_run(request: Request, db: Session = Depends(get_db)):
@@ -223,12 +297,35 @@ def setup_ospassword(data: SetupOsPasswordRequest, request: Request, response: R
 
 
 @router.post("/complete")
-def setup_complete(request: Request, db: Session = Depends(get_db),
+def setup_complete(data: Optional[SetupCompleteRequest] = None,
+                   db: Session = Depends(get_db),
                    user: User = Depends(_admin_gate_or_first_run)):
+    """Finish setup: stamp SETUP_COMPLETE + write the home defaults for every
+    skipped step (timezone from the wizard's browser, site name, LLM egress,
+    autonomous + pi flag, UniFi auto-discover, backups-on-local).
+
+    The express wizard sends {timezone, site_name, llm_egress}; the advanced
+    9-step path sends nothing and still receives the defaults for anything it
+    left unset (already-set values are never overwritten)."""
     if not (_admin_user(db) and not _admin_user(db).must_change_password):
         raise HTTPException(status_code=400,
                             detail="Set the admin account first (Setup → Admin account)")
+    data = data or SetupCompleteRequest()
     env = _read_env_file()
-    env["SETUP_COMPLETE"] = "true"
+    apply_home_defaults(
+        env,
+        timezone=data.timezone,
+        site_name=data.site_name,
+        llm_egress=data.llm_egress,
+    )
     _write_env_file(env)
+    # Backups: on, local defaults (Wednesday 02:00) — the host poller reads
+    # this conf; a BYO Docker host simply ignores it (no appliance host).
+    _write_backup_conf({
+        "USB_BACKUP_ENABLED": "true",
+        "USB_BACKUP_DAY": "3",
+        "USB_BACKUP_HOUR": "2",
+        "RUN_USB_BACKUP_NOW": "false",
+        "BACKUP_TARGET_DIR": _read_backup_conf().get("BACKUP_TARGET_DIR", ""),
+    })
     return {"status": "ok", "complete": True}

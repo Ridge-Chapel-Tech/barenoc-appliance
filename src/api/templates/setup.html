@@ -13,12 +13,15 @@
 <body class="bg-gray-50 min-h-screen">
 <div class="max-w-2xl mx-auto px-4 py-6">
 
-  <div class="flex items-center gap-3 mb-3">
-    <div class="w-10 h-10 rounded-xl bg-barenoc-700 text-white flex items-center justify-center font-bold">B</div>
-    <div>
-      <div class="text-lg font-bold leading-tight">Welcome to BareNOC</div>
-      <div class="text-xs text-gray-500">A few quick steps and your network can answer for itself.</div>
+  <div class="flex items-center justify-between gap-3 mb-3">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-barenoc-700 text-white flex items-center justify-center font-bold">B</div>
+      <div>
+        <div class="text-lg font-bold leading-tight">Welcome to BareNOC</div>
+        <div class="text-xs text-gray-500">A few quick steps and your network can answer for itself.</div>
+      </div>
     </div>
+    <button onclick="toggleAdvanced()" id="adv-toggle" class="shrink-0 text-xs text-gray-400 underline hover:text-gray-600">Advanced setup</button>
   </div>
 
   <!-- step dots + counter -->
@@ -84,9 +87,19 @@ async function api(path, opts) {
 
 const TZ_OPTIONS = ['UTC','America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu','Europe/London','Europe/Berlin','Australia/Sydney','Asia/Tokyo'];
 
+// ── Two presentations, one engine ──────────────────────────────────────────
+// EXPRESS (default) = 4 steps; every skipped step writes a correct default at
+// finish + a "Configure" link into Settings. ADVANCED = the full 9-step path.
 // required = must be done to move forward (Next stays disabled until saved);
-// llm + devices are optional — "Skip for now" advances without marking done.
-const STEPS = [
+// optional steps advance via "Skip for now" without marking done.
+const EXPRESS_STEPS = [
+  { key: 'account', title: 'Your admin account', sub: 'Set your username + password — the first login on this appliance.', icon: '👤', required: true },
+  { key: 'network', title: 'Your network (UniFi)', sub: 'BareNOC discovers your gear from your router — add its credentials or skip.', icon: '📡', required: false },
+  { key: 'share',   title: 'Name it & share the chat', sub: 'Site name, the AI technician, and the chat link for the family.', icon: '💬', required: false },
+  { key: 'done',    title: 'You\'re ready', sub: 'Review the defaults and start watching your network.', icon: '🎉', required: false },
+];
+
+const ADVANCED_STEPS = [
   { key: 'account',   title: 'Your admin account', sub: 'Set your username + password — the first login on this appliance.', icon: '👤', required: true },
   { key: 'llm',       title: 'AI technician (LLM)', sub: 'The brain that answers tickets. Add a provider API key, or skip and add one later in Settings → API Keys.', icon: '🧠', required: false },
   { key: 'timezone',  title: 'Timezone', sub: 'Used for reports, alerts and “what time is it”.', icon: '🕐', required: true },
@@ -97,6 +110,41 @@ const STEPS = [
   { key: 'devices',   title: 'Adopt your first device', sub: 'Add a laptop/NAS/switch so BareNOC can act on it.', icon: '🖥️', required: false },
   { key: 'share',     title: 'Share the chat link', sub: 'Point family & tenants at the chat URL.', icon: '🔗', required: false },
 ];
+
+let ADVANCED = false; // the "Advanced setup" expander restores the full path
+let detectedTZ = '';
+try { detectedTZ = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+let expressSite = '';   // site name collected on the express share step
+let aiChoice = 'cloud'; // the express LLM two-choice card (== compliance llm_egress)
+let uniFiDefaultUrl = '';
+
+function steps() { return ADVANCED ? ADVANCED_STEPS : EXPRESS_STEPS; }
+function isSkippable(s) {
+  if (!ADVANCED) return s.key === 'network' || s.key === 'share';
+  return s.key === 'llm' || s.key === 'devices';
+}
+function stepDone(s) {
+  if (!ADVANCED && s.key === 'share') return STATUS.steps.site_name === true;
+  if (!ADVANCED && s.key === 'done') return false;
+  return STATUS.steps[s.key] === true;
+}
+function expressFirstUndone() {
+  if (STATUS.steps.account !== true) return 0;
+  if (STATUS.steps.network !== true) return 1;
+  if (STATUS.steps.site_name !== true) return 2;
+  return 3;
+}
+function validTz(tz) {
+  if (!tz) return false;
+  return tz === 'UTC' || /^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+)+$/.test(tz);
+}
+function toggleAdvanced() {
+  ADVANCED = !ADVANCED;
+  cur = 0;
+  const t = document.getElementById('adv-toggle');
+  if (t) t.textContent = ADVANCED ? 'Simple setup' : 'Advanced setup';
+  loadStatus();
+}
 
 async function loadStatus() {
   try { STATUS = await api('/api/v1/setup/status'); }
@@ -109,14 +157,16 @@ async function loadStatus() {
     return;
   }
   // land on the first step that still needs doing
-  const firstUndone = STEPS.findIndex(s => STATUS.steps[s.key] !== true);
+  const firstUndone = ADVANCED
+    ? ADVANCED_STEPS.findIndex(s => STATUS.steps[s.key] !== true)
+    : expressFirstUndone();
   cur = firstUndone === -1 ? 0 : firstUndone;
   render();
 }
 
 function render() {
-  const s = STEPS[cur];
-  const done = STATUS.steps[s.key] === true;
+  const s = steps()[cur];
+  const done = stepDone(s);
   // banner: the wizard needs a session (account step mints one; a /login
   // sign-in works too) — offer a one-tap link when it's missing/expired
   if (noSession && s.key !== 'account') {
@@ -125,12 +175,12 @@ function render() {
     return;
   }
   // progress dots: current = wide blue, done = green, todo = gray (done dots are clickable)
-  $('dots').innerHTML = STEPS.map((st, i) => {
-    const d = STATUS.steps[st.key] === true;
+  $('dots').innerHTML = steps().map((st, i) => {
+    const d = stepDone(st);
     return '<button onclick="jumpTo(' + i + ')" title="' + esc(st.title) + '" class="h-2 rounded-full transition-all ' +
       (i === cur ? 'w-6 bg-barenoc-600' : d ? 'w-2 bg-green-500' : 'w-2 bg-gray-300') + '"></button>';
   }).join('');
-  $('progress').textContent = 'Step ' + (cur + 1) + ' of ' + STEPS.length + ' — ' + s.title + (done ? ' ✓' : '');
+  $('progress').textContent = 'Step ' + (cur + 1) + ' of ' + steps().length + ' — ' + s.title + (done ? ' ✓' : '');
   // step card
   $('step').innerHTML = '<div class="flex items-start gap-3">'
     + '<div class="text-3xl">' + s.icon + '</div>'
@@ -140,15 +190,17 @@ function render() {
     + '<div id="step-body" class="mt-4">' + editorFor(s) + '</div>'
     + '</div></div>';
   if (s.key === 'backups') loadBackupsStep();
+  if (!ADVANCED && s.key === 'network') loadNetworkDefaults();
+  if (!ADVANCED && s.key === 'share') aiEgressMode();
   // navigation
   const nextDisabled = s.required && !done;
   $('nav').innerHTML = (cur > 0
       ? '<button onclick="backStep()" class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">← Back</button>'
       : '<span></span>')
     + '<div class="flex items-center gap-3">'
-    + ((s.key === 'llm' || s.key === 'devices') && !done
+    + (isSkippable(s) && !done
         ? '<button onclick="skipStep()" class="text-xs text-gray-500 underline">Skip for now</button>' : '')
-    + (cur < STEPS.length - 1
+    + (cur < steps().length - 1
         ? '<button onclick="nextStep()" ' + (nextDisabled ? 'disabled' : '') + ' class="rounded-lg px-4 py-2 text-sm font-semibold text-white ' + (nextDisabled ? 'bg-gray-300 cursor-not-allowed' : 'bg-barenoc-600 hover:bg-barenoc-700') + '">Next →</button>'
         : '<button onclick="finishSetup()" class="rounded-xl bg-green-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-green-700">✓ Finish setup</button>')
     + '</div>';
@@ -157,6 +209,7 @@ function render() {
 // ----- editors (always visible for the current step) -----
 
 function editorFor(s) {
+  if (!ADVANCED) return expressEditorFor(s);
   if (s.key === 'account') {
     if (STATUS.steps.account === true)
       return '<p class="text-sm text-gray-600">Admin account is set. Change your password any time in Settings → Users.</p>';
@@ -171,6 +224,104 @@ function editorFor(s) {
   if (s.key === 'devices') return devicesEditor();
   if (s.key === 'share') return shareEditor();
   return '';
+}
+
+// ----- express editors (4-step home path) -----
+
+function expressEditorFor(s) {
+  if (s.key === 'account') {
+    if (STATUS.steps.account === true)
+      return '<p class="text-sm text-gray-600">Admin account is set ✓. Change your password any time in Settings → Advanced → Users.</p>';
+    return accountForm();
+  }
+  if (s.key === 'network') return networkForm();
+  if (s.key === 'share') return shareForm();
+  if (s.key === 'done') return doneForm();
+  return '';
+}
+
+function networkForm() {
+  return '<div class="space-y-2 text-sm">'
+    + '<p class="text-xs text-gray-400">BareNOC auto-discovers your network gear from your UniFi controller (usually your router). Add its credentials now — or skip: discovery works as soon as they\'re saved in Settings → Network.</p>'
+    + '<label class="block text-xs font-medium text-gray-600">Controller URL</label>'
+    + '<input id="f-net-url" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="https://<gateway>:443" value="' + esc(uniFiDefaultUrl) + '">'
+    + '<label class="block text-xs font-medium text-gray-600">Username</label>'
+    + '<input id="f-net-user" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="admin" value="admin">'
+    + '<label class="block text-xs font-medium text-gray-600">Password or API key</label>'
+    + '<input id="f-net-pass" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="controller local password or API key" autocomplete="off">'
+    + '<div class="flex items-center gap-3">'
+    + '<button onclick="saveNetwork()" class="mt-3 rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save &amp; discover</button>'
+    + '<span id="net-preview" class="mt-3 text-xs"></span>'
+    + '</div>'
+    + '<div id="net-devices" class="text-xs text-gray-500 mt-2"></div>'
+    + '<p class="text-xs text-gray-400 mt-2">Configure more (auto-adopt, sync interval, multiple sites) in Settings → Network.</p>'
+    + '</div>';
+}
+
+function shareForm() {
+  const siteVal = expressSite || (STATUS.site_name !== 'BareNOC' ? STATUS.site_name : '');
+  return '<div class="space-y-3 text-sm">'
+    + '<label class="block text-xs font-medium text-gray-600">Site name</label>'
+    + '<input id="f-share-site" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="e.g. The Smith House" value="' + esc(siteVal) + '">'
+    + '<div class="rounded-lg border border-gray-200 p-3">'
+    + '<p class="text-xs font-semibold">AI technician</p>'
+    + '<label class="flex items-start gap-2 text-xs mt-1"><input type="radio" name="f-ai-egress" value="cloud"' + (aiChoice === 'cloud' ? ' checked' : '') + ' onchange="aiEgressMode()"> Cloud (recommended — best answers)</label>'
+    + '<label class="flex items-start gap-2 text-xs mt-1"><input type="radio" name="f-ai-egress" value="local"' + (aiChoice === 'local' ? ' checked' : '') + ' onchange="aiEgressMode()"> Local only — no data leaves your network (Ollama/LM Studio)</label>'
+    + '<p id="f-ai-note" class="text-[11px] text-gray-400 mt-1"></p>'
+    + '<div id="f-ai-cloud" class="' + (aiChoice === 'local' ? 'hidden' : '') + ' mt-2">'
+    + '<label class="block text-xs font-medium text-gray-600">API key <span class="font-normal text-gray-400">(optional now — add it later in Settings → Advanced → LLM Providers)</span></label>'
+    + '<input id="f-ai-key" type="password" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="sk-…" autocomplete="off">'
+    + '</div>'
+    + '<div id="f-ai-local" class="' + (aiChoice === 'local' ? '' : 'hidden') + ' mt-2 space-y-2">'
+    + '<input id="f-ai-url" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="http://192.168.x.x:11434">'
+    + '<input id="f-ai-model" class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder="qwen2.5:7b-instruct">'
+    + '</div>'
+    + '</div>'
+    + '<div class="text-xs text-gray-500 break-all">Chat URL: <a class="text-barenoc-600 underline" href="' + esc(STATUS.chat_url) + '">' + esc(STATUS.chat_url) + '</a></div>'
+    + '<img class="w-28 h-28 rounded-lg border border-gray-200" src="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=' + encodeURIComponent(STATUS.chat_url) + '" alt="QR">'
+    + '<button onclick="saveShare()" class="rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save &amp; continue →</button>'
+    + '</div>';
+}
+
+function doneForm() {
+  const tz = detectedTZ || '(auto-detected)';
+  const llm = aiChoice === 'local' ? 'Local only — no data leaves your network' : 'Cloud (recommended — best answers)';
+  return '<div class="space-y-2 text-sm">'
+    + '<p class="text-gray-600">Here\'s what BareNOC turns on for you — change any of it later in Settings.</p>'
+    + '<ul class="text-xs text-gray-600 space-y-1 mt-2">'
+    + '<li>🧠 AI technician: <b>' + esc(llm) + '</b></li>'
+    + '<li>🕐 Timezone: <b>' + esc(tz) + '</b> (from your browser)</li>'
+    + '<li>🤖 Autonomy: <b>autonomous</b> — the AI acts on its own</li>'
+    + '<li>💾 Backups: <b>on</b> (local, automatic)</li>'
+    + '<li>📡 Auto-discovery: <b>on</b> — new devices appear automatically</li>'
+    + '<li>🔒 Remote support: <b>off</b></li>'
+    + '</ul>'
+    + '<p class="text-xs text-gray-400 mt-2">Click <b>Finish setup</b> below to start watching your network.</p>'
+    + '</div>';
+}
+
+function aiEgressMode() {
+  const mode = (document.querySelector("input[name='f-ai-egress']:checked") || {}).value || 'cloud';
+  aiChoice = mode;
+  const note = document.getElementById('f-ai-note');
+  if (note) note.textContent = mode === 'local'
+    ? 'Local-only: tickets/chat stay on your LAN. Use an Ollama/LM Studio endpoint (≥7B Q4 recommended; 3B = degraded chat only).'
+    : 'Cloud routes tickets/chat to a hosted provider for the best answers. No key yet = add it later in Settings.';
+  const cloud = document.getElementById('f-ai-cloud');
+  const local = document.getElementById('f-ai-local');
+  if (cloud) cloud.classList.toggle('hidden', mode === 'local');
+  if (local) local.classList.toggle('hidden', mode !== 'local');
+}
+
+async function loadNetworkDefaults() {
+  try {
+    const c = await api('/api/v1/unifi/config');
+    uniFiDefaultUrl = c.default_url || c.url || uniFiDefaultUrl;
+    const u = $('f-net-url');
+    if (u && uniFiDefaultUrl && !u.value) u.value = uniFiDefaultUrl;
+    const user = $('f-net-user');
+    if (user && c.username && c.username !== 'admin' && user.value === 'admin') user.value = c.username;
+  } catch (e) { /* first-run / no session: keep the placeholder */ }
 }
 
 function accountForm() {
@@ -377,6 +528,75 @@ async function saveProfile() {
     await api('/api/v1/settings/policy', { method: 'PUT', body: JSON.stringify({ profile: $('f-prof').value }) });
     STATUS.steps.autonomy = true; advance();
   } catch (e) { alert(e.message); }
+}
+
+// ----- express save handlers (network + share) -----
+
+async function saveNetwork() {
+  const url = $('f-net-url').value.trim();
+  const user = $('f-net-user').value.trim();
+  const pass = $('f-net-pass').value;
+  if (!url || !pass) { alert('Controller URL + a password/API key are needed — or skip for now.'); return; }
+  const payload = { url: url, username: user || 'admin', autosync_enabled: true, autosync_interval: 5, auto_adopt: true };
+  // UniFi local API keys look like a long opaque token; a password is the
+  // controller's local admin password. Long no-space value → API key.
+  if (/^[A-Za-z0-9_\-]{20,}$/.test(pass)) payload.api_key = pass; else payload.password = pass;
+  try {
+    await api('/api/v1/unifi/config', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) { alert('Network: ' + e.message); return; }
+  STATUS.steps.network = true;
+  const prev = $('net-preview');
+  let connected = false;
+  try {
+    const t = await api('/api/v1/unifi/test', { method: 'POST' });
+    if (t.connected) {
+      connected = true;
+      const d = await api('/api/v1/unifi/devices');
+      const el = $('net-devices');
+      if (el) el.textContent = (d.devices || []).slice(0, 6).map(x => x.name || x.model || x.mac).join(' · ');
+    }
+  } catch (e) { /* unreachable controller — autosync retries on schedule */ }
+  // Show the auto-discover preview RIGHT HERE (don't auto-advance past it).
+  if (prev) {
+    prev.innerHTML = connected
+      ? '<span class="text-green-600">✓ connected — auto-discovery is on</span>'
+      : '<span class="text-amber-600">saved — discovery will run automatically once the controller is reachable</span>';
+    prev.innerHTML += ' <button onclick="advance()" class="ml-2 rounded-lg bg-barenoc-600 px-3 py-1 text-xs font-semibold text-white">Continue →</button>';
+  }
+}
+
+async function saveShare() {
+  expressSite = ($('f-share-site') ? $('f-share-site').value.trim() : expressSite);
+  aiChoice = (document.querySelector("input[name='f-ai-egress']:checked") || {}).value || 'cloud';
+  const aiKey = ($('f-ai-key') ? $('f-ai-key').value.trim() : '');
+  const aiUrl = ($('f-ai-url') ? $('f-ai-url').value.trim() : '');
+  const aiModel = ($('f-ai-model') ? $('f-ai-model').value.trim() : '');
+  if (expressSite) {
+    try {
+      await api('/api/v1/settings/general', { method: 'PUT', body: JSON.stringify({ customer_name: expressSite }) });
+    } catch (e) { alert('Site name: ' + e.message); return; }
+  }
+  // Save a usable provider NOW when one was typed; the egress toggle itself is
+  // applied at /complete via the same compliance control the Security panel uses.
+  if (aiChoice === 'cloud' && aiKey) {
+    try {
+      await api('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify({
+        active_provider: 'deepseekv4', provider_order: ['deepseekv4'],
+        providers: [{ name: 'deepseekv4', type: 'openai', base_url: 'https://api.deepseek.com',
+                      deployment: 'hosted', chat_model: 'deepseek-v4-flash',
+                      reasoner_model: 'deepseek-v4-flash', thinking: 'disabled',
+                      api_key: aiKey, price_mode: 'static' }] }) });
+    } catch (e) { alert('LLM key: ' + e.message); return; }
+  } else if (aiChoice === 'local' && aiUrl && aiModel) {
+    try {
+      await api('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify({
+        active_provider: 'ollama', provider_order: ['ollama'],
+        providers: [{ name: 'ollama', type: 'openai', base_url: aiUrl,
+                      deployment: 'on_prem', chat_model: aiModel, reasoner_model: aiModel }] }) });
+    } catch (e) { alert('Local LLM: ' + e.message); return; }
+  }
+  STATUS.steps.site_name = true;
+  advance();
 }
 
 // ----- Backups step (local status + USB schedule/run + network copy) -----
@@ -634,8 +854,8 @@ async function wizUsbSetupRun() {
 // ----- navigation -----
 
 function nextStep() {
-  const s = STEPS[cur];
-  if (s.required && STATUS.steps[s.key] !== true) {
+  const s = steps()[cur];
+  if (s.required && stepDone(s) !== true) {
     alert('Complete this step first — it\'s needed for the appliance to work. (' + s.title + ')');
     return;
   }
@@ -643,7 +863,7 @@ function nextStep() {
 }
 
 function advance() {
-  if (cur < STEPS.length - 1) { cur++; render(); }
+  if (cur < steps().length - 1) { cur++; render(); }
   else { finishSetup(); }
 }
 
@@ -653,20 +873,27 @@ function skipStep() { advance(); }
 // done dots are clickable (backward + between done steps); the current dot
 // always is; anything ahead that isn't done stays locked (enforced order).
 function jumpTo(i) {
-  const target = STEPS[i];
+  const target = steps()[i];
   if (!target) return;
-  if (i === cur || STATUS.steps[target.key] === true) { cur = i; render(); }
+  if (i === cur || stepDone(target) === true) { cur = i; render(); }
 }
 
 async function finishSetup() {
   // required steps block the finish; llm/devices/share/backups never do
-  const undone = STEPS.filter(s => s.required && STATUS.steps[s.key] !== true);
+  const undone = steps().filter(s => s.required && stepDone(s) !== true);
   if (undone.length) {
     const names = undone.map(s => s.title).join(', ');
-    if (!confirm('You haven\'t set up: ' + names + '.\n\nYou can finish anyway and configure these later in Settings → General/API Keys. Finish setup now?')) return;
+    if (!confirm('You haven\'t set up: ' + names + '.\n\nYou can finish anyway and configure these later in Settings. Finish setup now?')) return;
   }
-  try { await api('/api/v1/setup/complete', { method: 'POST' }); await loadStatus(); }
-  catch (e) { alert(e.message); }
+  const body = ADVANCED ? undefined : {
+    timezone: validTz(detectedTZ) ? detectedTZ : undefined,
+    site_name: expressSite || undefined,
+    llm_egress: aiChoice || 'cloud',
+  };
+  try {
+    await api('/api/v1/setup/complete', { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+    await loadStatus();
+  } catch (e) { alert(e.message); }
 }
 
 loadStatus();

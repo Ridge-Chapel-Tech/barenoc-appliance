@@ -138,6 +138,37 @@ intentionally risky. The mitigations that remain:
 Only enable this on networks you fully control — see the
 [Autonomy Policy](/wiki/autonomy).
 
+## Compliance controls (Security panel)
+
+Settings → **Security** ships a toggleable compliance/governance panel — the
+artifact a regulated workspace shows an auditor. It covers **MFA
+enforcement**, **LLM egress** (cloud vs local-only), telemetry, remote-support
+consent, retention, the audit log, session policy, and data deletion, plus a
+one-click **Compliance baseline** preset and an **attestation snapshot**
+export. See [Compliance Controls](/wiki/compliance).
+
+### MFA enforcement
+
+When **MFA enforcement** is on, a password-only admin/operator login returns
+**401** with an MFA prompt — a second factor (passkey or TOTP) is required.
+Passkey (Pocket ID) sign-in is already strong auth and is unaffected; TOTP is
+the fallback, enrolled in Settings → Security → MFA (authenticator app,
+verification required before it activates).
+
+### Session policy & lockout
+
+- **Idle timeout** (strict): the refresh session dies after 30 idle minutes;
+  the access token lives out its own ≤60-minute window.
+- **Login lockout** (strict): 5 failed password attempts → account locked for
+  15 minutes (HTTP 423). The lockout is checked **before** password
+  verification (no timing oracle).
+
+### Audit viewer
+
+Sidebar → **Audit Log** lists every event, exports JSON, and **verifies the
+hash chain** (each row recomputed against its recorded predecessor). The
+`Audit log` toggle gates recording.
+
 ## Passkeys (Pocket ID)
 
 With Pocket ID enabled, the login page offers **Sign in with passkey**:

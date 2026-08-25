@@ -30,6 +30,12 @@ ENV_FILE = "/opt/barenoc/.env"
 PRICE_CACHE_FILE = "/opt/barenoc/volumes/db/llm_prices_cache.json"
 PRICE_CACHE_TTL = int(os.getenv("LLM_PRICE_CACHE_TTL_H", "24")) * 3600
 
+# Home default: cloud LLM (best quality). The express wizard's "Cloud
+# (recommended)" card selects the first HOSTED provider in the chain; a fresh
+# install ships DeepSeek as that provider (see .env.example). "Local only"
+# maps to the SAME LLM_EGRESS control the compliance panel toggles.
+HOME_CLOUD_PROVIDER = "deepseekv4"
+
 # Maintained static price table (USD per 1M tokens) — updated on releases.
 # Used for providers without a public pricing API (DeepSeek, Anthropic, Gemini, ...).
 DEFAULT_PRICE_TABLE = {
@@ -127,6 +133,19 @@ def egress_mode(env: Optional[dict] = None) -> str:
     env = env if env is not None else read_env_file()
     v = _get(env, "LLM_EGRESS", "cloud").strip().lower()
     return "local" if v in ("local", "local-only", "on_prem") else "cloud"
+
+
+def home_cloud_provider(env: Optional[dict] = None) -> str:
+    """The express wizard's cloud default: the first HOSTED provider in the
+    failover chain (deepseekv4 on a fresh install). Never returns an on-prem
+    endpoint — 'Local only' is the compliance LLM_EGRESS path, not this."""
+    env = env if env is not None else read_env_file()
+    providers = load_providers(env)
+    for name in provider_order(env):
+        p = providers.get(name)
+        if p and (p.get("deployment") or "hosted") != "on_prem":
+            return name
+    return HOME_CLOUD_PROVIDER
 
 
 def _egress_allowed(provider: dict, mode: str) -> bool:

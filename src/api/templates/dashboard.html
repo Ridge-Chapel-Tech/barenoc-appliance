@@ -36,6 +36,17 @@
         <a href="/system#updates" class="ml-2 font-semibold text-barenoc-700 underline">Update →</a>
     </div>
 
+    <!-- One-time "setup complete" reassurance (first login after the express wizard) -->
+    <div id="setup-complete-card" class="mt-4 hidden bg-green-50 border border-green-200 rounded-lg p-4 text-sm">
+        <div class="flex items-start justify-between gap-3">
+            <div>
+                <div class="font-semibold text-green-800">✓ Setup complete — your network is being watched.</div>
+                <p class="text-green-700 mt-1">BareNOC is now monitoring devices, tickets and updates. <a href="/wiki/getting-started" class="font-semibold underline">What happens next →</a></p>
+            </div>
+            <button onclick="dismissSetupComplete()" class="text-green-600 hover:text-green-800 font-semibold leading-none" aria-label="Dismiss">✕</button>
+        </div>
+    </div>
+
     <!-- Stat Cards -->
     <div id="stat-cards" class="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"></div>
 
@@ -129,8 +140,20 @@
     <div id="loading-dashboard" class="mt-8 text-center text-gray-500">Loading dashboard...</div>
 </div>
 
+<script>window.SETUP_COMPLETE = {{ 'true' if setup_complete else 'false' }};</script>
 <script>
 const TOKEN = () => localStorage.getItem('access_token');
+
+// ── One-time "setup complete" card (first login after the wizard) ──
+function maybeShowSetupComplete() {
+  if (window.SETUP_COMPLETE === true && localStorage.getItem('barenoc_setup_complete_seen') !== '1') {
+    document.getElementById('setup-complete-card').classList.remove('hidden');
+  }
+}
+function dismissSetupComplete() {
+  localStorage.setItem('barenoc_setup_complete_seen', '1');
+  document.getElementById('setup-complete-card').classList.add('hidden');
+}
 
 // ── Dashboard tabs (Overview / Network Optimization) ──
 function showDashTab(tab) {
@@ -284,7 +307,7 @@ async function loadDashboard() {
     document.getElementById('loading-dashboard').style.display = 'none';
 }
 
-document.addEventListener('DOMContentLoaded', function () { loadDashboard(); loadReleaseBanner(); initNetoptTab(); });
+document.addEventListener('DOMContentLoaded', function () { loadDashboard(); loadReleaseBanner(); initNetoptTab(); maybeShowSetupComplete(); });
 
 // ── Performance & Reporting ──
 let _charts = [];

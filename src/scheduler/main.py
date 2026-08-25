@@ -317,7 +317,7 @@ def _sync_unifi(token: str):
 def _unifi_autosync_config() -> tuple:
     """Read auto-sync settings from .env. Returns (enabled: bool, interval_minutes: int)."""
     env = _read_env()
-    enabled = str(env.get("UNIFI_AUTOSYNC_ENABLED", "")).strip().lower() in ("1", "true", "yes", "on")
+    enabled = str(env.get("UNIFI_AUTOSYNC_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
     try:
         interval = int(env.get("UNIFI_AUTOSYNC_INTERVAL_MIN", "5") or 5)
     except ValueError:

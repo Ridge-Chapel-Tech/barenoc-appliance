@@ -66,6 +66,7 @@ A portable, self-contained Network Operations Center that runs on a single Ubunt
 | [`security/guardrails.md`](./security/guardrails.md) | Anti-abuse guardrails — prompt injection, job validation, action allowlist |
 | [`security/access_control.md`](./security/access_control.md) | Authentication, authorization, role model, out-of-band access |
 | [`security/audit_logging.md`](./security/audit_logging.md) | Hash-chained audit trail, log retention, incident response |
+| [`security/release-signing.md`](./security/release-signing.md) | Detached-GPG release signing — verify-before-apply, key management |
 
 ### Customer-Facing
 
@@ -73,6 +74,7 @@ A portable, self-contained Network Operations Center that runs on a single Ubunt
 |----------|-------------|
 | [`customer/quick_start_card.md`](./customer/quick_start_card.md) | One-page quick start shipped with the appliance |
 | [`customer/admin_guide.md`](./customer/admin_guide.md) | Web UI guide, ticket management, report access |
+| [`customer/compliance_controls.md`](./customer/compliance_controls.md) | Toggleable governance panel, Compliance baseline, attestation export — operator/auditor guide (v2026.08.25.b+) |
 | [`customer/passkey_enrollment.md`](./customer/passkey_enrollment.md) | Pocket ID passkey enrollment for end users |
 
 ### Runbook (Internal)

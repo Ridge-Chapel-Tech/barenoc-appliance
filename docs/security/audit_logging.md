@@ -216,3 +216,27 @@ WHERE timestamp >= datetime('now', '-7 days')
 GROUP BY actor
 ORDER BY actions DESC;
 ```
+
+---
+
+## Audit Viewer, Export & Chain-Verify (v2026.08.25.b+)
+
+The appliance ships a **user-facing audit viewer** (sidebar → **Audit Log**):
+
+- **View** — every event with actor, action, target, and timestamp, newest
+  first; per-ticket and per-actor filters.
+- **Export** — JSON download of the log (`/api/v1/audit-log/export`) for
+  offline review / auditor handoff.
+- **Chain-verify** — recomputes each row's hash against its recorded
+  predecessor and reports `{ok, count, broken_at, …}`; a tampered row shows
+  up as a broken link at the exact point of modification.
+
+### Compliance toggle
+
+The `Audit log` control (Settings → Security) gates recording: when off,
+`log_event` is a no-op and nothing is written (the viewer shows empty). Keep
+it **on** for regulated workspaces. The toggle is part of the **Compliance
+baseline** preset (audit = on) and is included in the **attestation snapshot**
+export (state + enabled-since + settings hash).
+
+See also: [Compliance Controls — Operator & Auditor Guide](../customer/compliance_controls.md)
