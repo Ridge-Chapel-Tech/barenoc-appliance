@@ -159,8 +159,14 @@ class BareNOCClient:
         return self._get("/api/v1/chat/conversations")
 
     def chat_messages(self, with_username: str) -> dict:
-        """Full thread with another user (marks incoming as read)."""
+        """Full thread with another user (read-only)."""
         return self._get("/api/v1/chat/messages", {"with_username": with_username})
+
+    def chat_mark_read(self, with_username: str) -> dict:
+        """Mark a thread from another user as read (POST — read-state is a
+        write, so it's no longer a side effect of fetching messages)."""
+        return self._request("POST", "/api/v1/chat/messages/read",
+                             {"with_username": with_username})
 
     def chat_send(self, to_username: str, body: str) -> dict:
         return self._request("POST", "/api/v1/chat/messages",

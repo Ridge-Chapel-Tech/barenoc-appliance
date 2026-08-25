@@ -315,7 +315,7 @@
    "tasks": [
     {
      "id": "NA-1",
-     "name": "VLANs + SSIDs (Management 8, Kids 9, RCTF 10, Guest 11)",
+     "name": "VLANs + SSIDs (Management 8, IoT 9, Video 10, Guest 11)",
      "status": "done",
      "notes": "2026-08-01/02 \u2014 all provisioned, SSIDs moved"
     },

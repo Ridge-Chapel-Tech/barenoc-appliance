@@ -44,7 +44,81 @@ so a designated laptop keeps management access whether it's cabled or on wifi
   on-appliance coding agent always uses the same provider/model/key
   configured in Settings without reading the whole `.env`.
 - **Device credentials** are encrypted at rest (Fernet).
-- **Sessions** are 60-minute JWTs — expired sessions redirect you to login.
+- **Sessions** use a short-lived access token + a revocable refresh session —
+  see [Authentication & sessions](#authentication--sessions) below.
+
+## Authentication & sessions
+
+BareNOC mints **two tokens** at login:
+
+| Token | Lifetime | Storage | Revocable |
+|---|---|---|---|
+| **Access** (JWT) | **60 minutes** | browser cookie (JS-readable) + localStorage | via `token_version` only (password change / forced logout) |
+| **Refresh** (JWT) | **7 days** | `HttpOnly` cookie (never JS-readable) | **instantly**, per-session |
+
+- **Revocable refresh sessions** — every login records a row in the
+  `auth_sessions` table (bound to the refresh token's `jti`). `/refresh`
+  validates that row (must exist, belong to the user, be unrevoked and
+  unexpired) before issuing a new access token.
+- **`/logout` is instant** — it marks the session row revoked immediately, so
+  a logged-out refresh token can never be replayed. The (stateless) access
+  token expires on its own within its 60-minute window.
+- **Password change kills everything** — changing your password bumps your
+  `token_version`, which invalidates *every* outstanding access + refresh
+  token (and revokes all session rows) at once. You must sign in again.
+
+### Cookies
+
+- `access_token` — JS-readable (the chat SPA reads it into localStorage),
+  `SameSite=Lax`.
+- `refresh_token` — **`HttpOnly`** (browsers never expose it to JS),
+  `SameSite=Lax`.
+- Both are **`Secure`** when the client is on HTTPS (nginx TLS in production;
+  plain-HTTP LAN/dev harnesses keep them insecure so the flow still works).
+
+### Fail-closed JWT rules
+
+Every protected API path rejects a token unless ALL of these hold — anything
+else is `401`:
+
+1. **`type` == `access`** — refresh / OIDC-flow tokens never authenticate an
+   API path (even though they are signed by the same key).
+2. **`ver` matches the user's `token_version`** — a token minted before the
+   last password change / forced logout is rejected outright.
+3. The token is **well-formed, unexpired, and the user is active**.
+
+Malformed, expired, revoked, wrong-type, or wrong-version tokens → **401**
+(fail closed — never fall back to guest access).
+
+### CSRF posture
+
+BareNOC has no cross-origin trust to exploit, and state changes are not
+reachable via "simple" cross-site requests:
+
+- **JSON-only API bodies** — write endpoints require
+  `Content-Type: application/json`; HTML forms can't send that cross-origin
+  without a CORS preflight.
+- **No CORS middleware** — browsers refuse cross-origin reads (and non-simple
+  cross-origin writes) by default.
+- **No `Form()` endpoints** — nothing accepts
+  `application/x-www-form-urlencoded`.
+- **`SameSite=Lax` cookies** — the session cookie is not sent on cross-site
+  sub-requests (top-level navigations still work for login/callback flows).
+- **GET audit (2026-08-25)** — every `@app.get` / `@router.get` handler was
+  swept for state changes (DB writes, config/secrets writes, external calls
+  with side effects). All reads confirmed clean for health, wiki, downloads,
+  dashboard reports, settings/status, UniFi, tickets, devices, firmware,
+  metrics, network-opt, updates, and the onboarding portal, with three
+  findings resolved:
+  - **`GET /api/v1/chat/messages`** used to mark messages read — read-marking
+    moved to **`POST /api/v1/chat/messages/read`** (the GET is now a pure read).
+  - **`GET /api/v1/devices/control-key` + `GET /onboard/script`** lazily
+    generated the appliance control keypair on first call — the keypair is now
+    generated at **startup**, so those GETs are pure reads.
+  - **`GET /api/v1/auth/oidc/callback`** writes DB state by design (it
+    completes the OIDC passkey login). It **cannot** be a POST — the identity
+    provider redirects back with a GET — so it is protected by the OAuth
+    `state` + PKCE verifier validation and a one-time authorization code.
 
 ### Lily trust (autonomous, experimental)
 

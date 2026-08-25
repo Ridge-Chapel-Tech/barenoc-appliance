@@ -63,6 +63,16 @@ rebuild_stack() {
   echo "==> compose rebuild exit: ${PIPESTATUS[0]:-?}"
 }
 
+# refresh_host_self_update — systemd runs /usr/local/bin/barenoc-self-update.sh
+# (installed by deploy.sh / the installer). Keep it in sync with the just-
+# applied /opt/barenoc/scripts copy so self-update LOGIC changes (e.g. release
+# signature verification) actually reach self-updating boxes — the apply step
+# below only updates /opt/barenoc/scripts/.
+refresh_host_self_update() {
+  install -m 0755 "$BASE/scripts/barenoc-self-update.sh" /usr/local/bin/barenoc-self-update.sh \
+    2>/dev/null || true
+}
+
 # ── rollback ───────────────────────────────────────────────────────────────
 if [ -f "$RB" ]; then
   rm -f "$RB"
@@ -80,6 +90,7 @@ if [ -f "$RB" ]; then
   chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
           "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
   chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
+  refresh_host_self_update
   progress 60 "rollback" "rebuilding stack"
   rebuild_stack
   sleep 8
@@ -100,6 +111,7 @@ fi
 VERSION="$(python3 -c "import json;print(json.load(open('$REQ'))['version'])" 2>/dev/null || echo '?')"
 TARBALL="$(python3 -c "import json;print(json.load(open('$REQ')).get('tarball',''))" 2>/dev/null || true)"
 CHECKSUMS="$(python3 -c "import json;print(json.load(open('$REQ')).get('checksums',''))" 2>/dev/null || true)"
+SIGNATURE="$(python3 -c "import json;print(json.load(open('$REQ')).get('signature',''))" 2>/dev/null || true)"
 [ -n "$TARBALL" ] || { report '{"ok": false, "action": "update", "error": "no tarball URL in update request"}'; rm -f "$REQ"; exit 1; }
 
 # 1. snapshot before (restricted host key — qm snapshot only, optional)
@@ -134,6 +146,50 @@ if [ -n "$CHECKSUMS" ]; then
     fi
     echo "checksum ok ($ACTUAL)"
   fi
+fi
+
+# 2b. verify the detached release signature BEFORE applying — breaks the
+# single-chain assumption (manifest + tarball + site are one compromised
+# pipeline): a tampered tarball also needs a valid signature from the pinned
+# release-signing key, which lives only on the gate machine.
+progress 45 "verify" "verifying release signature"
+if [ -n "$SIGNATURE" ]; then
+  curl -fsSL "$SIGNATURE" -o "$TMP/app.tar.gz.sig" 2>/dev/null || true
+fi
+
+VERIFY_SH="$BASE/scripts/verify_release_signature.sh"
+PINNED_KEY="$BASE/scripts/release-signing.pub"
+# The PINNED key (installed by the previous release) is the trust anchor. On a
+# bootstrap box with no pinned key yet, fall back to the key shipped inside
+# the release tree (trust-on-first-use) so the first signed release can pin.
+SIG_ARG=""; KEY_ARG=""
+[ -s "$TMP/app.tar.gz.sig" ] && SIG_ARG="$TMP/app.tar.gz.sig"
+if [ -s "$PINNED_KEY" ]; then
+  KEY_ARG="$PINNED_KEY"
+else
+  tar xzf "$TMP/app.tar.gz" -C "$TMP" src/scripts/release-signing.pub \
+    docs/security/release-signing.pub 2>/dev/null || true
+  [ -s "$TMP/src/scripts/release-signing.pub" ] && KEY_ARG="$TMP/src/scripts/release-signing.pub"
+fi
+
+if [ -x "$VERIFY_SH" ]; then
+  SIG_RC=0
+  "$VERIFY_SH" "$TMP/app.tar.gz" "$SIG_ARG" "$KEY_ARG" "$VERSION" || SIG_RC=$?
+  case "$SIG_RC" in
+    0) echo "release signature verified" ;;
+    3) echo "!! no release signature (pre-mandatory release) — hash-only fallback" ;;
+    *)
+      rm -f "$REQ"
+      progress 100 "failed" "release signature verification failed"
+      report '{"ok": false, "action": "update", "version": "'"$VERSION"'", "error": "release signature verification failed"}'
+      exit 1
+      ;;
+  esac
+else
+  # Bootstrap: this host's self-update predates release signing (the helper
+  # ships alongside the self-update script, so they install together). A
+  # signed release can only be hash-verified here.
+  echo "!! verify_release_signature.sh not installed — hash-only fallback (pre-signing host)"
 fi
 
 # 3. backup current code
@@ -191,6 +247,7 @@ GOTV="$(printf '%s' "$HEALTH_VERSION" | sed 's/^[vV]//')"
 if [ "$HEALTH_CODE" = "200" ] && [ -n "$REQV" ] && [ "$REQV" = "$GOTV" ]; then
   systemctl restart pi-agent-runner 2>/dev/null || true
   echo "==> updated to $VERSION (health $HEALTH_CODE, version $GOTV)"
+  refresh_host_self_update
 
   # 6. post-apply provision — existing boxes updating must get the full pass
   #    too (tailscale install/seed, agent creds, notify, remote support) —
@@ -230,6 +287,7 @@ done
 chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
         "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
 chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
+refresh_host_self_update
 rebuild_stack
 if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; then
   ssh -i "$UPDATE_HOST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \

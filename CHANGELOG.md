@@ -15,6 +15,32 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.25.a] — 2026-08-24
+
+### Security
+- **Detached-signature release signing:** releases now ship a detached GPG
+  signature (`bareNOC-<ver>.tar.gz.sig`) made by the `bareNOC release signing`
+  key (held `0600` on the gate machine, never in the repo, looked up by email).
+  The appliance verifies it against the **pinned** public key
+  (`docs/security/release-signing.pub`, installed at
+  `/opt/barenoc/scripts/release-signing.pub`) before applying an update,
+  breaking the single trust chain (manifest + tarball + site all in one
+  pipeline). Pre-signing releases fall back to hash-only with a warning; a
+  signature becomes **mandatory (fail-closed) at v2026.08.25.a**.
+  See `docs/security/release-signing.md`.
+- **Token revocation (P0):** logins now mint a revocable refresh token (session
+  row per sign-in); `/logout` revokes it instantly; `/refresh` validates the
+  session (exists / unrevoked / unexpired / version match) before issuing a new
+  access token. Password changes bump a per-user token version that invalidates
+  **every** outstanding access + refresh token immediately.
+- **Fail-closed JWT (P0):** only `access`-type JWTs authenticate API paths — a
+  refresh or flow token can never pass as an access token; every decode site
+  rejects missing / malformed / expired / revoked tokens by default.
+- **Cookie hardening (CSRF review):** auth cookies are `SameSite=Lax` and marked
+  `Secure` when served over HTTPS; the refresh cookie is HttpOnly. Confirmed no
+  `Form()` endpoints and no CORS middleware (form-CSRF is blocked at
+  content-type; same-origin only).
+
 ## [2026.08.24.b] — 2026-08-24
 
 ### Fixed
@@ -30,16 +56,16 @@ Categories per release:
 
 ### Security
 - **Privacy sanitization (2026-08-24):** scrubbed all personal/private
-  identifiers from the shipped (public) tree — local dev paths
-  (`/home/…/Projects/…`) in `validate_wiki_mermaid.mjs/.md` and
+  identifiers from the shipped (public) tree — local developer-machine paths
+  in `validate_wiki_mermaid.mjs/.md` and
   `docs/operations/update_pipeline.md`, real home-network topology embedded
   in test fixtures (real MACs/IPs/device names — `test_devices_polish.py`,
   `test_network_opt.py`, `test_unifi_sync.py`, `test_network_scope.py`,
   `test_alerting.py`, `test_link_monitor.py`, agent + worker tests), the real
-  Starlink WAN IP (`100.99.x.x` → RFC 6598 example), real VLAN names/subnets
-  (WiFi/Kids/RCTF/.5.x/.8.x → generic `10.0.x` scheme), the hardcoded prod
-  appliance IP (`192.168.4.207` → `192.0.2.207` placeholder), and real device
-  names in code comments/docstrings (→ generic). Public-repo publish commits now
+  Starlink WAN IP (now an RFC 6598 example), real VLAN names/subnets
+  (now a generic private-range scheme), the hardcoded prod
+  appliance IP (now an RFC 5737 placeholder), and real device
+  names in code comments/docstrings (now generic). Public-repo publish commits now
   use a neutral
   `bareNOC release bot <release@barenoc.com>` identity. The website repo
   (bareNOC.com) is scrubbed in a parallel change (no personal social/email).
@@ -123,7 +149,7 @@ Categories per release:
 ### Fixed
 - **Starlink phantom device fabrication (08-20):** `ensure_dish_device` created + CLAIMED
   a "Starlink Dish" device on every appliance (the monitor defaulted to enabled + the
-  default address 192.168.100.1) even with no Starlink on the network. The record is now
+  the dish's factory-default address) even with no Starlink on the network. The record is now
   created only after a real dish snapshot succeeds, and a purge removes phantom dish
   records on boxes with no explicit `STARLINK_ADDRESS` (a configured dish in an outage
   keeps its record). Found via loompafoo's report (the "Starlink Dish" he doesn't have).
@@ -342,7 +368,7 @@ Categories per release:
     `native_network`/`tagged_networks` names, builds a **network map**
     (`{vlan_id: subnet, purpose, enabled}`, untagged default keyed `default`),
     and the run detail persists `network_map` + per-port `vlan_context`
-    ("native WiFi vlan5 (.5.1/24), tagged Kids(9)/RCTF(10)").
+    ("native WiFi (10.0.5.1/24), tagged IoT(9)/Video(10)").
   - `network_opt_rules.py`: device-class→network mapping (AP→WiFi,
     gateway/router/switch→Management, host/server→Production) so the
     "port with no assigned network" finding names the CORRECT network for the
@@ -370,8 +396,8 @@ Categories per release:
 
 ### Added
 - **Starlink dish gRPC telemetry + link-health monitor (P0)** — a new collector
-  in the telemetry family polls the dish's local unauthenticated gRPC API at
-  `192.168.100.1:9200` (~60s, configurable via `STARLINK_*`) and writes
+  in the telemetry family polls the dish's local unauthenticated gRPC API
+  (~60s, configurable via `STARLINK_*`) and writes
   `starlink.*` metrics (ping_ms, link_up, down/up_mbps, snr, obstructed,
   obstruction_fraction, uptime_seconds, ping_drop_rate) into the metrics store
   (device = the dish). A graduated-ticket health monitor complements the
@@ -489,7 +515,7 @@ Categories per release:
   link-down transitions so a single old PoE-cycle counter can't warn forever.
   A healthy home network now scores ~90+ while real risks still bite.
 - **Friendlier unknown-target wording + whole-subnet ping resilience (friend's bug #2)** —
-  a "ping sweep 192.168.1.0/24" request no longer aborts with a cryptic
+  a "ping sweep of a /24" request no longer aborts with a cryptic
   `Unknown target: 'switch-01'. Device not in managed inventory.` when the AI
   pinned an unresolvable device name. The customer-facing message now reads as a
   product message ("I couldn't find a device named 'X' — you can ask me to check
@@ -1018,8 +1044,8 @@ Categories per release:
 - **First-boot nginx cert race** — the TLS cert is now generated BEFORE the
   first `compose up` (nginx crash-looped without it: "API not healthy after
   60s" + [emerg] cert errors on fresh installs).
-- **Scan Network scanned the wrong subnet** — discovery defaulted to
-  192.168.0.0/24; now derived from APPLIANCE_IP, pinned by the installer, and
+- **Scan Network scanned the wrong subnet** — discovery defaulted to a
+  hardcoded /24; now derived from APPLIANCE_IP, pinned by the installer, and
   configurable in Settings → General → Discovery subnets.
 - **System page firmware-status 400 spam** — only queried when UniFi is
   configured.

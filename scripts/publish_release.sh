@@ -18,12 +18,14 @@ set -euo pipefail
 
 PUBLIC_REPO="${PUBLIC_REPO:-Ridge-Chapel-Tech/barenoc-appliance}"
 TAG=""
+SIGN=0
 # NOTE: iterate with a while+shift, NOT for-in-$@ — a for loop snapshots the
 # arg list at start, so shifting inside it mis-parses the NEXT arg (the old
 # version wiped the tag: `--tag vX` -> second iteration cleared TAG).
 while [ $# -gt 0 ]; do
   case "$1" in
     --tag) TAG="${2:-}"; shift 2 ;;
+    --sign) SIGN=1; shift ;;
     *) TAG="$1"; shift ;;
   esac
 done
@@ -34,6 +36,84 @@ trap 'rm -rf "$TMP"' EXIT
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 log() { echo "[publish] $*"; }
+
+# ── release signing mode (gate machine only, AFTER the release workflow) ──
+# Detached-sign the PUBLISHED tarball (the exact bytes the appliance will
+# download) with the default gpg keyring's release key — looked up BY EMAIL,
+# never hardcoded — then ship the .sig to the GitHub Release + barenoc.com/
+# downloads and add the signature reference to versions.json (backward
+# compatible). Run AFTER `publish_release.sh --tag vX` + a green release
+# workflow:   publish_release.sh --sign vX
+# See docs/security/release-signing.md.
+if [ "$SIGN" = "1" ]; then
+  [ -n "$TAG" ] || { log "sign: pass the version — publish_release.sh --sign vX"; exit 1; }
+  VER="${TAG#v}"
+  log "release signing v$VER — signing the published tarball (key: release@barenoc.com)"
+  if ! gpg --batch --list-secret-keys release@barenoc.com >/dev/null 2>&1; then
+    log "ABORT: no secret key for release@barenoc.com in the default gpg keyring"
+    exit 1
+  fi
+
+  DL="$TMP/dl"; mkdir -p "$DL"
+  curl -fsSL "https://barenoc.com/downloads/bareNOC-$VER.tar.gz" -o "$DL/bareNOC-$VER.tar.gz" \
+    || { log "ABORT: could not fetch the published tarball (has the release workflow finished?)"; exit 1; }
+  curl -fsSL "https://barenoc.com/downloads/versions.json" -o "$DL/versions.json" 2>/dev/null || true
+
+  # (1) sign the exact published bytes — never the local tree
+  gpg --batch --yes --armor --detach-sign \
+    --local-user release@barenoc.com \
+    --output "$DL/bareNOC-$VER.tar.gz.sig" "$DL/bareNOC-$VER.tar.gz" \
+    || { log "ABORT: gpg --detach-sign failed"; exit 1; }
+  log "detached signature written: $DL/bareNOC-$VER.tar.gz.sig"
+
+  # (2) versions.json gains the signature reference (every other field kept)
+  if [ -s "$DL/versions.json" ]; then
+    python3 - "$DL/versions.json" "$VER" <<'PY'
+import json, sys
+p, ver = sys.argv[1], sys.argv[2]
+m = json.load(open(p))
+m.setdefault("assets", {})["signature"] = f"https://barenoc.com/downloads/bareNOC-{ver}.tar.gz.sig"
+with open(p, "w") as f:
+    json.dump(m, f, indent=2)
+    f.write("\n")
+PY
+  else
+    log "warning: versions.json not fetched — generate it via build_release_manifest.py --sign"
+  fi
+
+  # (3) GitHub Release asset
+  if command -v gh >/dev/null 2>&1 && gh release view "v$VER" >/dev/null 2>&1; then
+    gh release upload "v$VER" "$DL/bareNOC-$VER.tar.gz.sig" --clobber \
+      && log "attached .sig to GitHub Release v$VER" \
+      || log "warning: gh release upload failed — upload manually"
+  else
+    log "note: GitHub Release v$VER not found yet — run: gh release upload v$VER $DL/bareNOC-$VER.tar.gz.sig --clobber"
+  fi
+
+  # (4) mirror to barenoc.com/downloads (same path as the tarball)
+  if [ -n "${WEBSITE_PAT:-}" ]; then
+    git clone -q "https://x-access-token:${WEBSITE_PAT}@github.com/Ridge-Chapel-Tech/BareNOC-Website.git" "$TMP/site" 2>/dev/null || true
+  else
+    git clone -q "https://github.com/Ridge-Chapel-Tech/BareNOC-Website.git" "$TMP/site" 2>/dev/null || true
+  fi
+  if [ -d "$TMP/site/.git" ]; then
+    mkdir -p "$TMP/site/downloads"
+    cp "$DL/bareNOC-$VER.tar.gz.sig" "$TMP/site/downloads/"
+    [ -s "$DL/versions.json" ] && cp "$DL/versions.json" "$TMP/site/downloads/"
+    git -C "$TMP/site" config user.email "release@barenoc.com"
+    git -C "$TMP/site" config user.name "bareNOC release bot"
+    git -C "$TMP/site" add downloads/
+    git -C "$TMP/site" commit -q -m "release v$VER: detached signature + signed manifest" || true
+    git -C "$TMP/site" push -q \
+      && log "mirrored .sig + signed versions.json to barenoc.com/downloads" \
+      || log "warning: website push failed — push manually"
+  else
+    log "note: BareNOC-Website not clonable here — push $DL/bareNOC-$VER.tar.gz.sig to downloads/ manually"
+  fi
+
+  log "release signing complete (v$VER) — releases >= 2026.08.25.a must be signed (fail-closed)"
+  exit 0
+fi
 
 # the private repo must be committed (we sync its WORKING TREE)
 if ! git -C "$SRC" diff --quiet; then

@@ -436,7 +436,7 @@ async function loadBackupsStep() {
     + '<div class="text-xs font-semibold text-gray-700 mt-3">NAS share <span class="font-normal text-gray-400">— BareNOC mounts it for you</span></div>'
     + '<div class="grid grid-cols-2 gap-2 mt-1">'
     + '<select id="bk-net-proto" class="rounded-lg border border-gray-300 px-2 py-1.5 text-xs"><option value="cifs"' + (netProto === 'cifs' ? ' selected' : '') + '>SMB (most NAS)</option><option value="nfs"' + (netProto === 'nfs' ? ' selected' : '') + '>NFS</option></select>'
-    + '<input id="bk-net-host" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="NAS address (e.g. 192.168.4.50)" value="' + netHost + '">'
+    + '<input id="bk-net-host" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="NAS address (e.g. 192.0.2.50)" value="' + netHost + '">'
     + '</div>'
     + '<div class="grid grid-cols-2 gap-2 mt-2">'
     + '<input id="bk-net-share" class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs" placeholder="Share name (e.g. barenoc)" value="' + netShare + '">'

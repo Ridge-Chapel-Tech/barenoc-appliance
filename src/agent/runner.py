@@ -393,7 +393,7 @@ _UPLINK_CACHE = {}  # device_mac -> (uplink_mac, uplink_port) from the topology
 
 def resolve_uplink(target: str) -> "tuple | None":
     """For an AP/device target, return its uplink (switch_mac, switch_port) via
-    the topology endpoint — so 'tag the uplink of U7 Outdoor' targets the right
+    the topology endpoint — so 'tag the uplink of an Outdoor AP' targets the right
     switch port instead of the AP itself. Returns None when not resolvable."""
     mac = resolve_port_target(target)
     if not re.match(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", mac or ""):
@@ -426,7 +426,7 @@ def resolve_uplink(target: str) -> "tuple | None":
 def _port_target_and_idx(target: str, port_idx):
     """For UniFi port actions: resolve to the switch MAC. If the target is an
     AP/device with an uplink, use the uplink SWITCH + port, so 'tag the uplink
-    of U7 Outdoor' targets the right switch port. Returns (switch_mac, port_idx)."""
+    of an Outdoor AP' targets the right switch port. Returns (switch_mac, port_idx)."""
     mac = resolve_port_target(target)
     up = resolve_uplink(target)
     if up and up[0]:
@@ -1221,7 +1221,7 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
         "then pass the IP — device_ssh.sh decrypts its stored SSH key and runs the "
         "command over SSH for you).\n"
         "- Whole-subnet sweeps: use discover.sh <subnet-or-cidr> (e.g. "
-        "bash /opt/barenoc/scripts/discover.sh 192.168.4.0/24). It is parallel + "
+        "bash /opt/barenoc/scripts/discover.sh 192.0.2.0/24). It is parallel + "
         "capped and prints JSON of the live hosts — NEVER run a sequential "
         "`for i in ...; do ping ...; done` loop over a subnet (it hangs the session). "
         "It also never scans 100.64.0.0/10 (CGNAT/Tailscale overlay).\n"

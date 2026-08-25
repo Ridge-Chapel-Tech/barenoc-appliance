@@ -144,6 +144,43 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: users.token_version (P0 revocation batch 2026-08-25) — bump
+    # invalidates every outstanding JWT for the user. Guarded like the rest.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0"
+            ))
+    except OperationalError:
+        pass  # Column already exists
+    # Migration: auth_sessions (P0 revocation batch 2026-08-25). NEW table —
+    # create_all above already creates it; the guarded CREATEs are idempotent
+    # belt-and-suspenders no-ops. KEEP IN SYNC with models.AuthSession.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS auth_sessions ("
+                " id INTEGER PRIMARY KEY,"
+                " user_id INTEGER NOT NULL,"
+                " jti VARCHAR(64) NOT NULL,"
+                " created_at DATETIME,"
+                " expires_at DATETIME NOT NULL,"
+                " revoked_at DATETIME,"
+                " last_used_at DATETIME,"
+                " ip VARCHAR(64),"
+                " user_agent VARCHAR(256)"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_sessions_jti "
+                "ON auth_sessions(jti)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_auth_sessions_user_id "
+                "ON auth_sessions(user_id)"
+            ))
+    except OperationalError:
+        pass  # Table/index already exists
     # Migration: channels (explicit control-channel declarations, JSON) —
     # device_adoption_model.md §8. Idempotent like the rest: create_all won't
     # add a column to an existing devices table.

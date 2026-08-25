@@ -51,8 +51,34 @@ class User(Base):
     oidc_sub = Column(String(128), nullable=True, index=True)  # Pocket ID subject
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
+    # Token version (P0 revocation batch 2026-08-25): every access/refresh JWT
+    # carries `ver`; bumping this column invalidates ALL outstanding tokens for
+    # the user immediately (password change / force-logout).
+    token_version = Column(Integer, default=0)
 
     tickets = relationship("Ticket", back_populates="submitter")
+
+
+class AuthSession(Base):
+    """Revocable refresh-token session (P0 batch 2026-08-25).
+
+    Login/register/OIDC mint a refresh JWT whose `jti` is recorded here;
+    /refresh validates the row (exists, not revoked, not expired) before
+    issuing a new access token; /logout marks the row revoked — the refresh
+    token dies instantly instead of living out its 7-day expiry.
+    """
+
+    __tablename__ = "auth_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    jti = Column(String(64), unique=True, index=True, nullable=False)  # refresh-token id
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(256), nullable=True)
 
 
 class Device(Base):

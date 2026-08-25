@@ -268,7 +268,7 @@ async function doRegister() {
   } catch (e) { authErr(e.message); }
 }
 
-function logout() { setToken(null); showAuth(); }
+function logout() { fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}); setToken(null); showAuth(); }
 
 // ── Juniper front-desk conversation (default) ──
 function juniperName() { return JUNIPER || 'Juniper'; }
@@ -299,6 +299,10 @@ async function loadJuniper() {
   const box = $('juniper-body');
   try {
     const d = await api('/api/v1/chat/messages?with_username=' + encodeURIComponent(juniperName()));
+    // Read-marking is a state change, so it lives on a POST (the GET above is
+    // read-only). Best-effort — a failed mark never breaks the poll.
+    api('/api/v1/chat/messages/read', { method: 'POST',
+      body: JSON.stringify({ with_username: juniperName() }) }).catch(() => {});
     // Scroll handling (desktop + mobile share this path): the poll rebuilds
     // the conversation every 4 s — only stick to the bottom when the user is
     // already near it, otherwise preserve their reading position.

@@ -201,11 +201,13 @@ def setup_account(data: SetupAccountRequest, request: Request, response: Respons
     db.commit()
     token = create_access_token({"sub": admin.username, "role": admin.role,
                                  "groups": [], "auth_method": "password"},
-                                expires_minutes=6 * 60)
+                                expires_minutes=6 * 60,
+                                ver=admin.token_version or 0)
+    secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
     response.set_cookie(key="access_token", value=token, max_age=6 * 3600,
-                        secure=False, httponly=False, samesite="lax", path="/")
+                        secure=secure, httponly=False, samesite="lax", path="/")
     return {"access_token": token, "token_type": "bearer",
-            "expires_in": 3600, "username": admin.username}
+            "expires_in": 6 * 3600, "username": admin.username}
 
 
 @router.post("/ospassword")

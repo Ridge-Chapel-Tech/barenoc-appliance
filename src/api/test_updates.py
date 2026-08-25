@@ -398,6 +398,46 @@ class ScheduleUiV2TemplateTest(unittest.TestCase):
         self.assertIn('updModeChange', html)
 
 
+class SignaturePlumbingTest(unittest.TestCase):
+    """Release signing: versions.json assets.signature flows /check → status →
+    /now → update_request.json. Backward compatible — a manifest without a
+    signature yields an empty string (never a crash)."""
+
+    def test_run_check_reads_signature(self):
+        with patch.object(updates, "STATUS_DIR",
+                          tempfile.mkdtemp(prefix="updates-sig-")), \
+             patch.object(updates, "_fetch_json", return_value={
+                 "version": "2026.08.25.a",
+                 "kind": "patch",
+                 "changelog": "",
+                 "assets": {
+                     "tarball": "https://barenoc.com/downloads/bareNOC-2026.08.25.a.tar.gz",
+                     "checksums": "https://barenoc.com/downloads/bareNOC-2026.08.25.a.sha256",
+                     "signature": "https://barenoc.com/downloads/bareNOC-2026.08.25.a.tar.gz.sig",
+                 },
+             }), \
+             patch.object(updates, "_read_env_file", return_value={}), \
+             patch.object(updates, "_current_version", return_value="2026.08.24.b"):
+            st = updates._run_check()
+        self.assertEqual(
+            st["signature"],
+            "https://barenoc.com/downloads/bareNOC-2026.08.25.a.tar.gz.sig")
+
+    def test_run_check_without_signature_empty(self):
+        with patch.object(updates, "STATUS_DIR",
+                          tempfile.mkdtemp(prefix="updates-sig-")), \
+             patch.object(updates, "_fetch_json", return_value={
+                 "version": "2026.08.24.b",
+                 "kind": "patch",
+                 "changelog": "",
+                 "assets": {"tarball": "https://x/t", "checksums": "https://x/s"},
+             }), \
+             patch.object(updates, "_read_env_file", return_value={}), \
+             patch.object(updates, "_current_version", return_value="2026.08.24.b"):
+            st = updates._run_check()
+        self.assertEqual(st["signature"], "")
+
+
 if __name__ == "__main__":
     unittest.main()
 

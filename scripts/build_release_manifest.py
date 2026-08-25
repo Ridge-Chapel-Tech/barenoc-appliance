@@ -8,9 +8,11 @@ by CalVer parts), and writes:
     <out>/versions.json                      the canonical manifest (public)
     <out>/bareNOC-<ver>.tar.gz               the release tree (gated by the activation key)
     <out>/bareNOC-<ver>.sha256               checksum of the tarball
+    <out>/bareNOC-<ver>.tar.gz.sig           detached GPG signature (when --sign)
 
 Usage:
   python3 scripts/build_release_manifest.py --out /tmp/assets [--source DIR] [--no-tarball]
+             [--sign] [--require-sign] [--signing-email release@barenoc.com]
 """
 import argparse
 import datetime
@@ -23,6 +25,30 @@ import tarfile
 
 BASE_URL = "https://barenoc.com/downloads"
 MANIFEST_NAME = "versions.json"
+SIGNING_EMAIL = "release@barenoc.com"
+
+
+def signing_key_available(email: str) -> bool:
+    """True when the release-signing secret key is in the DEFAULT gpg keyring.
+    The key is looked up BY EMAIL/NAME only — never hardcode key material."""
+    try:
+        out = subprocess.run(
+            ["gpg", "--batch", "--list-secret-keys", email],
+            capture_output=True, text=True, check=True).stdout
+    except Exception:
+        return False
+    return "sec" in out
+
+
+def sign_tarball(tarball: pathlib.Path, email: str) -> pathlib.Path:
+    """Detached-sign the tarball with the default keyring's key for <email>.
+    Produces <tarball>.sig next to the tarball."""
+    sig = pathlib.Path(str(tarball) + ".sig")
+    subprocess.run(
+        ["gpg", "--batch", "--yes", "--armor", "--detach-sign",
+         "--local-user", email, "--output", str(sig), str(tarball)],
+        check=True, capture_output=True, text=True)
+    return sig
 
 
 def app_version(source: pathlib.Path) -> str:
@@ -83,6 +109,12 @@ def main():
     ap.add_argument("--source", default=".", help="release tree to tar (default cwd)")
     ap.add_argument("--no-tarball", action="store_true", help="manifest only")
     ap.add_argument("--changelog", default="", help="override changelog URL")
+    ap.add_argument("--sign", action="store_true",
+                    help="detach-sign the tarball with the release key (best-effort)")
+    ap.add_argument("--require-sign", action="store_true",
+                    help="fail the build when signing is requested but impossible")
+    ap.add_argument("--signing-email", default=SIGNING_EMAIL,
+                    help="email/name the signing key is looked up by (never a secret)")
     args = ap.parse_args()
 
     source = pathlib.Path(args.source).resolve()
@@ -95,12 +127,32 @@ def main():
     kind = classify(prev, ver)
 
     assets = {}
+    signature = None
     if not args.no_tarball:
         tarball = build_tarball(source, ver, out)
         digest = sha256_of(tarball)
         (out / f"bareNOC-{ver}.sha256").write_text(f"{digest}  bareNOC-{ver}.tar.gz\n")
         assets["tarball"] = f"{BASE_URL}/bareNOC-{ver}.tar.gz"
         assets["checksums"] = f"{BASE_URL}/bareNOC-{ver}.sha256"
+
+        # Detached release signature (after the tarball — see publish_release.sh
+        # and docs/security/release-signing.md). The key is looked up by email in
+        # the default keyring; no secret ever appears here.
+        if args.sign or args.require_sign:
+            if signing_key_available(args.signing_email):
+                sign_tarball(tarball, args.signing_email)
+                signature = f"{BASE_URL}/bareNOC-{ver}.tar.gz.sig"
+                print(f"-> {out / ('bareNOC-' + ver + '.tar.gz.sig')}  (signed)")
+            elif args.require_sign:
+                raise SystemExit(
+                    f"--require-sign: no secret key for {args.signing_email!r} in "
+                    "the default gpg keyring — refusing to publish unsigned")
+            else:
+                print("warning: no signing key available — publishing UNSIGNED "
+                      "(hash-only); see docs/security/release-signing.md")
+
+    if signature:
+        assets["signature"] = signature
 
     manifest = {
         "schema": 1,

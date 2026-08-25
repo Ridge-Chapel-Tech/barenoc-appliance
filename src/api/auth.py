@@ -1,5 +1,6 @@
 import os
 import datetime
+import uuid
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Request
@@ -26,18 +27,36 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(data: dict, expires_minutes: int = None) -> str:
+def create_access_token(data: dict, expires_minutes: int = None, ver: int = 0,
+                        jti: str = None) -> str:
+    """Mint an access JWT (60 min default).
+
+    `ver` is the user's token_version at mint time: bumping token_version
+    (password change / force-logout) invalidates every outstanding access
+    token immediately (see _resolve_token_user). Missing ver on legacy tokens
+    is treated as 0 — backward compatible with pre-2026-08-25 installs.
+
+    A unique `jti` is embedded on every token (audit trail + future
+    per-token revocation list).
+    """
     to_encode = data.copy()
     minutes = expires_minutes if expires_minutes is not None else ACCESS_TOKEN_EXPIRE_MINUTES
     expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=minutes)
-    to_encode.update({"exp": expire, "type": "access"})
+    to_encode.update({"exp": expire, "type": "access", "ver": ver,
+                      "jti": jti or str(uuid.uuid4())})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_refresh_token(data: dict) -> str:
+def create_refresh_token(data: dict, jti: str, ver: int = 0) -> str:
+    """Mint a refresh JWT (7 day default) bound to a revocable session row.
+
+    The `jti` is recorded in auth_sessions at login; /refresh validates the
+    row and /logout marks it revoked — the refresh token dies instantly
+    instead of living out its expiry.
+    """
     to_encode = data.copy()
     expire = datetime.datetime.utcnow() + datetime.timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
+    to_encode.update({"exp": expire, "type": "refresh", "jti": jti, "ver": ver})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -101,6 +120,13 @@ def _resolve_token_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
+    # Fail-closed (P0): only `access` JWTs authenticate API paths — a refresh
+    # or oidc_flow token must never pass as an access token.
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
     username = payload.get("sub")
     if username is None:
         raise HTTPException(
@@ -114,6 +140,13 @@ def _resolve_token_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
+        )
+    # Token-version revocation (P0): a token minted before the user's last
+    # password change / force-logout is rejected outright.
+    if payload.get("ver", 0) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token revoked — please sign in again",
         )
     return user
 

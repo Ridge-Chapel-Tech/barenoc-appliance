@@ -965,7 +965,7 @@ class SelfProtectionTest(unittest.TestCase):
     def test_max_hosts_cap(self):
         db = SessionLocal()
         for i in range(10):
-            db.add(Device(name=f"sw-{i}", ip_address=f"192.168.4.{10 + i}",
+            db.add(Device(name=f"sw-{i}", ip_address=f"192.0.2.{10 + i}",
                           device_type="switch", claimed=True))
         db.commit()
         config = {"enabled": True, "max_hosts": 3, "concurrency": 2, "profile": "standard",
@@ -1615,7 +1615,7 @@ class VlanAwarenessTest(unittest.TestCase):
     def test_suggested_action_for_appends_risk_and_respects_guardrail(self):
         action = rules.suggested_action_for(
             "hyg.port_no_profile",
-            {"suggested_action": "Assign WiFi vlan5 (.5.1/24) as the native network "
+            {"suggested_action": "Assign WiFi (10.0.5.1/24) as the native network "
                                 "for AP-01 Port 1."})
         # high-risk port change -> blast radius + plan-first note appended
         self.assertIn("PLAN FIRST", action)

@@ -213,7 +213,7 @@
             <div><label class="block text-sm font-medium text-gray-700">SMTP Host</label><input id="smtp-host" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="smtp.gmail.com"></div>
             <div><label class="block text-sm font-medium text-gray-700">Port</label><input id="smtp-port" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="587"></div>
           </div>
-          <div class="mt-2"><label class="block text-sm font-medium text-gray-700">SMTP User</label><input id="smtp-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc.noc@gmail.com"></div>
+          <div class="mt-2"><label class="block text-sm font-medium text-gray-700">SMTP User</label><input id="smtp-user" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="barenoc.noc@example.com"></div>
           <div class="mt-2"><label class="block text-sm font-medium text-gray-700">App Password</label><input id="smtp-pass" type="password" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1" id="smtp-status"></p></div>
         </div>
 
@@ -478,7 +478,7 @@
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700">Blocked devices <span class="text-gray-400 font-normal">(never acted on)</span></label>
-          <input id="res-devices" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="e.g. nas, switch-01, 192.168.4.50">
+          <input id="res-devices" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm font-mono" placeholder="e.g. nas, switch-01, 192.0.2.50">
           <p class="text-xs text-gray-400 mt-1">Name, hostname or IP — any action targeting a match is blocked.</p>
         </div>
         <div>
@@ -543,7 +543,7 @@
             <option value="cifs">SMB (most NAS)</option>
             <option value="nfs">NFS</option>
           </select>
-          <input id="bk-net-host" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="NAS address (e.g. 192.168.4.50)">
+          <input id="bk-net-host" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="NAS address (e.g. 192.0.2.50)">
         </div>
         <div class="mt-2 grid grid-cols-2 gap-2">
           <input id="bk-net-share" class="rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Share name (e.g. barenoc)">

@@ -35,7 +35,13 @@ jobs:
 
       - name: Build release manifest + tarball
         run: |
-          python3 scripts/build_release_manifest.py --out /tmp/release-dist \
+          # --sign is best-effort: when the release-signing key is present in
+          # the runner's default gpg keyring it detach-signs the tarball and
+          # versions.json gains assets.signature; otherwise the build
+          # continues UNSIGNED (hash-only) so a keyless runner never breaks
+          # the release. The default gate-time path signs the published
+          # tarball afterwards: `publish_release.sh --sign v<ver>`.
+          python3 scripts/build_release_manifest.py --out /tmp/release-dist --sign \
             --changelog "https://github.com/Ridge-Chapel-Tech/barenoc-appliance/releases/tag/v${{ steps.ver.outputs.APP_VERSION }}"
           ls -la /tmp/release-dist
 

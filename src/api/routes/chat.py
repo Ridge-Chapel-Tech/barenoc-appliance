@@ -48,6 +48,10 @@ class ChatSend(BaseModel):
     body: str = Field(..., min_length=1, max_length=4000)
 
 
+class ChatMarkRead(BaseModel):
+    with_username: str = Field(..., min_length=1, max_length=64)
+
+
 def _find_recipient(db, username: str) -> User:
     """Resolve a messageable user by username, including bot users.
 
@@ -148,7 +152,11 @@ def chat_messages(
     db: Session = Depends(get_db),
     user: User = Depends(require_chat_enabled),
 ):
-    """Full thread with another user; marks incoming messages as read."""
+    """Full thread with another user (read-only).
+
+    Read-marking moved to POST /messages/read — a GET must never mutate state
+    (CSRF posture: a cross-site GET carrying the session cookie could otherwise
+    flip read flags)."""
     other = _find_recipient(db, with_username)
     if not other:
         raise HTTPException(status_code=404, detail="User not found")
@@ -165,16 +173,33 @@ def chat_messages(
         .limit(500)
         .all()
     )
-    now = datetime.datetime.utcnow()
-    changed = False
-    for m in msgs:
-        if m.to_user_id == user.id and m.read_at is None:
-            m.read_at = now
-            changed = True
+    return {"messages": [_msg_brief(m) for m in msgs], "other": _user_brief(other)}
+
+
+@router.post("/messages/read")
+def chat_mark_read(data: ChatMarkRead, db: Session = Depends(get_db),
+                   user: User = Depends(require_chat_enabled)):
+    """Mark every message from another user as read (idempotent).
+
+    Split out of GET /messages so reading a thread is a pure read. Read-state
+    is a write, so it lives on a POST with a JSON body (cross-site forms can't
+    submit application/json → CSRF-safe)."""
+    other = _find_recipient(db, data.with_username)
+    if not other:
+        raise HTTPException(status_code=404, detail="User not found")
+    changed = (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.from_user_id == other.id,
+            ChatMessage.to_user_id == user.id,
+            ChatMessage.read_at.is_(None),
+        )
+        .update({ChatMessage.read_at: datetime.datetime.utcnow()},
+                synchronize_session=False)
+    )
     if changed:
         db.commit()
-
-    return {"messages": [_msg_brief(m) for m in msgs], "other": _user_brief(other)}
+    return {"status": "ok", "marked": changed}
 
 
 @router.post("/messages", status_code=201)

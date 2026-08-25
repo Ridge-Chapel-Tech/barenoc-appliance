@@ -7,7 +7,7 @@ logger = logging.getLogger("auth")
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import get_db
-from models import User
+from models import User, AuthSession
 from schemas import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest, RegisterRequest
 from auth import (
     verify_password,
@@ -19,8 +19,11 @@ from auth import (
     hash_password,
     SECRET_KEY,
     ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 import secrets as _secrets
+import uuid as _uuid
 import urllib.parse
 from datetime import datetime, timedelta
 from jose import jwt as _jwt
@@ -37,8 +40,87 @@ from oidc import (
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+# ── Session + cookie helpers (P0 revocation batch 2026-08-25) ──
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP: last X-Forwarded-For hop (nginx appends the real
+    remote last), else the socket peer. None-tolerant (direct test callers)."""
+    try:
+        if request is None:
+            return ""
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[-1].strip()
+        return request.client.host if request.client else ""
+    except Exception:
+        return ""
+
+
+def _ua(request: Request) -> str:
+    if request is None:
+        return ""
+    return (request.headers.get("user-agent") or "")[:250]
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Secure cookies when the client is on HTTPS (prod: nginx TLS); plain HTTP
+    (dev/test harnesses) keeps them insecure so the LAN flow still works."""
+    try:
+        if request is None:
+            return False
+        return (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
+    except Exception:
+        return False
+
+
+def _mint_tokens(db: Session, user: User, request: Request,
+                 groups=None, auth_method="password") -> tuple:
+    """Mint access + refresh JWTs and record the refresh session (revocable).
+
+    Returns (access_token, refresh_token). The refresh token's `jti` lands in
+    auth_sessions — /logout revokes it instantly; /refresh validates it.
+    """
+    ver = user.token_version or 0
+    jti = _uuid.uuid4().hex
+    access = create_access_token({"sub": user.username, "role": user.role,
+                                  "groups": groups or [], "auth_method": auth_method},
+                                 ver=ver)
+    refresh = create_refresh_token({"sub": user.username, "role": user.role},
+                                   jti=jti, ver=ver)
+    db.add(AuthSession(
+        user_id=user.id, jti=jti,
+        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        ip=_client_ip(request), user_agent=_ua(request),
+    ))
+    db.commit()
+    return access, refresh
+
+
+def _set_auth_cookies(response: Response, request: Request, access: str,
+                      refresh: str = None, access_max_age: int = None):
+    """Set the auth cookies on a response. The access cookie stays JS-readable
+    (the mobile chat SPA reads it into localStorage); the refresh cookie is
+    HttpOnly + same-site — the browser keeps it, JS never sees it."""
+    secure = _cookie_secure(request)
+    response.set_cookie(
+        key="access_token", value=access,
+        max_age=access_max_age or (ACCESS_TOKEN_EXPIRE_MINUTES * 60),
+        secure=secure, httponly=False, samesite="lax", path="/")
+    if refresh is not None:
+        response.set_cookie(
+            key="refresh_token", value=refresh,
+            max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            secure=secure, httponly=True, samesite="lax", path="/")
+
+
+def _clear_auth_cookies(response: Response):
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+
+
 @router.post("/login")
-def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(request: LoginRequest, response: Response, db: Session = Depends(get_db),
+         http_request: Request = None):
     # case-insensitive usernames: "Admin" and "admin" are the same account
     user = db.query(User).filter(
         func.lower(User.username) == request.username.strip().lower()).first()
@@ -58,30 +140,22 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
     user.last_login = datetime.utcnow()
     db.commit()
 
-    access_token = create_access_token({"sub": user.username, "role": user.role,
-                                        "groups": [], "auth_method": "password"})
-
-    # Set cookie for template auth check
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        max_age=3600,
-        secure=False,  # HTTP for dev; set True for production HTTPS
-        httponly=False,  # False so JS can read it; True for prod
-        samesite="lax",
-        path="/",
-    )
+    access_token, refresh_token = _mint_tokens(db, user, http_request)
+    # Set cookie for template auth check (refresh is HttpOnly — revocable).
+    _set_auth_cookies(response, http_request, access_token, refresh_token)
 
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
-        "expires_in": 3600,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "password_change_required": bool(user.must_change_password),
     }
 
 
 @router.post("/register")
-def register(request: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+def register(request: RegisterRequest, response: Response, db: Session = Depends(get_db),
+            http_request: Request = None):
     """Self-registration — "first login = admin, everyone after = user".
 
     Gated by TENANT_REGISTRATION_ENABLED (default true for hospitality):
@@ -131,21 +205,13 @@ def register(request: RegisterRequest, response: Response, db: Session = Depends
     from datetime import datetime
     user.last_login = datetime.utcnow()
     db.commit()
-    access_token = create_access_token({"sub": user.username, "role": user.role,
-                                        "groups": [], "auth_method": "password"})
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        max_age=3600,
-        secure=False,
-        httponly=False,
-        samesite="lax",
-        path="/",
-    )
+    access_token, refresh_token = _mint_tokens(db, user, http_request)
+    _set_auth_cookies(response, http_request, access_token, refresh_token)
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
-        "expires_in": 3600,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "password_change_required": False,
         "user": {"username": username, "role": "user"},
     }
@@ -171,29 +237,94 @@ def change_password(
 
     user.hashed_password = hash_password(data.new_password)
     user.must_change_password = False
+    # Revoke EVERYTHING (P0): bump the token version (kills all outstanding
+    # access + refresh JWTs) and mark every session row revoked. The client
+    # must sign in again with the new password — the intent of the change.
+    user.token_version = (user.token_version or 0) + 1
+    db.query(AuthSession).filter(
+        AuthSession.user_id == user.id,
+        AuthSession.revoked_at.is_(None)).update(
+        {AuthSession.revoked_at: datetime.utcnow()})
     db.commit()
     return {"status": "ok"}
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(request: Request, db: Session = Depends(get_db)):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="No token provided")
+def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Exchange a refresh token for a fresh access token.
 
-    token = auth_header.split(" ")[1]
+    The refresh token may arrive via Bearer header (API clients) or the
+    HttpOnly refresh_token cookie (browser). Fail-closed: the session row
+    must exist, belong to the user, be unrevoked and unexpired, and the
+    token version must match — otherwise 401, no new token.
+    """
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token provided")
+
     payload = decode_token(token)
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     username = payload.get("sub")
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(func.lower(User.username) == (username or "").lower()).first()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found")
 
+    jti = payload.get("jti")
+    session = db.query(AuthSession).filter(AuthSession.jti == jti).first() if jti else None
+    if not session or session.user_id != user.id:
+        raise HTTPException(status_code=401, detail="Unknown session")
+    if session.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Session revoked — please sign in again")
+    if session.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Session expired")
+    if (payload.get("ver") or 0) != (user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Session revoked — please sign in again")
+
+    session.last_used_at = datetime.utcnow()
+    db.commit()
+
     new_access = create_access_token({"sub": user.username, "role": user.role,
-                                       "groups": [], "auth_method": "password"})
-    return TokenResponse(access_token=new_access, token_type="bearer", expires_in=3600)
+                                      "groups": [], "auth_method": "password"},
+                                     ver=user.token_version or 0)
+    # Keep the browser's refresh cookie fresh (same jti — still revocable).
+    _set_auth_cookies(response, request, new_access, refresh=token)
+    return TokenResponse(access_token=new_access, token_type="bearer",
+                         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+
+@router.post("/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Revoke the current session and clear the auth cookies.
+
+    The refresh token's session row is marked revoked immediately — the
+    refresh token can never be replayed after logout. The (stateless) access
+    token expires on its own ≤60-min schedule; password changes kill access
+    tokens instantly via the token_version bump.
+    """
+    revoked = 0
+    refresh = request.cookies.get("refresh_token")
+    if not refresh:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            refresh = auth_header.split(" ")[1]
+    if refresh:
+        payload = decode_token(refresh)
+        if payload and payload.get("type") == "refresh" and payload.get("jti"):
+            session = db.query(AuthSession).filter(
+                AuthSession.jti == payload["jti"]).first()
+            if session and session.revoked_at is None:
+                session.revoked_at = datetime.utcnow()
+                revoked = 1
+                db.commit()
+    _clear_auth_cookies(response)
+    return {"status": "ok", "revoked": revoked}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -356,21 +487,13 @@ def oidc_callback(
     if not isinstance(oidc_groups, list):
         oidc_groups = [oidc_groups]
     logger.debug("OIDC callback: role=%s groups=%r", role_from_groups(cfg, claims), oidc_groups)
-    access_token = create_access_token({"sub": user.username, "role": user.role,
-                                        "groups": oidc_groups, "auth_method": "oidc"})
+    access_token, refresh_token = _mint_tokens(db, user, request,
+                                               groups=oidc_groups, auth_method="oidc")
     # Set the session cookie on the response we actually RETURN (the injected
     # `response` is discarded) — /dashboard's server-side session check needs it.
     page = _oidc_page(token=access_token)
     page.delete_cookie(FLOW_COOKIE, path="/")
-    page.set_cookie(
-        key="access_token",
-        value=access_token,
-        max_age=3600,
-        secure=False,
-        httponly=False,
-        samesite="lax",
-        path="/",
-    )
+    _set_auth_cookies(page, request, access_token, refresh_token)
     return page
 
 

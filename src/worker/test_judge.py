@@ -447,8 +447,8 @@ class UnifiNetworkCreateTest(unittest.TestCase):
         self.assertTrue(vp("unifi_clients", {"wired": False})[0])
         self.assertFalse(vp("unifi_clients", {"online": "maybe"})[0])
         # unifi_set_ssid_password
-        self.assertTrue(vp("unifi_set_ssid_password", {"ssid": "Kids", "password": "newpass1234"})[0])
-        self.assertFalse(vp("unifi_set_ssid_password", {"ssid": "Kids", "password": "short"})[0])
+        self.assertTrue(vp("unifi_set_ssid_password", {"ssid": "IoT", "password": "newpass1234"})[0])
+        self.assertFalse(vp("unifi_set_ssid_password", {"ssid": "IoT", "password": "short"})[0])
         self.assertFalse(vp("unifi_set_ssid_password", {"password": "newpass1234"})[0])
 
 

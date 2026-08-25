@@ -114,7 +114,7 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
     elif action == "unifi_ensure_wireless_uplinks":
         params, reason = {}, "Ensuring all wireless SSID VLANs are available on every AP uplink"
     elif action == "unifi_set_ssid_password":
-        params, reason = {"ssid": "Kids", "password": "newpass1234"}, "Changing the SSID passphrase"
+        params, reason = {"ssid": "IoT", "password": "newpass1234"}, "Changing the SSID passphrase"
     elif action == "unifi_network_create":
         params, reason = {"name": "IoT", "vlan": 12}, "Creating the new VLAN network"
     elif action == "enroll_device":

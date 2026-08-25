@@ -601,6 +601,10 @@ class BareNOCChatApp:
                     chat_thread = self.client.chat_messages(uname)
                 except APIError:
                     chat_thread = None
+                try:
+                    self.client.chat_mark_read(uname)
+                except APIError:
+                    pass
         return {"type": "snapshot", "tickets": tickets, "devices": devices,
                 "system": system, "selected_ticket": sel,
                 "chat_users": chat_users, "chat_convs": chat_convs,
@@ -847,10 +851,16 @@ class BareNOCChatApp:
     def _load_chat_thread(self, username: str):
         def _fetch():
             try:
+                data = self.client.chat_messages(username)
                 self._evq.put({"type": "chat_thread", "username": username,
-                               "data": self.client.chat_messages(username)})
+                               "data": data})
             except APIError as e:
                 self._evq.put({"type": "send_error", "detail": str(e.detail)})
+                return
+            try:
+                self.client.chat_mark_read(username)
+            except APIError:
+                pass
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _go_qm(self):
@@ -1412,6 +1422,10 @@ class BareNOCChatApp:
             self.client.chat_send(uname, msg)
             thr = self.client.chat_messages(uname)
             self._evq.put({"type": "chat_thread", "username": uname, "data": thr})
+            try:
+                self.client.chat_mark_read(uname)
+            except APIError:
+                pass
         except APIError as e:
             self._evq.put({"type": "send_error", "detail": str(e.detail)})
         except Exception as e:

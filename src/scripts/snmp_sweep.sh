@@ -4,7 +4,7 @@
 # so we probe a short list (fast), but works standalone too.
 #
 # Usage: snmp_sweep.sh <cidr-list> [community]
-#   cidr-list: comma-separated subnets, e.g. 192.168.4.0/24,192.168.8.0/24
+#   cidr-list: comma-separated subnets, e.g. 10.0.4.0/24,10.0.8.0/24
 # Outputs JSON: {"found": [{"ip","sysname","sysdescr","sysobjectid","vendor"}],
 #                "count": N, "community": "..."}
 set -u

@@ -233,8 +233,8 @@ class AutoAdoptTest(unittest.TestCase):
         c.site = "default"
         nets = {
             "n_wifi": {"name": "WiFi", "vlan": 5},
-            "n_kids": {"name": "Kids", "vlan": 9},
-            "n_rctf": {"name": "RCTF", "vlan": 10},
+            "n_iot": {"name": "IoT", "vlan": 9},
+            "n_video": {"name": "Video", "vlan": 10},
             "n_prod": {"name": "Production", "vlan": 4},
         }
         device = {
@@ -242,7 +242,7 @@ class AutoAdoptTest(unittest.TestCase):
             "type": "usw",
             "uplink": {"uplink_mac": "", "uplink_remote_port": None},
             "port_overrides": [{"port_idx": 1, "native_networkconf_id": "n_wifi",
-                                 "excluded_networkconf_ids": ["n_prod", "n_kids"],
+                                 "excluded_networkconf_ids": ["n_prod", "n_iot"],
                                  "tagged_networkconf_id": "", "forward": "customize",
                                  "name": "Port 1"}],
             "port_table": [{"port_idx": 1, "native_networkconf_id": "n_wifi"}],
@@ -258,8 +258,8 @@ class AutoAdoptTest(unittest.TestCase):
             if method == "GET" and "networkconf" in path:
                 return {"data": [{"_id": k, "name": v["name"], "vlan": v["vlan"]} for k, v in nets.items()]}
             if method == "GET" and "wlanconf" in path:
-                return {"data": [{"name": "Kids", "enabled": True, "networkconf_id": "n_kids"},
-                                 {"name": "RCTF", "enabled": True, "networkconf_id": "n_rctf"}]}
+                return {"data": [{"name": "IoT", "enabled": True, "networkconf_id": "n_iot"},
+                                 {"name": "Video", "enabled": True, "networkconf_id": "n_video"}]}
             if method == "PUT":
                 written[path] = data
                 return {"meta": {"rc": "ok"}}
@@ -270,8 +270,8 @@ class AutoAdoptTest(unittest.TestCase):
 
         # dry_run: computes, does NOT write
         out = c.ensure_wireless_uplinks(dry_run=True)
-        self.assertEqual(len(out["changed"]), 2)  # Kids + RCTF on port 1
-        self.assertTrue(all(x["tagged_vlan"] in ("Kids", "RCTF") for x in out["changed"]))
+        self.assertEqual(len(out["changed"]), 2)  # IoT + Video on port 1
+        self.assertTrue(all(x["tagged_vlan"] in ("IoT", "Video") for x in out["changed"]))
         self.assertNotIn("rest/device/sw1", written)
 
         # real: writes the full array, preserving exclusions minus the tagged
@@ -281,9 +281,9 @@ class AutoAdoptTest(unittest.TestCase):
         ov = written["/proxy/network/api/s/default/rest/device/sw1"]["port_overrides"]
         p1 = next(o for o in ov if o["port_idx"] == 1)
         tagged = [x for x in p1["tagged_networkconf_id"].split(",") if x]
-        self.assertIn("n_kids", tagged)
-        self.assertIn("n_rctf", tagged)
-        self.assertNotIn("n_kids", p1["excluded_networkconf_ids"])   # removed from excluded
+        self.assertIn("n_iot", tagged)
+        self.assertIn("n_video", tagged)
+        self.assertNotIn("n_iot", p1["excluded_networkconf_ids"])   # removed from excluded
         self.assertIn("n_prod", p1["excluded_networkconf_ids"])       # other exclusions kept
 
     def test_devices_status_filter_and_clients_filters(self):

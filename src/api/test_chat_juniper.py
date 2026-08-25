@@ -25,7 +25,7 @@ from database import SessionLocal, init_db  # noqa: E402
 from models import User, ChatMessage  # noqa: E402
 from auth import hash_password  # noqa: E402
 import main as api_main  # noqa: E402
-from routes.chat import chat_send, ChatSend  # noqa: E402
+from routes.chat import chat_send, ChatSend, chat_messages, chat_mark_read, ChatMarkRead  # noqa: E402
 
 
 def _user(username, role="tenant", bot=False):
@@ -78,6 +78,69 @@ class BotMessagingTest(unittest.TestCase):
         db.close()
 
 
+class ChatReadMarkingTest(unittest.TestCase):
+    """Read-marking was a state change on GET /messages (CSRF-visible via the
+    session cookie). It is now split: GET is read-only, POST /messages/read
+    marks the thread read."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(User).delete()
+        db.commit()
+        db.close()
+        self.bot = _user("juniper", bot=True)
+        self.me = _user("alice")
+
+    def tearDown(self):
+        # Leave the shared DB clean — test_roles (same process, run_tests.sh
+        # convention) deletes Ticket/Device/User but NOT ChatMessage, so a
+        # leftover thread row would trip its FK constraint + a SQLite lock.
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(User).delete()
+        db.commit()
+        db.close()
+
+    def _thread(self, from_user, to_user, body="hi"):
+        db = SessionLocal()
+        m = ChatMessage(from_user_id=from_user.id, to_user_id=to_user.id, body=body)
+        db.add(m)
+        db.commit()
+        db.refresh(m)
+        db.close()
+        return m
+
+    def test_get_messages_is_read_only(self):
+        m = self._thread(self.bot, self.me)
+        db = SessionLocal()
+        chat_messages(with_username="juniper", db=db, user=self.me)
+        db.expire_all()
+        row = db.query(ChatMessage).get(m.id)
+        self.assertIsNone(row.read_at, "GET /messages must not mark messages read")
+        db.close()
+
+    def test_post_mark_read_writes_read_at(self):
+        m = self._thread(self.bot, self.me)
+        db = SessionLocal()
+        r = chat_mark_read(data=ChatMarkRead(with_username="juniper"), db=db, user=self.me)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["marked"], 1)
+        db.expire_all()
+        row = db.query(ChatMessage).get(m.id)
+        self.assertIsNotNone(row.read_at, "POST /messages/read must mark the message read")
+        db.close()
+
+    def test_post_mark_read_is_idempotent(self):
+        self._thread(self.bot, self.me)
+        db = SessionLocal()
+        chat_mark_read(data=ChatMarkRead(with_username="juniper"), db=db, user=self.me)
+        r2 = chat_mark_read(data=ChatMarkRead(with_username="juniper"), db=db, user=self.me)
+        self.assertEqual(r2["marked"], 0)
+        db.close()
+
+
 class BotSeedTest(unittest.TestCase):
     def setUp(self):
         init_db()
@@ -120,8 +183,18 @@ class RouteBindingTest(unittest.TestCase):
 
         route = next(r for r in app.routes
                      if getattr(r, "path", "") == "/api/v1/chat/messages"
+                     and "GET" in getattr(r, "methods", []))
+        self.assertEqual(route.endpoint.__name__, "chat_messages")
+
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/chat/messages"
                      and "POST" in getattr(r, "methods", []))
         self.assertEqual(route.endpoint.__name__, "chat_send")
+
+        route = next(r for r in app.routes
+                     if getattr(r, "path", "") == "/api/v1/chat/messages/read"
+                     and "POST" in getattr(r, "methods", []))
+        self.assertEqual(route.endpoint.__name__, "chat_mark_read")
 
         route = next(r for r in app.routes
                      if getattr(r, "path", "") == "/api/v1/tickets/{ticket_id}/status"

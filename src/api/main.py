@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from datetime import datetime
 from database import init_db, SessionLocal, get_db
@@ -282,6 +283,14 @@ async def lifespan(app: FastAPI):
     _remount_net_backup()  # reconnect the NAS backup share (best-effort)
     from starlink import purge_phantom_dish_at_startup
     purge_phantom_dish_at_startup()  # self-clean fabricated dish records (08-20 phantom)
+    # Pre-generate the appliance device-control keypair (idempotent) so the
+    # GET /control-key + /onboard/script handlers are pure reads — a lazy
+    # generate-on-first-GET would make a GET mutate the secrets volume.
+    try:
+        from control_key import ensure_control_key
+        ensure_control_key()
+    except Exception:
+        pass  # lazy fallback in the route handlers covers a missing secrets dir
     yield
     logger.info("Shutting down BareNOC API...")
 
@@ -356,10 +365,15 @@ def _session_valid(request: Request, db: Session) -> bool:
     if not token:
         return False
     payload = decode_token(token)
-    if not payload or not payload.get("sub"):
+    # Fail-closed (P0): only access-type tokens; version must match (revocation).
+    if not payload or not payload.get("sub") or payload.get("type") != "access":
         return False
-    user = db.query(User).filter(User.username == payload["sub"]).first()
-    return bool(user and user.is_active)
+    user = db.query(User).filter(func.lower(User.username) == payload["sub"].lower()).first()
+    if not (user and user.is_active):
+        return False
+    if payload.get("ver", 0) != (user.token_version or 0):
+        return False
+    return True
 
 
 def _first_run_setup() -> bool:

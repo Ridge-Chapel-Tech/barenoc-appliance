@@ -249,6 +249,7 @@ def _run_check() -> dict:
         "changelog": "",
         "tarball": "",
         "checksum": "",
+        "signature": "",
         "update_access": access,
         "manifest_error": "",
     }
@@ -261,6 +262,7 @@ def _run_check() -> dict:
             "changelog": m.get("changelog", ""),
             "tarball": (m.get("assets") or {}).get("tarball", ""),
             "checksum": (m.get("assets") or {}).get("checksums", ""),
+            "signature": (m.get("assets") or {}).get("signature", ""),
             "available": _version_gt(latest, cur),
         })
     except Exception as e:
@@ -285,6 +287,7 @@ def update_status(user: User = Depends(require_any_role("technician", "operator"
     status.setdefault("available", False)
     status.setdefault("manifest_error", "")
     status.setdefault("checked_at", "")
+    status.setdefault("signature", "")
     # Signal when the persisted check is stale so the UI refreshes it on load:
     # (a) the persisted check predates the running build (fresh deploy), or
     # (b) the check is simply OLD — a stable build on the same version must
@@ -314,6 +317,7 @@ def update_now(user: User = Depends(require_any_role("technician", "operator", "
         raise HTTPException(400, "already up to date (or the manifest is unreachable)")
     payload = {"version": status.get("latest"), "kind": status.get("kind"),
                "tarball": status.get("tarball"), "checksums": status.get("checksum"),
+               "signature": status.get("signature"),
                "requested_at": _now(), "snapshot": True}
     try:
         os.makedirs(STATUS_DIR, exist_ok=True)
