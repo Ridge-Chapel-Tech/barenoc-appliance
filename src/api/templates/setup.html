@@ -191,11 +191,25 @@ function accountForm() {
 function llmForm() {
   return '<div class="space-y-3 text-sm">'
     + '<p class="text-xs text-gray-400">The AI failover chain (up to 3 providers): BareNOC tries <b>Preferred</b> first, then <b>Secondary</b>, then <b>Tertiary</b> if one is down. Cloud providers need an API key; local Ollama needs none. Leave a slot blank to skip it — Test each before saving.</p>'
+    + '<div class="rounded-lg border border-gray-200 p-3">'
+    + '<p class="text-xs font-semibold">LLM egress</p>'
+    + '<label class="flex items-center gap-2 text-xs mt-1"><input type="radio" name="f-llm-egress" value="cloud" checked onchange="llmEgressMode()"> Cloud — hosted provider (default for home)</label>'
+    + '<label class="flex items-center gap-2 text-xs mt-1"><input type="radio" name="f-llm-egress" value="local" onchange="llmEgressMode()"> Local-only — no data leaves your network (Ollama/LM Studio)</label>'
+    + '<p id="f-llm-egress-note" class="text-[11px] text-gray-400 mt-1"></p>'
+    + '</div>'
     + providerSlot(1, 'Preferred', 'deepseekv4', 'https://api.deepseek.com', 'deepseek-v4-flash')
     + providerSlot(2, 'Secondary', 'ollama', 'http://192.168.x.x:11434', 'qwen2.5:3b-instruct')
     + providerSlot(3, 'Tertiary', '', '', '')
     + '<button onclick="saveLLM()" class="rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save providers</button>'
     + '</div>';
+}
+
+function llmEgressMode() {
+  var mode = (document.querySelector("input[name='f-llm-egress']:checked") || {}).value || 'cloud';
+  var note = document.getElementById('f-llm-egress-note');
+  if (note) note.textContent = mode === 'local'
+    ? 'Local-only: tickets/chat stay on your LAN. Use an Ollama/LM Studio endpoint (≥7B Q4 recommended; 3B = degraded chat only).'
+    : '';
 }
 
 function providerSlot(n, label, defName, defUrl, defModel) {
@@ -314,10 +328,15 @@ async function saveAccount() {
 async function saveLLM() {
   const providers = [];
   const order = [];
+  const egress = (document.querySelector("input[name='f-llm-egress']:checked") || {}).value || 'cloud';
   for (let n = 1; n <= 3; n++) {
     const c = llmSlotConfig(n);
     if (!c.base_url || !c.chat_model) continue;
-    if (c.deployment === 'hosted' && !c.api_key) { alert('Slot ' + n + ': cloud provider needs an API key (or switch it to Local).'); return; }
+    if (c.deployment === 'hosted' && !c.api_key) {
+      if (egress === 'local') continue;   // local-only: cloud slots are skipped
+      alert('Slot ' + n + ': cloud provider needs an API key (or switch it to Local).'); return;
+    }
+    if (egress === 'local' && c.deployment === 'hosted') continue;
     providers.push(c);
     order.push(c.name);
   }
@@ -325,6 +344,9 @@ async function saveLLM() {
   try {
     await api('/api/v1/settings/llm', { method: 'PUT', body: JSON.stringify({
       active_provider: order[0], provider_order: order, providers })});
+    if (egress === 'local') {
+      await api('/api/v1/compliance', { method: 'PUT', body: JSON.stringify({ controls: { llm_egress: 'local' } }) });
+    }
     alert('✅ LLM failover chain saved.'); STATUS.steps.llm = true; advance();
   } catch (e) { alert('LLM: ' + e.message); }
 }

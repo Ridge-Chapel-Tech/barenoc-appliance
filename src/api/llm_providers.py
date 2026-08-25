@@ -116,13 +116,46 @@ def load_providers(env: Optional[dict] = None) -> dict:
     return providers
 
 
+def egress_mode(env: Optional[dict] = None) -> str:
+    """Compliance LLM-egress control: 'cloud' (default) or 'local'.
+
+    'local' = local-only: the worker chain, pi provider secret and wizard
+    must only ever use on-prem (Ollama/LM Studio) endpoints. The one real
+    data-flow blocker in the honest-egress map (tickets/chat/network
+    summaries transit a hosted LLM by default).
+    """
+    env = env if env is not None else read_env_file()
+    v = _get(env, "LLM_EGRESS", "cloud").strip().lower()
+    return "local" if v in ("local", "local-only", "on_prem") else "cloud"
+
+
+def _egress_allowed(provider: dict, mode: str) -> bool:
+    if mode == "local":
+        return (provider.get("deployment") or "hosted") == "on_prem"
+    return True
+
+
+def effective_providers(env: Optional[dict] = None) -> dict:
+    """The provider registry after the compliance egress filter.
+
+    In local-only mode this drops every hosted provider, so any consumer that
+    walks this dict (or provider_order below) can never attempt a hosted call.
+    """
+    env = env if env is not None else read_env_file()
+    providers = load_providers(env)
+    mode = egress_mode(env)
+    if mode == "local":
+        return {k: v for k, v in providers.items() if _egress_allowed(v, mode)}
+    return providers
+
+
 def active_provider_name(env: Optional[dict] = None) -> str:
     """The configured active provider, or the first configured provider."""
     env = env if env is not None else read_env_file()
+    providers = effective_providers(env)
     name = _get(env, "LLM_ACTIVE_PROVIDER", "").strip().lower()
-    if name:
+    if name and name in providers:
         return name
-    providers = load_providers(env)
     return next(iter(providers), "")
 
 
@@ -130,11 +163,12 @@ def provider_order(env: Optional[dict] = None) -> list:
     """The failover chain as an ordered list of provider NAMES.
 
     Source: LLM_PROVIDER_ORDER (comma-separated; primary first). Unknown or
-    unconfigured names are dropped; duplicates collapsed. Falls back to
-    [LLM_ACTIVE_PROVIDER], then the first configured provider.
+    unconfigured names are dropped; duplicates collapsed. In local-only
+    egress mode, hosted providers are filtered out entirely (see
+    effective_providers) — the chain never contains a cloud provider.
     """
     env = env if env is not None else read_env_file()
-    providers = load_providers(env)
+    providers = effective_providers(env)
     raw = _get(env, "LLM_PROVIDER_ORDER", "").strip()
     names = [n.strip().lower() for n in raw.split(",") if n.strip()] if raw else []
     seen = []

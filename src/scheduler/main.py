@@ -586,6 +586,81 @@ def _effective_retention_days(days: int, min_free_pct: int, free_pct: float) -> 
     return days
 
 
+# ── Compliance retention (per-category max-age) ───────────────────────────
+# KEEP IN SYNC with src/api/compliance.py RETENTION_PRESETS. (table, column,
+# sane days, strict days). 0 = never prune.
+RETENTION_CATEGORIES = {
+    "metrics": ("metrics", "ts", 30, 14),
+    "audit_log": ("audit_log", "timestamp", 365, 90),
+    "tickets": ("tickets", "resolved_at", 0, 365),
+    "chat_messages": ("chat_messages", "created_at", 0, 180),
+    "scan_runs": ("scan_runs", "created_at", 90, 30),
+    "findings": ("findings", "created_at", 90, 30),
+    "firmware_upgrades": ("firmware_upgrades", "created_at", 365, 180),
+    "link_episodes": ("link_episodes", "updated_at", 30, 7),
+    "starlink_episodes": ("starlink_episodes", "updated_at", 30, 7),
+}
+
+# categories that must be pruned before their parent (findings before scan_runs)
+_RETENTION_ORDER = ("findings", "metrics", "chat_messages", "tickets",
+                    "link_episodes", "starlink_episodes", "firmware_upgrades",
+                    "scan_runs", "audit_log")
+
+
+def retention_config() -> dict:
+    """Per-category max-age in days, hot-read from .env. RETENTION_PROFILE
+    picks sane/strict defaults; an explicit RETENTION_<CAT>_DAYS wins."""
+    env = _read_env()
+    profile = (env.get("RETENTION_PROFILE") or "sane").strip().lower()
+    idx = 2 if profile == "strict" else 0
+    cfg = {}
+    for cat, (table, col, sane, strict) in RETENTION_CATEGORIES.items():
+        default = strict if idx == 2 else sane
+        try:
+            days = int(env.get(f"RETENTION_{cat.upper()}_DAYS", str(default)) or default)
+        except ValueError:
+            days = default
+        cfg[cat] = {"table": table, "column": col, "days": max(0, days)}
+    return cfg
+
+
+def prune_retention(path: str = None) -> dict:
+    """Delete rows older than each category's max-age (compliance retention
+    control). Uses stdlib sqlite3 (no sqlalchemy in this image). FK-safe: the
+    order prunes children (findings) before parents (scan_runs). Never raises.
+    """
+    path = path or _db_path()
+    now = datetime.datetime.utcnow()
+    deleted = {}
+    try:
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = {r[0] for r in cur.fetchall()}
+            for cat in _RETENTION_ORDER:
+                cfg = retention_config()[cat]
+                if cfg["days"] <= 0 or cfg["table"] not in tables:
+                    deleted[cat] = 0
+                    continue
+                cutoff = (now - datetime.timedelta(days=cfg["days"])).strftime(
+                    "%Y-%m-%d %H:%M:%S")
+                try:
+                    cur.execute(
+                        f"DELETE FROM {cfg['table']} WHERE {cfg['column']} < ?",
+                        (cutoff,))
+                    n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                    deleted[cat] = n
+                except Exception:
+                    deleted[cat] = 0
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"retention prune failed: {e}")
+    return deleted
+
+
 def prune_telemetry(path: str = None, days: int = None,
                     min_free_pct: int = None) -> dict:
     """Delete telemetry samples older than the retention window. Uses stdlib
@@ -701,6 +776,10 @@ def run():
                     logger.info(f"Telemetry retention prune: deleted {result['deleted']} "
                                 f"rows (retention {result['retention_days']}d, "
                                 f"{result['free_pct']}% free)")
+                # Compliance retention (per-category max-age) — same hourly tick.
+                deld = prune_retention()
+                if any(deld.values()):
+                    logger.info(f"Retention prune: {deld}")
                 last_prune = now
 
         except Exception as e:

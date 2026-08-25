@@ -780,5 +780,54 @@ class SweepRunnerTest(unittest.TestCase):
         self.assertIn("Timed out", res["error"])
 
 
+class PiLocalProviderTest(unittest.TestCase):
+    """Compliance LLM egress (local-only): pi runs the on-prem endpoint."""
+
+    def setUp(self):
+        self.orig = runner.PI_PROVIDER_SECRET_FILE
+
+    def tearDown(self):
+        runner.PI_PROVIDER_SECRET_FILE = self.orig
+
+    def test_local_secret_file_returns_base_url(self):
+        tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json")
+        tmp.write(json.dumps({
+            "provider": "openai",
+            "model": "qwen2.5:7b-instruct",
+            "api_key": "ollama",
+            "base_url": "http://192.168.1.50:11434/v1",
+            "local": True,
+        }))
+        tmp.close()
+        runner.PI_PROVIDER_SECRET_FILE = tmp.name
+        try:
+            cfg = runner._pi_provider_config()
+        finally:
+            os.unlink(tmp.name)
+        self.assertEqual(cfg["provider"], "openai")
+        self.assertEqual(cfg["model"], "qwen2.5:7b-instruct")
+        self.assertEqual(cfg["base_url"], "http://192.168.1.50:11434/v1")
+        self.assertEqual(cfg["api_key"], "ollama")
+
+    def test_cloud_secret_file_has_no_base_url(self):
+        tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json")
+        tmp.write(json.dumps({"provider": "deepseek", "model": "deepseek-v4-flash",
+                              "api_key": "sk-test"}))
+        tmp.close()
+        runner.PI_PROVIDER_SECRET_FILE = tmp.name
+        try:
+            cfg = runner._pi_provider_config()
+        finally:
+            os.unlink(tmp.name)
+        self.assertEqual(cfg["provider"], "deepseek")
+        self.assertNotIn("base_url", cfg)
+
+    def test_missing_file_falls_back_without_crash(self):
+        runner.PI_PROVIDER_SECRET_FILE = "/nonexistent/llm_provider.json"
+        # .env is also absent in the test env — must not raise
+        cfg = runner._pi_provider_config()
+        self.assertIn("provider", cfg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -17,6 +17,8 @@ Covers:
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
 _TMP = tempfile.mkdtemp(prefix="auth-sessions-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
@@ -54,6 +56,11 @@ class AuthSessionTests(unittest.TestCase):
                 user.must_change_password = False
                 user.role = "admin"
                 user.is_active = True
+            # compliance controls: reset MFA + lockout state between tests
+            user.otp_secret = None
+            user.otp_verified = False
+            user.failed_logins = 0
+            user.locked_until = None
             db.query(AuthSession).delete()
             db.commit()
         finally:
@@ -191,6 +198,88 @@ class AuthSessionTests(unittest.TestCase):
             self.assertIsNotNone(row)
         finally:
             db.close()
+
+    # ── compliance: session policy (idle timeout + lockout) ──
+
+    def test_idle_timeout_revokes_refresh(self):
+        db = SessionLocal()
+        try:
+            alice_id = db.query(User).filter(User.username == "alice").first().id
+            sess = db.query(AuthSession).filter(
+                AuthSession.user_id == alice_id).order_by(
+                AuthSession.id.desc()).first()
+            sess.last_used_at = datetime.utcnow() - timedelta(minutes=10)
+            db.commit()
+        finally:
+            db.close()
+        with patch("routes.auth._session_idle_min", return_value=1):
+            r = self.c.post("/api/v1/auth/refresh",
+                            headers={"Authorization": f"Bearer {self.refresh}"})
+        self.assertEqual(r.status_code, 401)
+        self.assertIn("idle", r.json()["detail"].lower())
+
+    def test_lockout_after_failures(self):
+        with patch("routes.auth._session_lockout_after", return_value=3):
+            for _ in range(3):
+                r = self.c.post("/api/v1/auth/login",
+                                json={"username": "alice", "password": "wrong"})
+                self.assertEqual(r.status_code, 401)
+            # even the correct password is now refused while locked
+            r = self.c.post("/api/v1/auth/login",
+                            json={"username": "alice",
+                                  "password": "alice-password-123"})
+            self.assertEqual(r.status_code, 423)
+            self.assertIn("locked", r.json()["detail"].lower())
+
+    # ── compliance: MFA enforcement (TOTP gate) ──
+
+    def test_mfa_enforced_password_only_401(self):
+        with patch("mfa.mfa_enforced", return_value=True):
+            r = self.c.post("/api/v1/auth/login",
+                            json={"username": "alice",
+                                  "password": "alice-password-123"})
+        self.assertEqual(r.status_code, 401)
+        self.assertIn("MFA required", r.json()["detail"])
+
+    def test_mfa_totp_flow_end_to_end(self):
+        import pyotp
+        from mfa import generate_secret
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == "alice").first()
+            user.otp_secret = generate_secret()
+            user.otp_verified = True
+            db.commit()
+            code = pyotp.TOTP(user.otp_secret).now()
+        finally:
+            db.close()
+        with patch("mfa.mfa_enforced", return_value=True):
+            r = self.c.post("/api/v1/auth/login",
+                            json={"username": "alice",
+                                  "password": "alice-password-123",
+                                  "totp_code": code})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("access_token", r.json())
+
+    def test_mfa_wrong_totp_401(self):
+        import pyotp
+        from mfa import generate_secret
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == "alice").first()
+            user.otp_secret = generate_secret()
+            user.otp_verified = True
+            db.commit()
+            # a code from a DIFFERENT secret must never verify
+            wrong = pyotp.TOTP(generate_secret()).now()
+        finally:
+            db.close()
+        with patch("mfa.mfa_enforced", return_value=True):
+            r = self.c.post("/api/v1/auth/login",
+                            json={"username": "alice",
+                                  "password": "alice-password-123",
+                                  "totp_code": wrong})
+        self.assertEqual(r.status_code, 401)
 
 
 if __name__ == "__main__":

@@ -36,11 +36,43 @@ from oidc import (
     fetch_userinfo,
     role_from_groups,
 )
+from mfa import mfa_required_for, verify_totp, generate_secret, provisioning_uri
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 # ── Session + cookie helpers (P0 revocation batch 2026-08-25) ──
+
+def _session_idle_min() -> int:
+    """Compliance session policy: idle window in minutes (0 = disabled)."""
+    try:
+        from llm_providers import read_env_file
+        return int(read_env_file().get("SESSION_IDLE_TIMEOUT_MIN", "0") or 0)
+    except Exception:
+        return 0
+
+
+def _session_lockout_after() -> int:
+    """Compliance session policy: lockout after N bad passwords (0 = off)."""
+    try:
+        from llm_providers import read_env_file
+        return int(read_env_file().get("SESSION_LOCKOUT_AFTER", "0") or 0)
+    except Exception:
+        return 0
+
+
+def _record_failed_login(db: Session, user: User) -> None:
+    after = _session_lockout_after()
+    user.failed_logins = (user.failed_logins or 0) + 1
+    if after > 0 and user.failed_logins >= after:
+        user.locked_until = datetime.utcnow() + timedelta(minutes=15)
+        user.failed_logins = 0
+    db.commit()
+
+
+def _reset_failed_logins(db: Session, user: User) -> None:
+    user.failed_logins = 0
+    user.locked_until = None
 
 def _client_ip(request: Request) -> str:
     """Best-effort client IP: last X-Forwarded-For hop (nginx appends the real
@@ -124,7 +156,18 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
     # case-insensitive usernames: "Admin" and "admin" are the same account
     user = db.query(User).filter(
         func.lower(User.username) == request.username.strip().lower()).first()
+
+    # Lockout (session policy): refuse a locked account before password verify
+    # (no timing oracle, no brute-force window).
+    if user and user.locked_until and user.locked_until > datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail="Account temporarily locked after repeated failures — try again later",
+        )
+
     if not user or not verify_password(request.password, user.hashed_password):
+        if user:
+            _record_failed_login(db, user)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -135,8 +178,19 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
             detail="Account is disabled",
         )
 
+    # MFA gate (compliance): password-only admin/operator sign-in requires a
+    # valid TOTP code while enforcement is on. Passkey (OIDC) login is already
+    # strong auth and does not pass through here.
+    if mfa_required_for(user):
+        if not verify_totp(user.otp_secret, request.totp_code or ""):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="MFA required: provide your TOTP code (or sign in with a passkey)",
+            )
+
+    _reset_failed_logins(db, user)
+
     # Update last login
-    from datetime import datetime
     user.last_login = datetime.utcnow()
     db.commit()
 
@@ -287,6 +341,18 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     if (payload.get("ver") or 0) != (user.token_version or 0):
         raise HTTPException(status_code=401, detail="Session revoked — please sign in again")
 
+    # Idle timeout (compliance session policy): the refresh session dies after
+    # N idle minutes — the stateless access token lives out its own ≤60-min
+    # expiry, but the refresh can't extend the session past inactivity.
+    idle_min = _session_idle_min()
+    if idle_min > 0:
+        last_activity = session.last_used_at or session.created_at
+        if last_activity and (datetime.utcnow() - last_activity) > timedelta(minutes=idle_min):
+            session.revoked_at = datetime.utcnow()
+            db.commit()
+            raise HTTPException(status_code=401,
+                                detail="Session idle timeout — please sign in again")
+
     session.last_used_at = datetime.utcnow()
     db.commit()
 
@@ -330,6 +396,51 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def get_me(user: User = Depends(get_current_user)):
     return user
+
+
+# ── TOTP second factor (compliance MFA enforcement) ──
+
+@router.get("/totp/enroll")
+def totp_enroll(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Start TOTP enrollment: generate + store a pending secret; return the
+    otpauth provisioning URI + the base32 secret (for manual entry)."""
+    secret = generate_secret()
+    user.otp_secret = secret
+    user.otp_verified = False
+    db.commit()
+    return {"secret": secret, "uri": provisioning_uri(secret, user.username)}
+
+
+@router.post("/totp/confirm")
+def totp_confirm(data: dict, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Confirm the pending TOTP enrollment with a live code."""
+    code = str(data.get("code") or "")
+    if not user.otp_secret:
+        raise HTTPException(status_code=400,
+                            detail="No pending TOTP enrollment — start one first")
+    if not verify_totp(user.otp_secret, code):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    user.otp_verified = True
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/totp/disable")
+def totp_disable(data: dict, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Remove the TOTP second factor (must present a valid code; refused while
+    MFA enforcement is on so the admin can't lock themselves out)."""
+    code = str(data.get("code") or "")
+    if user.otp_verified and not verify_totp(user.otp_secret, code):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    if mfa_required_for(user):
+        raise HTTPException(status_code=400,
+                            detail="MFA enforcement is on — turn it off in Settings → Security first")
+    user.otp_secret = None
+    user.otp_verified = False
+    db.commit()
+    return {"status": "ok"}
 
 
 # ── OIDC / Pocket ID passkey login ──

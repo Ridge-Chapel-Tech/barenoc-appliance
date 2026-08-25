@@ -153,6 +153,25 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: users TOTP second factor + login lockout (compliance controls
+    # 2026-08-25). Idempotent ALTERs; create_all won't add columns to an
+    # existing users table.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN otp_secret VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN otp_verified BOOLEAN DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN failed_logins INTEGER DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN locked_until DATETIME"
+            ))
+    except OperationalError:
+        pass  # Columns already exist
     # Migration: auth_sessions (P0 revocation batch 2026-08-25). NEW table —
     # create_all above already creates it; the guarded CREATEs are idempotent
     # belt-and-suspenders no-ops. KEEP IN SYNC with models.AuthSession.

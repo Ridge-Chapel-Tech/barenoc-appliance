@@ -15,6 +15,33 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.25.b] — 2026-08-25
+
+### Added
+- **Compliance controls (toggleable security/governance panel + attestation):**
+  a new Settings → Security panel with 8 individually-toggleable controls
+  (LLM egress cloud/local, MFA enforcement with TOTP, telemetry off, remote
+  support consent, retention policy, audit log, session policy, data deletion),
+  a one-click **Compliance baseline** preset, and an **attestation snapshot**
+  export (every control's state + enabled-since provenance + settings hash +
+  appliance version + audit-log export link). Home UX keeps its streamlined
+  defaults. The always-on floor (self-protection, mTLS identity, encryption at
+  rest, update signing, 3-layer backups) is listed read-only and is never
+  toggleable.
+- **LLM egress enforcement (local-only):** the worker chain + pi provider are
+  filtered to on-prem (Ollama/LM Studio) endpoints when egress is local;
+  saving a hosted/cloud API key is refused with a policy message; the wizard
+  LLM step offers a "local-only (no data leaves your network)" option.
+- **Audit log viewer:** new /audit page (hash-chain verify + JSON export) with
+  chain-integrity checking (`audit.verify_chain`).
+- **Session policy:** idle timeout + login lockout (strict profile), and
+  per-user purge + factory reset for the data-deletion control.
+
+### Security
+- **MFA enforcement gate:** password-only admin/operator sign-in requires a
+  TOTP second factor while enforcement is on (passkey-first via Pocket ID;
+  TOTP fallback via pyotp).
+
 ## [2026.08.25.a] — 2026-08-24
 
 ### Security

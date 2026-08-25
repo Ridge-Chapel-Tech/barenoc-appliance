@@ -51,6 +51,11 @@ class User(Base):
     oidc_sub = Column(String(128), nullable=True, index=True)  # Pocket ID subject
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
+    # Compliance controls (2026-08-25): TOTP second factor + login lockout.
+    otp_secret = Column(String(64), nullable=True)   # TOTP secret (base32)
+    otp_verified = Column(Boolean, default=False)    # True once the user confirmed a code
+    failed_logins = Column(Integer, default=0)       # consecutive bad-password attempts
+    locked_until = Column(DateTime, nullable=True)   # lockout window end (session policy)
     # Token version (P0 revocation batch 2026-08-25): every access/refresh JWT
     # carries `ver`; bumping this column invalidates ALL outstanding tokens for
     # the user immediately (password change / force-logout).

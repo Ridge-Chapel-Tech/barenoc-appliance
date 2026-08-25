@@ -619,14 +619,25 @@ def _run_single(action: str, target: str, params: dict, ticket_id: str,
                 pass
 
 
+PI_PROVIDER_SECRET_FILE = "/opt/barenoc/volumes/secrets/llm_provider.json"
+
+
 def _pi_provider_config() -> dict:
     """Provider/model/api-key for pi, straight from BareNOC's Settings.
-    Prefers the API-written secrets file (/opt/barenoc/volumes/secrets/
-    llm_provider.json — kept in sync on every settings save), falls back to
-    reading .env. Maps the BareNOC provider block to a provider pi recognizes."""
+    Prefers the API-written secrets file (llm_provider.json — kept in sync on
+    every settings save), falls back to reading .env. Maps the BareNOC provider
+    block to a provider pi recognizes.
+
+    Local-only egress (compliance): the secret file carries base_url + local
+    flag — pi runs the on-prem endpoint as PRIMARY (no cloud).
+    """
     try:
-        with open("/opt/barenoc/volumes/secrets/llm_provider.json") as f:
+        with open(PI_PROVIDER_SECRET_FILE) as f:
             d = json.load(f)
+        if d.get("base_url"):
+            return {"provider": d.get("provider", "openai"),
+                    "model": d["model"], "api_key": d.get("api_key") or "ollama",
+                    "base_url": d["base_url"]}
         if d.get("api_key") and d.get("model"):
             return {"provider": d.get("provider", "deepseek"),
                     "model": d["model"], "api_key": d["api_key"]}
@@ -642,6 +653,29 @@ def _pi_provider_config() -> dict:
                     env[k.strip()] = v.strip()
     except Exception:
         pass
+    # Local-only fallback: pick the first on-prem provider from the order.
+    egress = (env.get("LLM_EGRESS", "cloud") or "cloud").strip().lower()
+    if egress in ("local", "local-only", "on_prem"):
+        order = (env.get("LLM_PROVIDER_ORDER", "") or "").strip()
+        names = [n.strip().lower() for n in order.split(",") if n.strip()]
+        if not names:
+            names = [(env.get("LLM_ACTIVE_PROVIDER", "") or "").strip().lower()]
+            names = [n for n in names if n]
+        for name in names:
+            prefix = f"LLM_PROVIDER_{name.upper()}"
+            dep = (env.get(f"{prefix}_DEPLOYMENT", "hosted") or "hosted").lower()
+            if dep != "on_prem":
+                continue
+            ptype = (env.get(f"{prefix}_TYPE", "openai") or "openai").lower()
+            provider = ("anthropic" if ptype == "anthropic"
+                        else ("google" if ptype == "gemini" else "openai"))
+            return {
+                "provider": provider,
+                "model": env.get(f"{prefix}_CHAT_MODEL", "") or "",
+                "api_key": env.get(f"{prefix}_API_KEY", "") or "ollama",
+                "base_url": (env.get(f"{prefix}_BASE_URL", "") or "").rstrip("/"),
+            }
+        return {"provider": "openai", "model": "", "api_key": "ollama"}
     active = env.get("LLM_ACTIVE_PROVIDER", "deepseek").strip().lower() or "deepseek"
     prefix = f"LLM_PROVIDER_{active.upper()}"
     ptype = (env.get(f"{prefix}_TYPE", "openai") or "openai").lower()
@@ -1025,7 +1059,7 @@ def _pi_fallback_config() -> "dict | None":
     secrets file (pi-agent can read it; .env is 0600 barenoc). Returns
     {provider, model, base_url, api_key} or None."""
     try:
-        with open("/opt/barenoc/volumes/secrets/llm_provider.json") as f:
+        with open(PI_PROVIDER_SECRET_FILE) as f:
             d = json.load(f)
         fb = d.get("fallback") or {}
         if fb.get("provider") and fb.get("model") and fb.get("base_url"):
@@ -1319,6 +1353,12 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
     session_dir = os.path.join(workdir, "sessions", ticket_id)
     os.makedirs(session_dir, exist_ok=True)
     cfg = _pi_provider_config()
+    # Local-only egress (compliance): register the on-LAN endpoint in pi's
+    # models.json so `pi -p --provider <local> --model <m>` resolves it.
+    if cfg.get("base_url"):
+        _ensure_pi_models_json({"provider": cfg["provider"], "model": cfg["model"],
+                                "base_url": cfg["base_url"],
+                                "api_key": cfg.get("api_key") or "ollama"})
     cdir = _checkpoint_dir(ticket_id)
     os.makedirs(cdir, exist_ok=True)
     sysctx = _build_sysctx(context, checkpoint_dir=cdir)

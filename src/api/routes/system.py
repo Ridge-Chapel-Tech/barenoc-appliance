@@ -207,3 +207,36 @@ def _db_size() -> float:
         return 0.0
     except Exception:
         return 0.0
+
+
+@router.post("/factory-reset")
+def factory_reset(confirm: str = "", db: Session = Depends(get_db),
+                  user: User = Depends(require_role("admin"))):
+    """Data deletion (compliance): wipe operational data FK-safely.
+
+    Deletes tickets, chat, telemetry, scans/findings, firmware history,
+    pending actions, link/starlink episodes, device jobs, and the audit log
+    (a fresh `factory_reset` entry is written last as the new chain head).
+    Users, devices and settings are kept — this is a data-purge, not a
+    re-install. Requires explicit confirmation (`?confirm=yes`).
+    """
+    from fastapi import HTTPException
+    if str(confirm).strip().lower() != "yes":
+        raise HTTPException(status_code=400,
+                            detail="factory-reset requires confirm=yes")
+    from models import (Ticket, ChatMessage, Metric, Finding, ScanRun,
+                        FirmwareUpgrade, PendingAction, LinkEpisode,
+                        StarlinkEpisode, DeviceJob, AuditLog)
+    # ordered FK-safely: children before parents
+    for model in (Finding, Metric, ChatMessage, Ticket, DeviceJob,
+                  LinkEpisode, StarlinkEpisode, FirmwareUpgrade, PendingAction,
+                  ScanRun):
+        try:
+            db.query(model).delete(synchronize_session=False)
+        except Exception:
+            db.rollback()
+    db.query(AuditLog).delete(synchronize_session=False)
+    db.commit()
+    from audit import log_event
+    log_event(db, "factory_reset", user.username, {"scope": "operational_data"})
+    return {"status": "ok", "note": "Operational data wiped (users, devices and settings kept)."}

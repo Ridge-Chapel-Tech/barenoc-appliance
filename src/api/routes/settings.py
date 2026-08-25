@@ -489,12 +489,59 @@ def _api_key_status():
 PROVIDER_SECRET_FILE = "/opt/barenoc/volumes/secrets/llm_provider.json"
 
 
+def _persist_provider_secret(payload: str):
+    """Write the pi-agent provider secret (0640, pi-agent-group) — shared by
+    the cloud and local-only paths."""
+    os.makedirs(os.path.dirname(PROVIDER_SECRET_FILE), exist_ok=True)
+    with open(PROVIDER_SECRET_FILE, "w") as f:
+        f.write(payload)
+    os.chmod(PROVIDER_SECRET_FILE, 0o640)
+    # pi-agent must be able to read it (runner passes the key to pi). The
+    # container's /etc/group has no pi-agent entry, so fall back to the
+    # secrets dir's group (host-side setgid keeps it pi-agent-owned).
+    try:
+        import grp
+        gid = grp.getgrnam("pi-agent").gr_gid
+    except Exception:
+        gid = None
+    try:
+        if gid is None:
+            gid = os.stat(os.path.dirname(PROVIDER_SECRET_FILE)).st_gid
+        os.chgrp(PROVIDER_SECRET_FILE, gid)
+    except Exception:
+        pass
+
+
 def _write_provider_secret():
     """Keep the pi-agent provider secret (key/model) in sync with Settings.
     Written whenever the LLM config changes (and on startup); pi-agent reads it
-    so the on-appliance coding agent uses the same keys as everything else."""
+    so the on-appliance coding agent uses the same keys as everything else.
+
+    Local-only egress (compliance) pins the file to the first on-prem
+    endpoint — pi runs local, never cloud.
+    """
     try:
         env = _read_env_file()
+        from llm_providers import egress_mode, provider_order
+        if egress_mode(env) == "local":
+            order = provider_order(env)  # already on-prem-only
+            providers = load_providers(env)
+            local = next((providers[n] for n in order if providers.get(n)), None)
+            if local:
+                ptype = (local.get("type") or "openai").lower()
+                provider = ("anthropic" if ptype == "anthropic"
+                            else ("google" if ptype == "gemini" else "openai"))
+                model = local.get("chat_model") or local.get("reasoner_model") or ""
+                payload = json.dumps({
+                    "provider": provider,
+                    "model": model,
+                    "api_key": local.get("api_key") or "ollama",
+                    "base_url": (local.get("base_url") or "").rstrip("/"),
+                    "local": True,
+                    "fallback": None,
+                })
+                _persist_provider_secret(payload)
+            return
         active = (env.get("LLM_ACTIVE_PROVIDER", "") or "").strip().lower()
         if not active:
             providers = load_providers(env)
@@ -524,23 +571,7 @@ def _write_provider_secret():
                 "api_key": "ollama",
             }
             payload = json.dumps(cfg)
-        with open(PROVIDER_SECRET_FILE, "w") as f:
-            f.write(payload)
-        os.chmod(PROVIDER_SECRET_FILE, 0o640)
-        # pi-agent must be able to read it (runner passes the key to pi). The
-        # container's /etc/group has no pi-agent entry, so fall back to the
-        # secrets dir's group (host-side setgid keeps it pi-agent-owned).
-        try:
-            import grp
-            gid = grp.getgrnam("pi-agent").gr_gid
-        except Exception:
-            gid = None
-        try:
-            if gid is None:
-                gid = os.stat(os.path.dirname(PROVIDER_SECRET_FILE)).st_gid
-            os.chgrp(PROVIDER_SECRET_FILE, gid)
-        except Exception:
-            pass
+        _persist_provider_secret(payload)
     except Exception:
         pass
 
@@ -1646,6 +1677,21 @@ def _update_llm(config: dict, db: Session, user: User) -> dict:
     env = _read_env_file()
     updated = 0
     changed = []
+
+    # Compliance LLM egress: local-only refuses cloud keys outright (the only
+    # code-path toggle — tickets/chat/network summaries must stay on-LAN).
+    from llm_providers import egress_mode
+    if egress_mode(env) == "local":
+        for p in (config.get("providers") or []):
+            dep = str(p.get("deployment") or "hosted").strip().lower()
+            key = str(p.get("api_key") or "").strip()
+            if dep == "hosted" and key and "••" not in key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Local-only LLM egress is enforced — hosted/cloud "
+                           "providers and their API keys cannot be saved. Use an "
+                           "on-prem (Ollama/LM Studio) endpoint, or switch LLM "
+                           "egress back to 'cloud' in Settings → Security.")
 
     if config.get("active_provider"):
         env["LLM_ACTIVE_PROVIDER"] = str(config["active_provider"]).strip().lower()

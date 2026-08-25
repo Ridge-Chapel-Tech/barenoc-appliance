@@ -12,6 +12,7 @@ from datetime import datetime
 class LoginRequest(BaseModel):
     username: str
     password: str
+    totp_code: Optional[str] = None  # required when MFA enforcement is on (admin/operator tier)
 
 
 class RegisterRequest(BaseModel):

@@ -21,7 +21,7 @@ echo "==> scripts tests"
 ( bash scripts/test_release_signing.sh )
 
 echo "==> api tests"
-( cd src/api && python3 -m unittest test_onboard test_devices test_device_agent test_device_agent_jobs test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_link_monitor test_starlink test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter test_network_opt test_telemetry test_wiki test_firmware test_roles test_auth_sessions test_support test_report_submit test_emailer test_jobs_format 2>&1 | tail -3 )
+( cd src/api && python3 -m unittest test_onboard test_devices test_device_agent test_device_agent_jobs test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_link_monitor test_starlink test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter test_network_opt test_telemetry test_wiki test_firmware test_roles test_auth_sessions test_support test_report_submit test_emailer test_jobs_format test_compliance_controls test_attestation test_audit_log 2>&1 | tail -3 )
 ( cd src/api && python3 -m unittest test_devices test_device_agent test_device_channels test_device_layout test_devices_polish test_dashboard test_admin test_settings test_backups_setup test_alerting test_link_monitor test_starlink test_unifi_sync test_chat_juniper test_chat_shell test_updates test_tickets test_tone_filter test_network_opt test_network_scope test_discover_sweep test_telemetry test_wiki test_firmware test_roles test_support test_report_submit 2>&1 | tail -3 )
 
 
@@ -29,7 +29,7 @@ echo "==> worker tests"
 ( cd src/worker && python3 -m unittest test_judge test_juniper test_pi_flag test_integration 2>&1 | tail -3 )
 
 echo "==> scheduler tests"
-( cd src/scheduler && python3 -m unittest test_scheduler 2>&1 | tail -3 )
+( cd src/scheduler && python3 -m unittest test_scheduler test_retention 2>&1 | tail -3 )
 
 echo "==> runner tests"
 ( cd src/agent && python3 -m unittest test_runner 2>&1 | tail -3 )

@@ -104,6 +104,38 @@ def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depend
     target = db.query(User).filter(User.id == user_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    _purge_user_rows(db, target)
     db.delete(target)
     db.commit()
     return None
+
+
+@router.post("/{user_id}/purge")
+def purge_user(user_id: int, db: Session = Depends(get_db),
+               user: User = Depends(require_role("admin"))):
+    """Purge one user's data (tickets, chat, sessions, ownership) while
+    keeping the account itself — FK-safe, audit-logged."""
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    _purge_user_rows(db, target)
+    from audit import log_event
+    log_event(db, "user_data_purged", user.username,
+              {"user_id": user_id, "username": target.username})
+    return {"status": "ok", "purged_user_id": user_id}
+
+
+def _purge_user_rows(db: Session, target: User):
+    """Delete every row that references this user (FK-safe cascade), then
+    clear device ownership back to unowned."""
+    from models import Ticket, ChatMessage, AuthSession, Device
+    db.query(Ticket).filter(Ticket.submitter_id == target.id).delete(
+        synchronize_session=False)
+    db.query(ChatMessage).filter(
+        (ChatMessage.from_user_id == target.id)
+        | (ChatMessage.to_user_id == target.id)).delete(synchronize_session=False)
+    db.query(AuthSession).filter(AuthSession.user_id == target.id).delete(
+        synchronize_session=False)
+    db.query(Device).filter(Device.owner_id == target.id).update(
+        {Device.owner_id: None}, synchronize_session=False)
+    db.flush()
