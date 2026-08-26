@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-MODE="${1:-minor}"
+MODE="${1:-hotfix}"  # default = hotfix: new day → YYYY.MM.DD.a, same day → next letter (the release convention; the bare-date "minor" mode is opt-in)
 VERSION_FILE="src/api/version.py"
 CURRENT="$(python3 -c "import sys;sys.path.insert(0,'src/api');import version;print(version.APP_VERSION)")"
 NOW="$(date +%Y.%m.%d)"

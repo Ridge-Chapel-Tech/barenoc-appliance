@@ -626,7 +626,7 @@
         <h3 class="text-lg font-medium">Remote support (Tailscale)</h3>
         <button onclick="loadRemoteSupport()" class="text-xs font-medium text-barenoc-600 hover:text-barenoc-800">↻ refresh</button>
       </div>
-      <p class="text-xs text-gray-500 mt-1">Lets the BareNOC support team reach <b>this appliance only</b> over a secure Tailscale tunnel — no open ports, works through Starlink/CGNAT. <b>Off by default.</b> The support team can reach appliance nodes only, never the rest of your network.</p>
+      <p class="text-xs text-gray-500 mt-1">Lets the BareNOC support team reach <b>this appliance only</b> over a secure Tailscale tunnel — no open ports, works through CGNAT. <b>Off by default.</b> The support team can reach appliance nodes only, never the rest of your network.</p>
       <label class="flex items-start gap-3 mt-4 cursor-pointer">
         <input id="rs-enabled" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300" onchange="document.getElementById('rs-msg').textContent=''">
         <span class="text-sm text-gray-700">Enable Remote support

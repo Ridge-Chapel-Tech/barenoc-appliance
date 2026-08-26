@@ -15,6 +15,22 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.26.a] — 2026-08-26
+
+### Fixed
+- **Wiki mermaid rendering (10.9.8):** the Getting Started diagram's
+  `Queue Manager (Juniper)` node failed to parse — unquoted parentheses
+  inside a `[...]` label are rejected by the wiki's mermaid 10.9.8 (mermaid
+  11 tolerates them, which hid it). The label is now quoted.
+
+### Changed
+- **Setup card copy:** "Setup complete — your network is being watched"
+  → "Setup complete — your network is in good hands."
+
+### Docs
+- Remote-access wording: "Starlink/CGNAT" → "CGNAT" (settings Support copy,
+  wiki, installer comment, deployment guide).
+
 ## [2026.08.25.d] — 2026-08-25
 
 ### Added

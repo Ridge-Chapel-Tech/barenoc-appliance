@@ -67,7 +67,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    U[You] -->|"message"| QM[Queue Manager (Juniper)]
+    U[You] -->|"message"| QM["Queue Manager (Juniper)"]
     QM -->|"not a queue question"| TK[Ticket]
     TK --> AI[AI Technician]
     AI -->|"needs approval"| HT[Human Tech]

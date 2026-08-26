@@ -485,7 +485,7 @@ BareNOC ships a **vendor support tailnet** path for remote support. It is
 Remote support**.
 
 - **Mechanism:** Tailscale (identity mTLS, outbound-only — works through
-  Starlink/CGNAT and double-NAT; no inbound ports).
+  CGNAT and double-NAT; no inbound ports).
 - **Join:** the provision step (which runs on every deploy, including the
   in-app update) runs `apt install tailscale` and joins the appliance to the
   support tailnet with a **tagged, expiring, revocable auth key**. The node

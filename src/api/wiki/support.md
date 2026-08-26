@@ -10,7 +10,7 @@ without ever seeing your secrets.
 
 **Settings → Support** has a **Remote support** toggle — **off by default**.
 When you turn it on, the appliance joins the BareNOC **support tailnet** over
-**Tailscale** (identity-verified, outbound-only, works through Starlink/CGNAT
+**Tailscale** (identity-verified, outbound-only, works through CGNAT
 — no open ports).
 
 - The appliance appears as `bareNOC-<appliance-id>` on the support tailnet.

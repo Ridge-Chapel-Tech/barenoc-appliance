@@ -132,7 +132,7 @@ chmod 600 "$FORUM_SUBMIT_SECRET_DIR/notify.json"
 chown root:root "$FORUM_SUBMIT_SECRET_DIR/notify.json"
 echo "==> Agent provision: remote support (tailscale zero-touch onboarding + beta grant)"
 # Tailscale = the remote-support mechanism (identity mTLS, outbound-only,
-# works through Starlink/CGNAT). The appliance joins the VENDOR support
+# works through CGNAT). The appliance joins the VENDOR support
 # tailnet via a tagged, expiring, revocable auth key in a 0600 secret file
 # (same pattern as forum_submit.json above). The customer controls it with
 # the Settings → Support → "Remote support" toggle (default OFF) — the API
