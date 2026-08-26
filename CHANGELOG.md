@@ -15,6 +15,29 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.26.b] — 2026-08-26
+
+### Fixed
+- **Privacy: no more tailnet identities in AI replies** — the on-appliance
+  agent's progress notes and final answers strip tailnet account logins
+  ("name.name@", e.g. from `tailscale status`); the sysctx forbids them and
+  the filters back that up (real emails are untouched).
+- **Starlink phantom dish finally purged (forum 9eaa106e):** the cleanup's
+  keep rule treated the default dish address (192.168.100.1) as a real dish,
+  so no-dish boxes kept the fabricated record forever. The rule is now
+  evidence-based: a dish record is kept only when it has telemetry within the
+  last 7 days (a phantom never does; a real dish mid-outage is kept).
+
+### Changed
+- **Starlink Link Health card** in System now renders only on boxes with a
+  live dish (no more "Starlink" UI on boxes that don't have one).
+
+### Added
+- **Support SSH over the tailnet:** with Remote support on, the BareNOC
+  support team can SSH into the appliance (dedicated key, key-only, tailnet —
+  removed the moment Remote support is off; your own keys untouched). Gives
+  beta/GA appliances direct validation + troubleshooting access.
+
 ## [2026.08.26.a] — 2026-08-26
 
 ### Fixed
