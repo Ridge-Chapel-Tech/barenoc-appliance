@@ -435,21 +435,33 @@ class DeviceTest(unittest.TestCase):
         self.assertIsNone(db.get(Device, pid))
         db.close()
 
-    def test_configured_dish_survives_unreachable_purge(self):
-        """An explicitly-configured dish keeps its record even when temporarily
-        unreachable — the purge only removes no-config phantoms."""
+    def test_evidence_dish_survives_purge(self):
+        """A REAL dish — evidenced by a recent telemetry row — keeps its record
+        even when it's temporarily unreachable (the 08-26 evidence keep rule:
+        config alone never proves a dish; telemetry does)."""
+        import datetime
         db = SessionLocal()
         pid = st.ensure_dish_device(db, "192.168.100.1:9200")
-        old = os.environ.get("STARLINK_ADDRESS")
-        os.environ["STARLINK_ADDRESS"] = "192.168.100.1:9200"
-        try:
-            st._purge_phantom_dish(db, "192.168.100.1:9200")
-        finally:
-            if old is None:
-                os.environ.pop("STARLINK_ADDRESS", None)
-            else:
-                os.environ["STARLINK_ADDRESS"] = old
+        db.add(Metric(device_id=pid, metric="starlink.link_up",
+                      ts=datetime.datetime.utcnow(), value=1.0))
+        db.commit()
+        st._purge_phantom_dish(db, "192.168.100.1:9200")
         self.assertIsNotNone(db.get(Device, pid))
+        db.close()
+
+    def test_stale_evidence_dish_purged(self):
+        """A dish record whose telemetry is older than the window is a phantom —
+        the purge removes it (no real dish has answered recently)."""
+        import datetime
+        db = SessionLocal()
+        pid = st.ensure_dish_device(db, "192.168.100.1:9200")
+        stale = datetime.datetime.utcnow() - datetime.timedelta(
+            days=st.PHANTOM_METRIC_WINDOW_DAYS + 1)
+        db.add(Metric(device_id=pid, metric="starlink.link_up",
+                      ts=stale, value=1.0))
+        db.commit()
+        st._purge_phantom_dish(db, "192.168.100.1:9200")
+        self.assertIsNone(db.get(Device, pid))
         db.close()
 
     def test_startup_purge_removes_phantom_even_when_disabled(self):

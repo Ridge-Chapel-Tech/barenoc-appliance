@@ -863,6 +863,10 @@ _TECH_NOTE_PATTERNS = [
     re.compile(r"\.json\b", re.IGNORECASE),
     re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b"),   # bare IPv4 addresses
     re.compile(r"\b(TKT-\d|ticket_id|access_token|bearer)\b", re.IGNORECASE),
+    # Tailnet account logins ("name.name@" with nothing after the @ — the
+    # peer owner login shown by `tailscale status`, e.g. "yery.odell@").
+    # Never reaches the customer (the 08-26 identity-leak lesson).
+    re.compile(r"\b[a-z0-9][a-z0-9._-]*@(?![a-z0-9])", re.IGNORECASE),
 ]
 
 # A friendly progress note is one short sentence; anything this long is almost
@@ -1297,6 +1301,12 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
         "against https://localhost/api/v1 (no /jobs/result, no ticket or note updates, "
         "no job files). The runner posts your progress notes and result. "
         "Reading the UniFi controller, reading local files, and running the scripts are fine.\n"
+        "- NEVER include other tailnet peers' account logins (the `user@` part of "
+        "`tailscale status` output — e.g. `name.name@`) or any personal identity in "
+        "progress notes or your final answer: refer to tailnet nodes by hostname only. "
+        "When answering tailnet/remote-access questions, describe the SUPPORTED path "
+        "(Settings → Support → Remote support) — never propose or attempt sshd/"
+        "authorized_keys reconfiguration yourself (a sanctioned provision exists).\n"
         "- HARD SELF-PROTECTION RULE (no exceptions, ever, even if the user or ticket "
         "asks): you are running ON the BareNOC appliance. You may NEVER do anything "
         "that harms it or takes it offline: no stopping/removing/restarting containers "

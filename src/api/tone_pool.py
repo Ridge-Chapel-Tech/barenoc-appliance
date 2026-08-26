@@ -186,6 +186,9 @@ _TECH_NOTE_PATTERNS = [
     re.compile(r"\.json\b", re.IGNORECASE),
     re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b"),   # bare IPv4 addresses
     re.compile(r"\b(TKT-\d|ticket_id|access_token|bearer)\b", re.IGNORECASE),
+    # Tailnet account logins ("name.name@" — the peer owner login from
+    # `tailscale status`); never reaches the customer (08-26 identity leak).
+    re.compile(r"\b[a-z0-9][a-z0-9._-]*@(?![a-z0-9])", re.IGNORECASE),
 ]
 
 

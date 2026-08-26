@@ -183,6 +183,43 @@ PY
   chmod 644 "$STATE" 2>/dev/null || true
 }
 
+
+# ── Support SSH access (08-26): the vendor's support key rides the SAME
+# consent as the tailnet — present ONLY while remote support is enabled.
+# The public key ships at /opt/barenoc/scripts/support-ssh.pub (private key
+# is gate-held, never shipped). We add/remove exactly our marked lines in
+# the barenoc user's authorized_keys — never touching their own keys.
+SUPPORT_KEY_FILE="${SUPPORT_KEY_FILE:-/opt/barenoc/scripts/support-ssh.pub}"
+SUPPORT_SSH_DIR="${SUPPORT_SSH_DIR:-/home/barenoc/.ssh}"
+SUPPORT_AUTHKEYS="${SUPPORT_AUTHKEYS:-/home/barenoc/.ssh/authorized_keys}"
+SUPPORT_KEY_MARK="# bareNOC support key (remote-support reconciler)"
+
+manage_support_key() {
+  local mode="${1:-status}" key
+  [ -f "$SUPPORT_KEY_FILE" ] || { log "support key file missing — skipping SSH key management"; return 0; }
+  key="$(head -1 "$SUPPORT_KEY_FILE")"
+  mkdir -p "$SUPPORT_SSH_DIR"
+  chown barenoc:barenoc "$SUPPORT_SSH_DIR" 2>/dev/null || true
+  chmod 700 "$SUPPORT_SSH_DIR" 2>/dev/null || true
+  touch "$SUPPORT_AUTHKEYS"
+  chown barenoc:barenoc "$SUPPORT_AUTHKEYS" 2>/dev/null || true
+  chmod 600 "$SUPPORT_AUTHKEYS" 2>/dev/null || true
+
+  # strip any existing managed block (ours only)
+  grep -v -F "$SUPPORT_KEY_MARK" "$SUPPORT_AUTHKEYS" > "$SUPPORT_AUTHKEYS.tmp" 2>/dev/null || true
+  grep -v -F "$key" "$SUPPORT_AUTHKEYS.tmp" > "$SUPPORT_AUTHKEYS.tmp2" 2>/dev/null || true
+  mv "$SUPPORT_AUTHKEYS.tmp2" "$SUPPORT_AUTHKEYS"
+  chown barenoc:barenoc "$SUPPORT_AUTHKEYS" 2>/dev/null || true
+  chmod 600 "$SUPPORT_AUTHKEYS" 2>/dev/null || true
+
+  if [ "$mode" = "enable" ]; then
+    printf '%s\n%s\n' "$SUPPORT_KEY_MARK" "$key" >> "$SUPPORT_AUTHKEYS"
+    log "support SSH key enabled (remote support on)"
+  else
+    log "support SSH key removed (remote support off)"
+  fi
+}
+
 reconcile() {
   mkdir -p "$(dirname "$STATE")" "$(dirname "$DESIRED")"
   local raw enabled err host ip online
@@ -205,9 +242,12 @@ reconcile() {
       err="No support key set — paste the key from your provider, then save."
     elif [ "$rc" -ne 0 ]; then
       err="Invalid key — check with your provider."
+    else
+      manage_support_key enable
     fi
   else
     "$TS" down >/dev/null 2>&1 || true
+    manage_support_key disable
   fi
 
   # Refresh self.json (node identity + tailnet status) for the API.

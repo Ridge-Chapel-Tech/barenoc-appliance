@@ -10,6 +10,11 @@ without ever seeing your secrets.
 
 **Settings → Support** has a **Remote support** toggle — **off by default**.
 When you turn it on, the appliance joins the BareNOC **support tailnet** over
+When **Remote support** is on, the BareNOC support team can also **SSH
+into the appliance itself** (key-only, over the Tailscale tunnel, same
+consent) to validate and troubleshoot — the access is removed the moment
+you turn Remote support off. Your own SSH keys are never touched.
+
 **Tailscale** (identity-verified, outbound-only, works through CGNAT
 — no open ports).
 

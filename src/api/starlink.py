@@ -301,11 +301,24 @@ def _dish_ip(address: str) -> str:
     return address.split(":")[0] if ":" in (address or "") else (address or DEFAULT_ADDRESS.split(":")[0])
 
 
-def _configured_address() -> str:
-    """The EXPLICITLY-configured dish address (empty when only the default is in
-    play). A dish record without an explicit STARLINK_ADDRESS is a phantom — no
-    real dish was ever configured on this box."""
-    return (os.environ.get("STARLINK_ADDRESS") or "").strip()
+PHANTOM_METRIC_WINDOW_DAYS = 7  # telemetry within this window = a real dish
+
+def starlink_has_live_dish() -> bool:
+    """True when a REAL dish is evidenced on this box: a dish device record
+    with telemetry within PHANTOM_METRIC_WINDOW_DAYS (the 08-26 evidence
+    rule — same test the purge uses). Drives the System 'Starlink Link
+    Health' card, which must not render for no-dish boxes (forum 9eaa106e)."""
+    from models import Device, Metric
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=PHANTOM_METRIC_WINDOW_DAYS)
+    db = SessionLocal()
+    try:
+        for d in db.query(Device).filter(Device.device_type == "dish").all():
+            if db.query(Metric).filter(
+                    Metric.device_id == d.id, Metric.ts >= cutoff).first():
+                return True
+    finally:
+        db.close()
+    return False
 
 
 def purge_phantom_dish_at_startup() -> None:
@@ -329,21 +342,32 @@ def purge_phantom_dish_at_startup() -> None:
 def _purge_phantom_dish(db, address: str) -> None:
     """Remove dish device records that have no real dish behind them.
 
-    A phantom = a dish-type record on a box with NO explicit STARLINK_ADDRESS
-    (the default 192.168.100.1 was never a real dish — found 08-20: every
-    appliance was fabricating+claiming a 'Starlink Dish' record). A real dish
-    in an outage (explicitly configured + temporarily unreachable) keeps its
-    record — only the no-config case is a phantom."""
-    configured = _configured_address()
-    ip = _dish_ip(address)
+    A phantom = a dish-type record with NO recent telemetry (found 08-20: the
+    appliance fabricated+claimed a 'Starlink Dish' record on every box; the
+    old keep rule then preserved it because the installer seeds the DEFAULT
+    dish address in .env — forum thread 9eaa106e). A real dish — evidenced by
+    telemetry rows within PHANTOM_METRIC_WINDOW_DAYS — keeps its record, even
+    mid-outage."""
+    # Evidence-based keep rule (08-26): a dish record is REAL only when it has
+    # recent telemetry (the collector wrote metric rows for it — a real dish
+    # answers; phantoms never do). The old rule (STARLINK_ADDRESS set) kept
+    # phantoms on no-dish boxes because the installer seeds the DEFAULT dish
+    # address (192.168.100.1) in .env — forum thread 9eaa106e. A real dish in
+    # an outage keeps its record (metrics exist from before the outage).
+    from models import Metric
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=PHANTOM_METRIC_WINDOW_DAYS)
     phantoms = []
     for d in db.query(Device).filter(Device.device_type == "dish").all():
-        keep = bool(configured) and d.ip_address == ip
-        if not keep:
+        has_evidence = db.query(Metric).filter(
+            Metric.device_id == d.id, Metric.ts >= cutoff).first() is not None
+        if not has_evidence:
             phantoms.append(d)
     for d in phantoms:
         log_event(db, "starlink_phantom_removed", "system",
                   {"ip": d.ip_address}, None)
+        # Clear the dish's own rows first (FK: metrics reference devices.id
+        # without a cascade — a phantom's stale evidence rows go with it).
+        db.query(Metric).filter(Metric.device_id == d.id).delete()
         db.delete(d)
     if phantoms:
         db.commit()

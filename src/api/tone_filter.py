@@ -15,6 +15,11 @@ pi-output-truncation fix — this module only strips narration, never truncates.
 
 import re
 
+# 08-26 identity-leak lesson: never expose tailnet account logins
+# ("name.name@" with nothing after the @ — the peer owner login shown by
+# `tailscale status`) in a customer answer. Emails (a@b.com) are untouched.
+_TAILNET_LOGIN_RE = re.compile(r"\b[a-z0-9][a-z0-9._-]*@(?![a-z0-9])", re.IGNORECASE)
+
 # Leading self-narration the agent prepends to its final answer. Compared
 # case-insensitively; matched longest-first so "here's my final answer to the
 # customer" wins over "here's my final answer".
@@ -84,4 +89,11 @@ def strip_meta_narration(text: str) -> str:
             # Never reduce a non-empty answer to nothing.
             break
         cleaned = nxt
+    # 08-26: never expose tailnet account logins ("name.name@" — the
+    # peer owner login from `tailscale status`) in a customer answer.
+    cleaned = _TAILNET_LOGIN_RE.sub("", cleaned).strip()
+
+    # 08-26: never expose tailnet account logins ("name.name@") in a customer answer.
+    cleaned = _TAILNET_LOGIN_RE.sub("", cleaned).strip()
+
     return cleaned

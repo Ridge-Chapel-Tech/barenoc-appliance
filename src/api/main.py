@@ -503,7 +503,11 @@ def admin_page(request: Request, _: User = Depends(require_page_session)):
 
 @app.get("/system", response_class=HTMLResponse)
 def system_page(request: Request, _: User = Depends(require_page_session)):
-    return templates.TemplateResponse("system.html", {"request": request})
+    from starlink import starlink_has_live_dish
+    return templates.TemplateResponse("system.html", {
+        "request": request,
+        "starlink_enabled": starlink_has_live_dish(),
+    })
 
 
 @app.get("/settings", response_class=HTMLResponse)

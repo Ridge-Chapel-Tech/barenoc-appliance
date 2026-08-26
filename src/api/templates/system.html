@@ -58,6 +58,7 @@
     </div>
   </div>
 
+  {% if starlink_enabled %}
   <!-- Starlink link health (dish gRPC telemetry) — degradation before outage -->
   <div id="starlink" class="mt-6 bg-white shadow rounded-lg p-6">
     <div class="flex items-center justify-between flex-wrap gap-3">
@@ -66,6 +67,7 @@
     </div>
     <div id="starlink-body" class="mt-3 text-sm text-gray-600">Loading…</div>
   </div>
+  {% endif %}
 
   <!-- Firmware (UniFi) — inventory, maintenance windows, approvals, history -->
   <div id="firmware" class="mt-6 bg-white shadow rounded-lg p-6">
@@ -472,10 +474,10 @@ document.addEventListener('DOMContentLoaded', function() {
   loadSystem();
   updLoad();
   fwLoad();
-  starlinkLoad();
+  {% if starlink_enabled %}starlinkLoad();{% endif %}
   setInterval(loadSystem, 15000);
   setInterval(fwLoad, 30000);
-  setInterval(starlinkLoad, 30000);
+  {% if starlink_enabled %}setInterval(starlinkLoad, 30000);{% endif %}
 });
 
 // ── Starlink link health ──
