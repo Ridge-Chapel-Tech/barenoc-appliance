@@ -460,7 +460,7 @@ class ScheduleConfV2Test(unittest.TestCase):
 
     def test_set_schedule_recurring_writes_canonical(self):
         body = updates.ScheduleBody(enabled=True, mode="recurring", day="1", hour=3)
-        r = updates.set_schedule(body, SimpleNamespace(username="admin"))
+        r = updates.set_schedule(body, SimpleNamespace(username="admin"), db=None)
         self.assertEqual(r["schedule"]["mode"], "recurring")
         with open(os.path.join(self.tmp, "update_schedule.conf")) as f:
             content = f.read()
@@ -474,11 +474,11 @@ class ScheduleConfV2Test(unittest.TestCase):
         with self.assertRaises(Exception):
             updates.set_schedule(
                 updates.ScheduleBody(enabled=True, mode="onetime", when=past),
-                SimpleNamespace(username="admin"))
+                SimpleNamespace(username="admin"), db=None)
         future = (updates._local_now() + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
         r = updates.set_schedule(
             updates.ScheduleBody(enabled=True, mode="onetime", when=future),
-            SimpleNamespace(username="admin"))
+            SimpleNamespace(username="admin"), db=None)
         self.assertEqual(r["schedule"]["mode"], "onetime")
         self.assertEqual(r["schedule"]["when"], future)
 
@@ -486,7 +486,7 @@ class ScheduleConfV2Test(unittest.TestCase):
         updates._write_schedule({"mode": "onetime", "enabled": True,
                                  "day": "daily", "hour": 2,
                                  "when": "2026-08-17T02:00", "fired": ""})
-        r = updates.complete_schedule(SimpleNamespace(username="admin"))
+        r = updates.complete_schedule(SimpleNamespace(username="admin"), db=None)
         self.assertFalse(r["schedule"]["enabled"])
         self.assertTrue(r["schedule"]["fired"])
         with open(os.path.join(self.tmp, "update_schedule.conf")) as f:
@@ -496,7 +496,7 @@ class ScheduleConfV2Test(unittest.TestCase):
         updates._write_schedule({"mode": "onetime", "enabled": True,
                                  "day": "daily", "hour": 2,
                                  "when": "2026-08-17T02:00", "fired": ""})
-        r = updates.cancel_schedule(SimpleNamespace(username="admin"))
+        r = updates.cancel_schedule(SimpleNamespace(username="admin"), db=None)
         self.assertFalse(r["schedule"]["enabled"])
         self.assertEqual(r["schedule"]["when"], "")
         self.assertEqual(r["schedule"]["fired"], "")

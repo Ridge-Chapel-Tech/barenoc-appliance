@@ -35,6 +35,19 @@ def device_live_ip(d: dict) -> str:
     return (cn.get("ip") or d.get("ip") or "").strip()
 
 
+def _num(v):
+    """Coerce a UniFi value to float or None (safe against strings/nulls)."""
+    try:
+        if v is None or v == "":
+            return None
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
 class UniFiClient:
     """Client for the UniFi Controller REST API (legacy + UniFi OS)."""
 
@@ -217,7 +230,28 @@ class UniFiClient:
                 subsystems = data if isinstance(data, list) else []
         for s in (subsystems or []):
             if isinstance(s, dict) and s.get("subsystem") == "wan":
-                return {"status": str(s.get("status") or ""), "wan_ip": s.get("wan_ip", "")}
+                # Rich shape (superset of the link-monitor's {status, wan_ip}):
+                # the uplink card shows latency/throughput/uptime + ISP hints
+                # when this firmware build exposes them. Missing keys read None
+                # and the UI degrades to what it has.
+                return {
+                    "status": str(s.get("status") or ""),
+                    "wan_ip": s.get("wan_ip", ""),
+                    "gateway_ip": s.get("gateway_ip") or s.get("gateway") or "",
+                    "latency": _num(s.get("latency")),
+                    "uptime": _num(s.get("uptime")),
+                    "up": s.get("up"),
+                    "internet_ok": s.get("internet_ok"),
+                    "dns_ok": s.get("dns_ok"),
+                    "nameservers": s.get("nameservers") or s.get("wan_dns") or [],
+                    "isp_name": s.get("isp_name") or s.get("isp") or "",
+                    "speedtest_download": _num(s.get("speedtest_download")
+                                               or s.get("speedtest_down")),
+                    "speedtest_upload": _num(s.get("speedtest_upload")
+                                             or s.get("speedtest_up")),
+                    "speedtest_latency": _num(s.get("speedtest_latency")
+                                               or s.get("speedtest_ping")),
+                }
         return None
 
     def get_clients(self) -> list:

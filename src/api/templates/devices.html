@@ -12,6 +12,16 @@
     </div>
   </div>
 
+  <!-- Uplink / ISP — identify the customer's ISP + gateway. Starlink owners get
+       the dish stats; everyone else gets UniFi WAN health, else an egress probe. -->
+  <div id="uplink" class="mt-6 bg-white shadow rounded-lg p-6">
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <h2 class="text-lg font-medium text-gray-900">Uplink / ISP</h2>
+      <button onclick="uplinkLoad()" class="rounded-md bg-barenoc-50 text-barenoc-700 px-3 py-1.5 text-xs hover:bg-barenoc-100">Refresh</button>
+    </div>
+    <div id="uplink-body" class="mt-3 text-sm text-gray-600">Loading…</div>
+  </div>
+
   <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-lg font-medium text-gray-900">Onboarded devices
       <span class="ml-2 text-xs font-normal text-gray-400">
@@ -334,6 +344,140 @@ function fmtTz(ts) {
   if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z';
   var d = new Date(s);
   return isNaN(d) ? ts : d.toLocaleString();
+}
+
+// ── Uplink / ISP card (Starlink dish → UniFi WAN → egress probe) ──
+function uplinkFmt(v, unit, digits) {
+  if (v === null || v === undefined || v === '') return '—';
+  var n = Number(v);
+  if (isNaN(n)) return esc(String(v));
+  return n.toFixed(digits == null ? 1 : digits) + (unit || '');
+}
+function uplinkUptime(sec) {
+  if (sec === null || sec === undefined || sec === '') return '—';
+  var n = Number(sec);
+  if (isNaN(n) || n < 0) return '—';
+  var d = Math.floor(n / 86400);
+  var h = Math.floor((n % 86400) / 3600);
+  var m = Math.floor((n % 3600) / 60);
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+function uplinkBadge(state) {
+  if (state === 'outage') return '<span class="text-red-600 font-semibold">● outage</span>';
+  if (state === 'degraded') return '<span class="text-amber-600 font-semibold">● degraded</span>';
+  if (state === 'healthy') return '<span class="text-green-600 font-semibold">● healthy</span>';
+  if (state === 'up') return '<span class="text-green-600 font-semibold">● up</span>';
+  if (state === 'down') return '<span class="text-red-600 font-semibold">● down</span>';
+  if (state === 'isp_down') return '<span class="text-amber-600 font-semibold">● ISP down</span>';
+  if (state === 'link_down') return '<span class="text-red-600 font-semibold">● link down</span>';
+  return '<span class="text-gray-400">○ unknown</span>';
+}
+function uplinkSpark(id, pts) {
+  var c = document.getElementById(id);
+  if (!c) return;
+  var w = c.width = (c.clientWidth || 280);
+  var h = c.height = 44;
+  var ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  if (!pts || !pts.length) {
+    ctx.fillStyle = '#9ca3af'; ctx.font = '11px sans-serif';
+    ctx.fillText('no data', 6, h / 2 + 4); return;
+  }
+  var vals = pts.map(function (p) { return p.value; });
+  var min = Math.min.apply(null, vals);
+  var max = Math.max.apply(null, vals);
+  var span = (max - min) || 1;
+  ctx.strokeStyle = '#4d7c0f'; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach(function (p, i) {
+    var x = i / (pts.length - 1) * w;
+    var y = h - 4 - ((p.value - min) / span) * (h - 8);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+function uplinkTile(label, value) {
+  return '<div><div class="text-xs text-gray-400">' + esc(label) + '</div><div class="text-lg font-semibold">' + value + '</div></div>';
+}
+function uplinkFlapText(flap) {
+  if (!flap) return '';
+  var s = 'flaps: ' + (flap.flap_count || 0);
+  if (flap.ticket_id) s += ' · <a class="text-barenoc-600 underline" href="/tickets">' + esc(flap.ticket_id) + '</a>';
+  return s;
+}
+async function uplinkLoad() {
+  try {
+    var r = await fetch('/api/v1/uplink/status', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var u = await r.json();
+    var el = document.getElementById('uplink-body');
+    if (!el) return;
+    var src = u.source || 'none';
+    if (src === 'none') {
+      el.innerHTML = '<p class="text-gray-400">No uplink data yet — onboard a gateway, or a Starlink dish will appear here once it is polled.</p>';
+      return;
+    }
+
+    var badge = uplinkBadge((src === 'starlink' && u.starlink) ? u.starlink.health : (u.link && u.link.state));
+    var when = (src === 'starlink' && u.starlink && u.starlink.latest_ts)
+      ? fmtTz(u.starlink.latest_ts) : (u.latest_ts ? fmtTz(u.latest_ts) : '—');
+    var meta = ['<span class="text-base">' + badge + '</span>',
+                '<span class="text-xs text-gray-400">updated ' + esc(when) + '</span>'];
+    if (u.isp && u.isp.name) meta.push('<span class="text-xs text-gray-600">ISP: ' + esc(u.isp.name) + '</span>');
+    if (u.isp && u.isp.wan_ip) meta.push('<span class="text-xs font-mono text-gray-600">WAN ' + esc(u.isp.wan_ip) + '</span>');
+    var html = '<div class="flex items-center gap-3 flex-wrap mb-2">' + meta.join('') + '</div>';
+    var tiles = [];
+
+    if (src === 'starlink' && u.starlink) {
+      var s = u.starlink;
+      var L = s.latest || {};
+      var g = function (k) { return L['starlink.' + k]; };
+      var snr = g('snr'), obs = g('obstruction_fraction');
+      tiles.push(uplinkTile('Ping', uplinkFmt(g('ping_ms'), ' ms')));
+      tiles.push(uplinkTile('Down', uplinkFmt(g('down_mbps'), ' Mbps')));
+      tiles.push(uplinkTile('Up', uplinkFmt(g('up_mbps'), ' Mbps')));
+      tiles.push(uplinkTile('Signal', (snr === null || snr === undefined) ? '—' : (snr >= 1 ? 'above floor' : 'below floor')));
+      tiles.push(uplinkTile('Obstruction', (obs === null || obs === undefined) ? '—' : (obs * 100).toFixed(0) + '%'));
+      tiles.push(uplinkTile('Uptime', uplinkUptime(g('uptime_seconds'))));
+      var ticket = s.open_ticket
+        ? '<a class="text-barenoc-600 underline" href="/tickets">' + esc(s.open_ticket.ticket_id) + ' [' + esc(s.open_ticket.priority) + ']</a>'
+        : '<span class="text-gray-400">none</span>';
+      html += '<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">' + tiles.join('') + '</div>';
+      html += '<div class="mt-2 text-xs text-gray-400">ticket: ' + ticket + '</div>';
+      html += '<div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">'
+        + '<div><div class="text-xs text-gray-400 mb-1">ping (last hour)</div><canvas id="uplink-spark-ping" class="w-full" height="44"></canvas></div>'
+        + '<div><div class="text-xs text-gray-400 mb-1">down Mbps (last hour)</div><canvas id="uplink-spark-down" class="w-full" height="44"></canvas></div></div>';
+      el.innerHTML = html;
+      uplinkSpark('uplink-spark-ping', (s.trend || {}).ping_ms);
+      uplinkSpark('uplink-spark-down', (s.trend || {}).down_mbps);
+      return;
+    }
+
+    if (src === 'unifi' && u.unifi) {
+      var w = u.unifi;
+      if (u.gateway) tiles.push(uplinkTile('Gateway', esc(u.gateway.model || u.gateway.name)));
+      if (u.gateway && u.gateway.ip) tiles.push(uplinkTile('Gateway IP', esc(u.gateway.ip)));
+      tiles.push(uplinkTile('Latency', uplinkFmt(w.latency_ms, ' ms')));
+      tiles.push(uplinkTile('Down', uplinkFmt(w.down_mbps, ' Mbps')));
+      tiles.push(uplinkTile('Up', uplinkFmt(w.up_mbps, ' Mbps')));
+      tiles.push(uplinkTile('Uptime', uplinkUptime(w.uptime_seconds)));
+      if (u.link && u.link.flap) html += '<div class="mt-2 text-xs text-gray-400">' + uplinkFlapText(u.link.flap) + '</div>';
+    } else if (src === 'probe' && u.probe) {
+      var p = u.probe;
+      tiles.push(uplinkTile('Internet', p.internet_reachable ? 'reachable' : 'unreachable'));
+      tiles.push(uplinkTile('Latency', uplinkFmt(p.internet_ms, ' ms')));
+      if (p.gateway) tiles.push(uplinkTile('Gateway', (p.gateway_reachable ? '✓ ' : '✗ ') + esc(p.gateway)));
+    } else {
+      html += '<p class="text-gray-400">Uplink status unavailable.</p>';
+    }
+    html += '<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-2">' + tiles.join('') + '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    console.error('uplink:', e);
+    var el = document.getElementById('uplink-body');
+    if (el) el.textContent = 'Uplink status unavailable';
+  }
 }
 
 var currentOffset = 0;
@@ -1004,7 +1148,7 @@ async function addDevice() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  loadUnclaimed(); loadDeviceGroups(); fetchDevices(0); refreshScanButton();
+  loadUnclaimed(); loadDeviceGroups(); fetchDevices(0); refreshScanButton(); uplinkLoad();
   // Default to the topology view when adopted UniFi gear exists (user preference)
   loadTopology().then(function(n) { if (n > 0) setDevicesView('topology'); });
 });

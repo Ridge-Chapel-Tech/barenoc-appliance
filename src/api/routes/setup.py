@@ -324,7 +324,8 @@ def setup_complete(data: Optional[SetupCompleteRequest] = None,
     # default weekly schedule (Sunday 03:00 local) with zero Advanced-page
     # visits. Idempotent — never overwrites an existing (opted-out) conf.
     from routes import updates as _updates
-    _updates.ensure_default_update_schedule()
+    _updates.ensure_default_update_schedule(
+        db=db, actor=(user.username if user else "setup"))
     # Backups: on, local defaults (Wednesday 02:00) — the host poller reads
     # this conf; a BYO Docker host simply ignores it (no appliance host).
     _write_backup_conf({
@@ -333,5 +334,12 @@ def setup_complete(data: Optional[SetupCompleteRequest] = None,
         "USB_BACKUP_HOUR": "2",
         "RUN_USB_BACKUP_NOW": "false",
         "BACKUP_TARGET_DIR": _read_backup_conf().get("BACKUP_TARGET_DIR", ""),
+    })
+    # Audit the setup sweep (home defaults + auto-update schedule applied).
+    from audit import log_event
+    log_event(db, "settings_change", user.username if user else "setup", {
+        "section": "setup",
+        "fields": ["home_defaults", "update_schedule_default",
+                   "backup_schedule_default"],
     })
     return {"status": "ok", "complete": True}

@@ -163,6 +163,11 @@ class Ticket(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    __table_args__ = (
+        # The viewer filters by event_type/actor and orders by recency.
+        Index("ix_audit_log_event_type_actor", "event_type", "actor"),
+        Index("ix_audit_log_timestamp", "timestamp"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     event_id = Column(String(32), unique=True, nullable=False)

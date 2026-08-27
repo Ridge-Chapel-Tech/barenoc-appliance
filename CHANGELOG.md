@@ -15,6 +15,57 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.26.d] — 2026-08-26
+
+- **Readable ticket threads (formatting)** — long agent answers (`agent_completed`
+  notes + final answers) no longer land as a wall of text. The web chat + tickets
+  pages now render note text with markdown-lite on the RENDER side only: `- `/`* `/`• `
+  bullet lines and `1. `/`1) ` numbered lines become real lists, blank lines +
+  indentation are preserved, note types are visually distinct (progress = subtle,
+  final answer = message bubble, check-in = notice), and notes longer than 12
+  lines collapse behind "Show more". Note HTML is always escaped — never trusted.
+  The jobs-result formatter normalizes the pi final answer's lists (grouped,
+  line-per-item, short section headers) and reuses the shared word-boundary
+  ellipsis rule (…) for the answer detail/error paths, so a truncation is never
+  a silent mid-list cut.
+
+- **Uplink / ISP card moves to Devices:** the Starlink Link Health card moved
+  from System → Devices as a vendor-agnostic "Uplink / ISP" card. Starlink
+  owners keep the dish stats (same badge + spark + refresh); everyone else gets
+  a gateway/ISP uplink card from UniFi WAN health (`wan1`/`wan2` +
+  `stat/health` — ISP name + WAN IP + link health + latency/throughput/uptime
+  where the controller exposes them), falling back to the appliance's own
+  egress probe (gateway + 8.8.8.8). The System Starlink card + its JS are
+  removed; no new settings; admin + non-admin staff visible.
+
+### Security
+- **Agent identity hygiene (infosec-appliance):** the pi agent can no longer
+  read or re-surface the developer/owner identity. The injected ticket
+  context and task are now redacted for known personal identifiers before the
+  agent sees them, a hard sysctx **identity protection rule** forbids
+  seeking/referencing/retaining any personal identity (its own work notes
+  included), and the progress-note + final-answer filters scrub the known
+  identifiers (handle, name, email, tailnet login) while leaving generic
+  customer names and emails untouched. Closes the TKT-20260823-4534
+  ("developer is yery") and 08-26 `yery.odell@` leaks.
+
+- **Audit event catalog (compliance inventory, 2026-08-26):** the audit trail
+  is now a complete, framework-mapped catalog (SOC 2 / PCI DSS / HIPAA style)
+  instead of "the events we happened to add". New `src/api/audit_catalog.py`
+  is the single source of truth (event type → required fields → retention
+  class → framework), surfaced in the attestation export ("N audit event
+  types active, hash-chained, retention X").
+- **New audit events (the gaps):** `credential_access` (a stored SSH/SNMP
+  secret was decrypted/fetched — records actor/device/type/action, never the
+  secret), `export_download` (support bundle / audit-log / attestation),
+  `backup_start|success|failure|restore`, `scheduler_health` (sustained
+  scheduler API-auth failure + recovery — the 08-26 missing-agent-creds class
+  is now visible in-app), and `update_schedule_change`. Compliance toggles +
+  baseline apply and the setup sweep are also audited.
+- **Volume honesty:** audit payloads are capped (~300 B target, hard ceiling
+  enforced) and secret-looking fields are redacted before hashing; the audit
+  table gains (event_type, actor) + timestamp indexes for the viewer.
+
 ## [2026.08.26.c] — 2026-08-26
 
 - **Service Checks (ping/TCP/HTTP monitors → tickets):** Settings → Service

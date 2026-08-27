@@ -76,6 +76,24 @@ class AuthSessionTests(unittest.TestCase):
     def _decode(self, token):
         return decode_token(token)
 
+    # ── audit (08-26 info-sec: logins + user mgmt must be logged) ──
+
+    def test_login_writes_audit_rows(self):
+        from models import AuditLog
+        from audit import log_event as _le  # noqa: F401 (module import sanity)
+        db = SessionLocal()
+        try:
+            success = db.query(AuditLog).filter(
+                AuditLog.event_type == "auth.login",
+                AuditLog.actor == "alice").count()
+            failed = db.query(AuditLog).filter(
+                AuditLog.event_type == "auth.login_failed").count()
+        finally:
+            db.close()
+        # the fixture logs in (success) and the wrong-password case logs a failure
+        self.assertGreaterEqual(success, 1, "successful login must be audited")
+        self.assertGreaterEqual(failed, 1, "failed login must be audited")
+
     # ── sessions + revocation ──
 
     def test_login_mints_revocable_session(self):

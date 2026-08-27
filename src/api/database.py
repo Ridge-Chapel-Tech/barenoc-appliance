@@ -509,3 +509,18 @@ def init_db():
             ))
     except OperationalError:
         pass  # Tables/indexes already exist
+    # Migration: audit_log viewer indexes (event_type, actor) + timestamp —
+    # cheap one-time, keeps the viewer fast on the 2 vCPU baseline. create_all
+    # adds them on fresh DBs; these guarded CREATEs cover existing DBs.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_event_type_actor "
+                "ON audit_log(event_type, actor)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_timestamp "
+                "ON audit_log(timestamp)"
+            ))
+    except OperationalError:
+        pass  # Indexes already exist

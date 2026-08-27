@@ -15,7 +15,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics, report, firmware as firmware_routes, starlink as starlink_routes, compliance, audit_log, service_checks
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics, report, firmware as firmware_routes, starlink as starlink_routes, uplink, compliance, audit_log, service_checks
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 from ratelimit import RateLimitMiddleware
@@ -283,6 +283,22 @@ async def lifespan(app: FastAPI):
     _remount_net_backup()  # reconnect the NAS backup share (best-effort)
     from starlink import purge_phantom_dish_at_startup
     purge_phantom_dish_at_startup()  # self-clean fabricated dish records (08-20 phantom)
+    # Compliance audit retention (08-27 model): audit events are kept FOREVER
+    # but personal identifiers are pseudonymized after the strict window (365d,
+    # PCI 10.7). Home/sane = no window (indefinite). Runs at startup (best-effort).
+    try:
+        from llm_providers import read_env_file as _renv
+        from audit import pseudonymize_audit_log
+        _prof = (_renv().get("RETENTION_PROFILE") or "sane").strip().lower()
+        if _prof == "strict":
+            from database import SessionLocal as _SL
+            _pdb = _SL()
+            try:
+                pseudonymize_audit_log(_pdb, 365)
+            finally:
+                _pdb.close()
+    except Exception:
+        pass
     # Auto-update default-on migration (2026-08-25): existing boxes get the
     # default schedule ONCE — only when no update_schedule.conf exists. A box
     # that already configured anything (enabled OR disabled) is never touched.
@@ -356,6 +372,7 @@ app.include_router(network_opt.router)
 app.include_router(metrics.router)
 app.include_router(firmware_routes.router)
 app.include_router(starlink_routes.router)
+app.include_router(uplink.router)
 app.include_router(compliance.router)
 app.include_router(audit_log.router)
 app.include_router(service_checks.router)
@@ -504,11 +521,7 @@ def admin_page(request: Request, _: User = Depends(require_page_session)):
 
 @app.get("/system", response_class=HTMLResponse)
 def system_page(request: Request, _: User = Depends(require_page_session)):
-    from starlink import starlink_has_live_dish
-    return templates.TemplateResponse("system.html", {
-        "request": request,
-        "starlink_enabled": starlink_has_live_dish(),
-    })
+    return templates.TemplateResponse("system.html", {"request": request})
 
 
 @app.get("/settings", response_class=HTMLResponse)

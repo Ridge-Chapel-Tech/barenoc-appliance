@@ -848,6 +848,32 @@ _TONE_POOL = {
 # Backward-compat flat list (every phrase in the pool).
 _FRIENDLY_PROGRESS = [p for c in _CATEGORIES for p in _TONE_POOL[c]]
 
+# Known personal identifiers (the developer / owner) that must never appear in
+# any agent-visible text — the injected context, work notes, progress notes, or
+# answers. VENDORED copy of src/api/tone_pool.py IDENTITY_PATTERNS (the runner
+# deploys as a single self-contained file); test_runner asserts parity.
+_IDENTITY_PATTERNS = (
+    re.compile(r"yery\.odell@[a-z0-9.\-]*", re.IGNORECASE),  # tailnet login + known emails
+    re.compile(r"yery@odell\.dev", re.IGNORECASE),            # dev email
+    re.compile(r"yery[.\-_]odell", re.IGNORECASE),            # dot/dash/underscore-joined
+    re.compile(r"yery\s+o['’]?dell", re.IGNORECASE),          # full name "Yery O'Dell"
+    re.compile(r"\byery\b", re.IGNORECASE),                   # handle / first name
+    re.compile(r"\bo['’]dell\b", re.IGNORECASE),              # surname "O'Dell"
+)
+
+
+def _redact_identities(text: str, replacement: str = "[redacted]") -> str:
+    """Replace the known personal identifiers with `replacement` (never a
+    generic name scan). Applied to the ticket context/task BEFORE the agent
+    sees it so the agent cannot read or re-surface the developer/owner
+    identity."""
+    if not text:
+        return text
+    for pattern in _IDENTITY_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 _TECH_NOTE_PATTERNS = [
     re.compile(r"`"),                       # backticked command / `code`
     re.compile(r"~/", re.IGNORECASE),       # home-path shorthand
@@ -864,9 +890,12 @@ _TECH_NOTE_PATTERNS = [
     re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b"),   # bare IPv4 addresses
     re.compile(r"\b(TKT-\d|ticket_id|access_token|bearer)\b", re.IGNORECASE),
     # Tailnet account logins ("name.name@" with nothing after the @ — the
-    # peer owner login shown by `tailscale status`, e.g. "yery.odell@").
+    # peer owner login shown by `tailscale status`, e.g. "name.name@").
     # Never reaches the customer (the 08-26 identity-leak lesson).
     re.compile(r"\b[a-z0-9][a-z0-9._-]*@(?![a-z0-9])", re.IGNORECASE),
+    # Known personal identifiers (developer/owner) — any note naming one is
+    # treated as technical and scrubbed to a friendly generic (_IDENTITY_PATTERNS).
+    *_IDENTITY_PATTERNS,
 ]
 
 # A friendly progress note is one short sentence; anything this long is almost
@@ -1301,12 +1330,23 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
         "against https://localhost/api/v1 (no /jobs/result, no ticket or note updates, "
         "no job files). The runner posts your progress notes and result. "
         "Reading the UniFi controller, reading local files, and running the scripts are fine.\n"
-        "- NEVER include other tailnet peers' account logins (the `user@` part of "
-        "`tailscale status` output — e.g. `name.name@`) or any personal identity in "
-        "progress notes or your final answer: refer to tailnet nodes by hostname only. "
-        "When answering tailnet/remote-access questions, describe the SUPPORTED path "
-        "(Settings → Support → Remote support) — never propose or attempt sshd/"
-        "authorized_keys reconfiguration yourself (a sanctioned provision exists).\n"
+        "- IDENTITY PROTECTION RULE (hard — never reference, seek, or retain the "
+        "personal identity of the developer, the owner, or any user — including in "
+        "your own work notes, which are scrubbed by the SAME rule as customer-facing "
+        "text):\n"
+        "  • Attribute BareNOC only as 'the BareNOC team' — never name or describe "
+        "the people behind it (no developer/owner names, handles, emails, or "
+        "home-directory paths). If asked 'who made/owns BareNOC?', answer at the "
+        "product level (what BareNOC is and how to use it) and say you don't have "
+        "personal details.\n"
+        "  • Never hunt for identities: do NOT run `tailscale status` to read peer "
+        "account logins, and do NOT read git configs, shell history, /home paths, old "
+        "session transcripts, or any file looking for who built or owns the appliance.\n"
+        "  • Refer to tailnet nodes and devices by hostname/function only — never by a "
+        "person's account login (the `user@` part of `tailscale status`).\n"
+        "  • Remote-access questions → describe the SUPPORTED path (Settings → Support "
+        "→ Remote support); never improvise sshd/authorized_keys changes (a sanctioned "
+        "provision exists).\n"
         "- HARD SELF-PROTECTION RULE (no exceptions, ever, even if the user or ticket "
         "asks): you are running ON the BareNOC appliance. You may NEVER do anything "
         "that harms it or takes it offline: no stopping/removing/restarting containers "
@@ -1325,7 +1365,9 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
     if cp_block:
         sysctx += "\n\n" + cp_block
     if context:
-        sysctx += "\n\nTicket context:\n" + context[:6000]
+        # Sanitize the injected ticket context BEFORE the agent sees it: known
+        # personal identifiers are redacted so the agent cannot read them.
+        sysctx += "\n\nTicket context:\n" + _redact_identities(context)[:6000]
     return sysctx
 
 
@@ -1379,7 +1421,7 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
         cmd = [pi_bin, "-p", "--provider", provider, "--model", model,
                "--api-key", api_key, "--thinking", "off",
                "--session-dir", sdir,
-               "--append-system-prompt", sysctx, task[:8000]]
+               "--append-system-prompt", sysctx, _redact_identities(task)[:8000]]
         env = dict(os.environ)
         env["PATH"] = f"{pi_dir}/bin:" + env.get("PATH", "")   # so `node` resolves for pi
         logger.info(f"PI task started (ticket {ticket_id}, provider={provider}/{model}, label={label}, timeout {timeout}s)")

@@ -13,8 +13,76 @@ from datetime import datetime
 from database import get_db
 from models import Device, Ticket, User
 from auth import get_current_user, require_role
+from audit import log_event
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
+
+BACKUP_STATUS_JSON = "/opt/barenoc/volumes/backup_status/status.json"
+BACKUP_SEEN_JSON = "/opt/barenoc/volumes/backup_status/audit_seen.json"
+BACKUP_TYPES = ("app", "usb", "vm", "offsite")
+BACKUP_RESULTS = ("start", "success", "failure", "restore")
+
+
+def record_backup_event(db: Session, backup_type: str, result: str,
+                        detail: str = ""):
+    """Audit a backup lifecycle event — {type (app|usb|vm|offsite), result}.
+    Never logs backup contents, only the outcome + a short detail."""
+    if backup_type not in BACKUP_TYPES:
+        backup_type = "app"
+    if result not in BACKUP_RESULTS:
+        result = "failure"
+    data = {"type": backup_type, "result": result}
+    if detail:
+        data["detail"] = str(detail)[:200]
+    log_event(db, f"backup_{result}", "system", data)
+
+
+def _read_backup_seen() -> dict:
+    try:
+        with open(BACKUP_SEEN_JSON) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_backup_seen(state: dict):
+    try:
+        os.makedirs(os.path.dirname(BACKUP_SEEN_JSON), exist_ok=True)
+        with open(BACKUP_SEEN_JSON, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def ingest_backup_status(db: Session, status: dict = None) -> dict:
+    """Turn the host's status.json push into backup_success audit events.
+
+    The Proxmox host writes status.json after every VM-snapshot / USB backup;
+    this detector diffs the last-seen snapshot against a persisted marker and
+    emits one backup_success per NEW result (idempotent across restarts).
+    """
+    if status is None:
+        try:
+            with open(BACKUP_STATUS_JSON) as f:
+                status = json.load(f)
+        except Exception:
+            return {"ingested": 0}
+    status = status or {}
+    seen = _read_backup_seen()
+    emitted = 0
+    vm = str(status.get("vm_snapshot_last") or "")
+    if vm and vm != "none" and vm != seen.get("vm_snapshot_last"):
+        record_backup_event(db, "vm", "success", detail=vm[:120])
+        seen["vm_snapshot_last"] = vm
+        emitted += 1
+    usb = str(status.get("usb_last_backup") or "")
+    if usb and usb != "none" and usb != seen.get("usb_last_backup"):
+        record_backup_event(db, "usb", "success", detail=usb[:120])
+        seen["usb_last_backup"] = usb
+        emitted += 1
+    if emitted:
+        _write_backup_seen(seen)
+    return {"ingested": emitted}
 
 
 def _read_cpu_percent() -> float:
@@ -143,6 +211,13 @@ def system_status(db: Session = Depends(get_db), user: User = Depends(get_curren
     total_users = db.query(func.count(User.id)).scalar() or 0
     llm_cost = db.query(func.sum(Ticket.llm_cost_usd)).scalar() or 0.0
 
+    # Compliance: turn a new host status push into backup_success events
+    # (idempotent; the read is cheap and the event only fires on transitions).
+    try:
+        ingest_backup_status(db)
+    except Exception:
+        pass
+
     return {
         "host": {
             "uptime": _uptime(),
@@ -191,7 +266,7 @@ def _backup_status() -> dict:
         "updated": None,
     }
     try:
-        with open("/opt/barenoc/volumes/backup_status/status.json") as f:
+        with open(BACKUP_STATUS_JSON) as f:
             vm.update(json.load(f))
     except Exception:
         pass
@@ -240,3 +315,25 @@ def factory_reset(confirm: str = "", db: Session = Depends(get_db),
     from audit import log_event
     log_event(db, "factory_reset", user.username, {"scope": "operational_data"})
     return {"status": "ok", "note": "Operational data wiped (users, devices and settings kept)."}
+
+
+@router.post("/backup-event")
+def backup_event(body: dict, db: Session = Depends(get_db),
+                 user: User = Depends(require_role("admin"))):
+    """Ingest an explicit backup lifecycle event (start/failure/restore).
+
+    Host scripts / the restore flow POST {type: app|usb|vm|offsite,
+    result: start|success|failure|restore}. Success events are normally
+    auto-detected from the host's status.json push (see ingest_backup_status);
+    this endpoint covers the explicit start/failure/restore moments.
+    """
+    from fastapi import HTTPException
+    body = body or {}
+    btype = str(body.get("type") or "").strip().lower()
+    result = str(body.get("result") or "").strip().lower()
+    if btype not in BACKUP_TYPES:
+        raise HTTPException(status_code=400, detail="type must be app|usb|vm|offsite")
+    if result not in BACKUP_RESULTS:
+        raise HTTPException(status_code=400, detail="result must be start|success|failure|restore")
+    record_backup_event(db, btype, result, detail=str(body.get("detail") or ""))
+    return {"status": "ok"}

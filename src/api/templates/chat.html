@@ -25,6 +25,14 @@
         /* The desktop shell sidebar is only meaningful once signed in —
            keep it off the public login/register screen. */
         #chat-sidebar.unauth { display: none !important; }
+        /* Readable note rendering: Tailwind preflight strips list styling, so
+           markdown-lite lists are restored explicitly (RENDER side only). */
+        ul.note-list { list-style: disc; padding-left: 1.25rem; margin: 0.35rem 0; }
+        ol.note-list { list-style: decimal; padding-left: 1.25rem; margin: 0.35rem 0; }
+        ul.note-list li, ol.note-list li { margin: 0.1rem 0; }
+        .note-content { min-width: 0; }
+        details.note-more summary { cursor: pointer; color: #2563eb; font-size: 0.75rem; user-select: none; list-style: none; }
+        details.note-more summary::-webkit-details-marker { display: none; }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -390,6 +398,93 @@ async function sendNew() {
 // ── thread ──
 function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// ── readable note rendering (markdown-lite on the RENDER side) ────────────
+// Notes are plain text and are escaped here. `- `/`* `/`• ` bullet lines and
+// `1. `/`1) ` numbered lines become real <ul>/<ol> lists; every other line
+// keeps its whitespace (pre-wrap) so blank lines + indentation survive.
+// Notes longer than NOTE_COLLAPSE_LINES lines collapse behind "Show more".
+// No HTML from a note is ever trusted.
+var NOTE_COLLAPSE_LINES = 12;
+var NOTE_BULLET_RE = /^(\s*)([-*•·])\s+(.*)$/;
+var NOTE_NUM_RE = /^(\s*)(\d{1,3})[.)]\s+(.*)$/;
+
+function markdownLite(text) {
+  var s = esc(text);
+  var lines = s.split('\n');
+  var out = [];
+  var i = 0;
+  while (i < lines.length) {
+    var b = lines[i].match(NOTE_BULLET_RE);
+    var n = b ? null : lines[i].match(NOTE_NUM_RE);
+    if (b) {
+      var indent = b[1].length;
+      var items = [];
+      while (i < lines.length) {
+        var m = lines[i].match(NOTE_BULLET_RE);
+        if (!m || m[1].length !== indent) break;
+        items.push('<li>' + m[3] + '</li>');
+        i++;
+      }
+      out.push('<ul class="note-list">' + items.join('') + '</ul>');
+    } else if (n) {
+      var nIndent = n[1].length;
+      var nitems = [];
+      while (i < lines.length) {
+        var m2 = lines[i].match(NOTE_NUM_RE);
+        if (!m2 || m2[1].length !== nIndent) break;
+        nitems.push('<li>' + m2[3] + '</li>');
+        i++;
+      }
+      out.push('<ol class="note-list">' + nitems.join('') + '</ol>');
+    } else {
+      var run = [];
+      while (i < lines.length && !lines[i].match(NOTE_BULLET_RE) && !lines[i].match(NOTE_NUM_RE)) {
+        run.push(lines[i]);
+        i++;
+      }
+      out.push('<div class="whitespace-pre-wrap break-words">' + run.join('\n') + '</div>');
+    }
+  }
+  return out.join('');
+}
+
+function noteBody(ev, text) {
+  var s = String(text == null ? '' : text);
+  var lines = s.split('\n');
+  if (lines.length <= NOTE_COLLAPSE_LINES) return markdownLite(s);
+  var hiddenCount = lines.length - NOTE_COLLAPSE_LINES;
+  var preview = markdownLite(lines.slice(0, NOTE_COLLAPSE_LINES).join('\n'));
+  var hidden = markdownLite(lines.slice(NOTE_COLLAPSE_LINES).join('\n'));
+  return '<div class="note-collapsible">'
+    + '<div class="note-preview">' + preview + '</div>'
+    + '<details class="note-more"><summary>Show more (' + hiddenCount + ' more lines)</summary>'
+    + '<div class="note-full">' + hidden + '</div></details></div>';
+}
+
+function finalAnswerNote(text, time) {
+  return el('div', 'flex justify-start',
+    el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm bg-white border border-gray-200 rounded-bl-sm',
+      '<div class="break-words note-content">' + noteBody('agent_completed', text) + '</div>',
+      '<div class="text-[10px] mt-0.5 text-gray-400">' + time + '</div>'));
+}
+function agentBubbleNote(text, time) {
+  return el('div', 'flex justify-start',
+    el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm bg-barenoc-50 border border-barenoc-200 rounded-bl-sm',
+      '<div class="break-words note-content">' + noteBody('ai_tech_feedback', text) + '</div>',
+      '<div class="text-[10px] mt-0.5 text-gray-400">' + time + '</div>'));
+}
+function progressNote(text, time) {
+  return el('div', 'flex justify-start',
+    '<div class="max-w-[85%] text-xs text-gray-400 italic px-1 py-0.5 note-content">'
+      + noteBody('agent_progress', text)
+      + (time ? ' · ' + time : '') + '</div>');
+}
+function noticeLine(ev, text, time) {
+  return el('div', 'flex justify-center',
+    '<div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 text-center max-w-[90%] note-content">'
+      + esc(symbol(ev) + text) + (time ? ' · ' + time : '') + '</div>');
+}
+
 async function loadThread() {
   if (!curTicket) return;
   try {
@@ -415,19 +510,22 @@ async function loadThread() {
     notes.forEach(n => {
       if (!n || typeof n !== 'object') return;
       const ev = n.event || '';
-      if (ev === 'user_message') box.appendChild(bubble('user', n.detail, fmtTime(n.timestamp), null));
-      else if (ev === 'agent_completed' || ev === 'ai_tech_feedback' || ev === 'agent_progress')
-        box.appendChild(bubble('agent', n.detail, fmtTime(n.timestamp), null));
+      const tm = fmtTime(n.timestamp);
+      if (ev === 'user_message') box.appendChild(bubble('user', n.detail, tm, null));
+      else if (ev === 'agent_completed') box.appendChild(finalAnswerNote(n.detail, tm));
+      else if (ev === 'ai_tech_feedback') box.appendChild(agentBubbleNote(n.detail, tm));
+      else if (ev === 'agent_progress') box.appendChild(progressNote(n.detail, tm));
+      else if (ev === 'checkin_request') box.appendChild(noticeLine(ev, n.detail, tm));
       else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'closed' || ev === 'autoclosed')
-        box.appendChild(systemLine(ev, n.detail, fmtTime(n.timestamp)));
+        box.appendChild(systemLine(ev, n.detail, tm));
       else if (ev === 'pause_until' || ev === 'pause_cleared')
-        box.appendChild(systemLine(ev, pauseDetail(ev, n.detail), fmtTime(n.timestamp)));
+        box.appendChild(systemLine(ev, pauseDetail(ev, n.detail), tm));
       // other events are internal pipeline steps — skip for a clean customer view
     });
     // Final resolution chip — only once the ticket is actually resolved/closed;
     // while it's open the in-thread notes already carry Lily's answer.
     if (t.resolution && ['completed','closed'].includes(t.status))
-      box.appendChild(bubble('agent', '✓ ' + t.resolution, fmtTime(t.resolved_at), null));
+      box.appendChild(finalAnswerNote('✓ ' + t.resolution, fmtTime(t.resolved_at)));
     if (stick) box.scrollTop = box.scrollHeight;
     else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
     const acts = $('th-actions'); acts.innerHTML = '';

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from auth import require_role
 from database import get_db
 from models import AuditLog, User
-from audit import verify_chain
+from audit import verify_chain, log_event
 
 router = APIRouter(prefix="/api/v1/audit-log", tags=["audit-log"])
 
@@ -56,9 +56,13 @@ def verify(db: Session = Depends(get_db), user: User = Depends(require_role("adm
 @router.get("/export")
 def export(db: Session = Depends(get_db), user: User = Depends(require_role("admin"))):
     """Export the full audit log (JSON) + chain-verify summary."""
-    rows = db.query(AuditLog).order_by(AuditLog.id.asc()).all()
     import datetime as _dt
     fname = f"barenoc-audit-{_dt.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+    # Export event: who pulled the audit-log export, when (compliance). The
+    # export itself is recorded first so the emitted rows/chain include it.
+    actor = getattr(user, "username", None) or str(getattr(user, "role", "admin"))
+    log_event(db, "export_download", actor, {"kind": "audit_log"})
+    rows = db.query(AuditLog).order_by(AuditLog.id.asc()).all()
     body = {
         "schema_version": 1,
         "exported_at": _dt.datetime.utcnow().isoformat() + "Z",

@@ -197,6 +197,8 @@ progress 50 "backup" "backing up current release"
 echo "==> backing up current code to .previous"
 rm -rf "$BASE/.previous"
 mkdir -p "$BASE/.previous"
+chmod 700 "$BASE/.previous"  # root-only rollback snapshot (infosec 08-27: the
+                              # agent must not read pre-update tree artifacts)
 for d in api worker scheduler nginx scripts agent client docker-compose.yml; do
   [ -e "$BASE/$d" ] && cp -a "$BASE/$d" "$BASE/.previous/$d"
 done

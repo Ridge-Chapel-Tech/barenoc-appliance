@@ -203,6 +203,31 @@ class SysCtxTest(unittest.TestCase):
         self.assertIn("docker compose", sysctx)
         self.assertIn("NEVER write to the BareNOC web API", sysctx)
 
+    def test_sysctx_identity_protection_rule(self):
+        # TKT-20260823-4534 + 08-26: the agent must never reference, seek, or
+        # retain the developer/owner/any user's identity — work notes included
+        # (scrubbed by the same rule as customer-facing text).
+        sysctx = runner._build_sysctx("")
+        low = sysctx.lower()
+        self.assertIn("IDENTITY PROTECTION RULE", sysctx)
+        self.assertIn("personal identity", low)
+        self.assertIn("the barenoc team", low)
+        self.assertIn("never hunt for identities", low)
+        self.assertIn("tailscale status", low)
+        self.assertIn("work notes", low)
+        self.assertIn("scrubbed by the same rule", low)
+
+    def test_sysctx_redacts_identity_from_context(self):
+        # a mock artifact carrying the developer identity must be redacted
+        # before it reaches the agent (the context-build test).
+        ctx = ("Artifact: built by yery (yery.odell@gmail.com), "
+               "dev path /home/yery/Projects/BareNOC")
+        sysctx = runner._build_sysctx(ctx)
+        self.assertNotIn("yery", sysctx)
+        self.assertNotIn("odell", sysctx.lower())
+        self.assertIn("[redacted]", sysctx)
+        self.assertIn("Artifact: built by", sysctx)
+
     def test_sysctx_appends_ticket_context(self):
         sysctx = runner._build_sysctx("Ticket: TKT-20260817-9400 updates")
         self.assertIn("Ticket context:", sysctx)
@@ -224,6 +249,31 @@ class SysCtxTest(unittest.TestCase):
         sysctx = runner._build_sysctx("", checkpoint_dir="/tmp/cp/TKT-1")
         self.assertIn("CHECKPOINT DIRECTORY", sysctx)
         self.assertIn("/tmp/cp/TKT-1", sysctx)
+
+
+class IdentityRedactionTest(unittest.TestCase):
+    """Known personal identifiers must be redacted before the agent sees them
+    (context/task) and never pass the progress-note filter (TKT-4534/08-26)."""
+
+    def test_redact_known_identifiers(self):
+        cases = [
+            ("The developer is yery.", "The developer is [redacted]."),
+            ("built by Yery O'Dell", "built by [redacted]"),
+            ("email yery.odell@gmail.com", "email [redacted]"),
+            ("yery@odell.dev is the dev email", "[redacted] is the dev email"),
+            ("tailnet login yery.odell@", "tailnet login [redacted]"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(runner._redact_identities(raw), expected)
+
+    def test_redact_preserves_generic_content(self):
+        # only the KNOWN identifiers are redacted — never a generic name scan
+        self.assertEqual(runner._redact_identities("John Smith's laptop"),
+                         "John Smith's laptop")
+        self.assertEqual(runner._redact_identities("Email me at a@b.com"),
+                         "Email me at a@b.com")
+        self.assertEqual(runner._redact_identities(""), "")
 
 
 class CheckpointRollbackTest(unittest.TestCase):
@@ -446,6 +496,23 @@ class ProgressToneFilterTest(unittest.TestCase):
         self.assertEqual(friendly, "")
         self.assertFalse(was_filtered)
 
+    def test_identity_note_is_scrubbed(self):
+        # TKT-20260823-4534 / 08-26: a note naming the developer/owner must be
+        # replaced with a friendly generic — never reach the customer.
+        samples = [
+            "The prior work established the developer is yery",
+            "the lead developer is yery.odell@ on the tailnet",
+            "built by Yery O'Dell",
+        ]
+        for raw in samples:
+            with self.subTest(raw=raw[:40]):
+                self.assertTrue(runner._is_technical_note(raw),
+                                f"should be technical: {raw!r}")
+                friendly, was_filtered = runner._friendly_progress_note(raw)
+                self.assertTrue(was_filtered)
+                self.assertIn(friendly, runner._FRIENDLY_PROGRESS)
+                self.assertNotEqual(friendly, raw)
+
 
 class ProgressTonePoolTest(unittest.TestCase):
     """The 08-18 chat-tone-diversity work: a much larger, categorized pool.
@@ -589,6 +656,9 @@ class TonePoolParityTest(unittest.TestCase):
         self.assertEqual(
             [p.pattern for p in runner._TECH_NOTE_PATTERNS],
             [p.pattern for p in tone_pool._TECH_NOTE_PATTERNS])
+        self.assertEqual(
+            [p.pattern for p in runner._IDENTITY_PATTERNS],
+            [p.pattern for p in tone_pool.IDENTITY_PATTERNS])
         self.assertEqual(runner._FRIENDLY_PROGRESS, tone_pool.all_phrases())
 
 

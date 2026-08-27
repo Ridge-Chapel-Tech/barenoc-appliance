@@ -24,6 +24,7 @@ from auth import require_any_role
 from database import get_db
 from models import User
 from routes.settings import _read_env_file
+from audit import log_event
 
 router = APIRouter(prefix="/api/v1/updates", tags=["updates"])
 
@@ -577,7 +578,7 @@ def _write_schedule(conf: dict):
         raise HTTPException(500, f"could not save the schedule: {e}")
 
 
-def ensure_default_update_schedule() -> dict:
+def ensure_default_update_schedule(db: Session = None, actor: str = "system") -> dict:
     """Write the DEFAULT_UPDATE_SCHEDULE ONCE — only when update_schedule.conf
     does not exist. The conf file's existence (enabled OR explicitly disabled)
     is the permanent opt-out marker: no future release can flip it back.
@@ -594,6 +595,12 @@ def ensure_default_update_schedule() -> dict:
         return {"written": False, "reason": "schedule conf already exists (preserved)"}
     try:
         _write_schedule(dict(DEFAULT_UPDATE_SCHEDULE))
+        if db is not None:
+            log_event(db, "update_schedule_change", actor, {
+                "action": "default_created",
+                "mode": DEFAULT_UPDATE_SCHEDULE["mode"],
+                "enabled": bool(DEFAULT_UPDATE_SCHEDULE["enabled"]),
+            })
         return {"written": True, "reason": "wrote the default auto-update schedule"}
     except Exception as e:
         return {"written": False, "reason": f"could not write the default schedule: {e}"}
@@ -734,9 +741,18 @@ def get_schedule(user: User = Depends(require_any_role("technician", "operator",
     return _read_schedule()
 
 
+def _audit_schedule_change(db, actor, data):
+    """Audit an update-schedule change. `db` may be None in direct unit
+    calls (tests pass db=None); FastAPI always injects a real session."""
+    if db is None:
+        return
+    log_event(db, "update_schedule_change", actor, data)
+
+
 @router.post("/schedule")
 def set_schedule(body: ScheduleBody,
-                 user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
+                 user: User = Depends(require_any_role("technician", "operator", "admin", "agent")),
+                 db: Session = Depends(get_db)):
     mode = (body.mode or "recurring").strip().lower()
     if mode not in ("recurring", "onetime"):
         raise HTTPException(422, "mode must be 'recurring' or 'onetime'")
@@ -773,11 +789,20 @@ def set_schedule(body: ScheduleBody,
         "when": when,
         "fired": "",   # (re)arming clears any previous fire
     })
+    _audit_schedule_change(db, user.username, {
+        "action": "set",
+        "mode": mode,
+        "enabled": bool(body.enabled),
+        "day": str(day),
+        "hour": hour,
+        "when": when,
+    })
     return {"status": "ok", "schedule": _read_schedule()}
 
 
 @router.post("/schedule/complete")
-def complete_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
+def complete_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent")),
+                      db: Session = Depends(get_db)):
     """Mark a one-time schedule as fired and disable it (persisted — survives
     restart). Called by the scheduler AFTER it has actually queued the update."""
     conf = _read_schedule()
@@ -785,15 +810,24 @@ def complete_schedule(user: User = Depends(require_any_role("technician", "opera
         conf["fired"] = _now()
         conf["enabled"] = False
         _write_schedule(conf)
+        _audit_schedule_change(db, user.username, {
+            "action": "complete", "mode": "onetime", "enabled": False,
+            "when": conf.get("when", ""),
+        })
     return {"status": "ok", "schedule": _read_schedule()}
 
 
 @router.post("/schedule/cancel")
-def cancel_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
+def cancel_schedule(user: User = Depends(require_any_role("technician", "operator", "admin", "agent")),
+                    db: Session = Depends(get_db)):
     """Cancel the current schedule: disable it and clear any one-time when/fired."""
     conf = _read_schedule()
     conf["enabled"] = False
     conf["when"] = ""
     conf["fired"] = ""
     _write_schedule(conf)
+    _audit_schedule_change(db, user.username, {
+        "action": "cancel", "mode": conf.get("mode", "recurring"),
+        "enabled": False,
+    })
     return {"status": "ok", "schedule": _read_schedule()}

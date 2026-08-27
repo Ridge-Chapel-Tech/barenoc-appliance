@@ -26,6 +26,7 @@ from auth import require_role
 from database import get_db
 from models import AuditLog, Device, Ticket
 from version import APP_VERSION
+from audit import log_event
 
 router = APIRouter(prefix="/api/v1/support", tags=["support"])
 
@@ -281,6 +282,11 @@ def export_bundle(body: BundleRequest = None,
     body = body or BundleRequest()
     md = build_bundle(body.bug_description, db, user)
     now = datetime.datetime.utcnow()
+    # Export event: who pulled the support bundle, when (compliance).
+    log_event(db, "export_download", user.username, {
+        "kind": "support_bundle",
+        "bytes": len(md.encode("utf-8")),
+    })
     fname = f"barenoc-support-{now.strftime('%Y%m%d-%H%M%S')}.md"
     return Response(
         content=md,

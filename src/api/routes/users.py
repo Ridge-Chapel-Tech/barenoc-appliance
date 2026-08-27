@@ -68,6 +68,12 @@ def create_user(data: UserCreate, db: Session = Depends(get_db), user: User = De
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    try:
+        from audit import log_event
+        log_event(db, "user.created", user.username,
+                  {"created_username": new_user.username, "role": new_user.role}, None)
+    except Exception:
+        pass
     return UserResponse.model_validate(new_user).model_dump()
 
 
@@ -105,8 +111,15 @@ def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depend
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     _purge_user_rows(db, target)
+    _deleted_name = target.username
     db.delete(target)
     db.commit()
+    try:
+        from audit import log_event
+        log_event(db, "user.deleted", user.username,
+                  {"deleted_username": _deleted_name}, None)
+    except Exception:
+        pass
     return None
 
 

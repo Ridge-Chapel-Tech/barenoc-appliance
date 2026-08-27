@@ -11,6 +11,7 @@ from models import Device, User, is_customer
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
+from audit import log_event
 from action_validator import (
     effective_channels, suggest_from_fingerprint,
     CHANNELS,
@@ -22,6 +23,27 @@ router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 logger = logging.getLogger("devices")
 
 DEFAULT_GROUP = "default"
+
+
+def _actor_name(user) -> str:
+    """Robust actor name (real auth users carry username; test fakes may not)."""
+    return (getattr(user, "username", None)
+            or getattr(user, "name", None)
+            or str(getattr(user, "role", "unknown")))
+
+
+def _log_credential_access(db, actor: str, device: Device,
+                           credential_type: str, action: str,
+                           device_id: int = None):
+    """Audit the highest-value compliance event on a box that holds network
+    credentials: a stored SSH/SNMP secret was decrypted/fetched for use.
+    Records actor, device, type, action — NEVER the secret itself."""
+    log_event(db, "credential_access", actor, {
+        "device_id": device_id if device_id is not None else (device.id if device else None),
+        "device_name": device.name if device else None,
+        "credential_type": credential_type,
+        "action": action,
+    })
 
 
 def _device_channels(device: Device) -> list:
@@ -81,7 +103,8 @@ def _validate_group(group: Optional[str]) -> str:
 
 
 @router.get("/control-key")
-def device_control_key(ctx: dict = Depends(get_access_context)):
+def device_control_key(db: Session = Depends(get_db),
+                      ctx: dict = Depends(get_access_context)):
     """The appliance's device-control SSH keypair (operator+).
 
     The public half goes on the device's authorized_keys; the private half is
@@ -90,6 +113,8 @@ def device_control_key(ctx: dict = Depends(get_access_context)):
     from auth import require_any_role
     require_any_role("technician", "operator", "admin")(ctx["user"])
     from control_key import ensure_control_key
+    _log_credential_access(db, _actor_name(ctx["user"]), None, "ssh",
+                           "fetch_control_key", device_id=None)
     return ensure_control_key()
 
 
@@ -760,8 +785,10 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db), ctx: d
         raise HTTPException(status_code=403,
                             detail="The appliance itself is never a management target (self-protection).")
     result = {}
+    actor = _actor_name(ctx["user"])
     if device.snmp_community:
         result["snmp_community"] = decrypt(device.snmp_community)
+        _log_credential_access(db, actor, device, "snmp", "decrypt")
     if device.ssh_user:
         result["ssh_user"] = device.ssh_user
     if device.ssh_key_fingerprint:
@@ -769,4 +796,5 @@ def get_device_credentials(device_id: int, db: Session = Depends(get_db), ctx: d
         if os.path.exists(key_file):
             with open(key_file) as f:
                 result["ssh_key"] = decrypt(f.read())
+            _log_credential_access(db, actor, device, "ssh", "decrypt")
     return result

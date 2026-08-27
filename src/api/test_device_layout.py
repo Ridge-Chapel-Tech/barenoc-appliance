@@ -69,6 +69,15 @@ class DevicesPageLayoutTest(unittest.TestCase):
         self.assertIn("Onboarded devices", html)
         self.assertIn("monitored-chip", html)
 
+    def test_uplink_isp_card_present_at_top(self):
+        """The Uplink / ISP card (Starlink dish → UniFi WAN → egress probe)
+        lives on Devices, not System."""
+        path = os.path.join(os.path.dirname(__file__), "templates", "devices.html")
+        with open(path) as f:
+            html = f.read()
+        self.assertIn('id="uplink"', html)
+        self.assertIn('function uplinkLoad', html)
+
 
 class MonitorToggleTest(unittest.TestCase):
     def setUp(self):

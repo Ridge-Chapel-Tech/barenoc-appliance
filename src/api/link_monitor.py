@@ -214,6 +214,35 @@ class UniFiChannel:
         self._cached_wan[mac] = h
         return h
 
+    def wan_picture(self, mac: str) -> "dict | None":
+        """WAN health + the raw wan1/wan2 config for one gateway — the uplink
+        card's UniFi data source. Reuses the same login + device cache as
+        ``collect()`` so the link-flap monitor and the Devices uplink card
+        share one controller session (no duplicate logins / 429s)."""
+        client = self._client_or_login()
+        if client is None:
+            return None
+        cache_seconds = self._cache_seconds
+        if cache_seconds is None:
+            cache_seconds = link_monitor_config()["unifi_cache_seconds"]
+        if self._cached_devices is None or (time.time() - self._last_fetch) >= cache_seconds:
+            raw = client.get_raw_devices()
+            if raw is None:
+                return None
+            self._cached_devices = raw
+            self._last_fetch = time.time()
+        health = self._wan_health(mac)
+        wan = {}
+        target = (mac or "").lower()
+        for d in (self._cached_devices or []):
+            if (d.get("mac") or "").lower() == target:
+                wan = {"wan1": d.get("wan1"), "wan2": d.get("wan2"),
+                       "model": d.get("model") or "",
+                       "name": d.get("name") or "",
+                       "type": d.get("type") or ""}
+                break
+        return {"health": health, "wan": wan}
+
 
 class SnmpChannel:
     """ifOperStatus + ifDescr for devices with snmp_configured (servers etc.).

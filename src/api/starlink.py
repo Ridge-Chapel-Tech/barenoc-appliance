@@ -40,6 +40,7 @@ from schemas import generate_ticket_id
 from emailer import send_email, get_recipients, alert_html
 from audit import log_event
 from worknotes import add_note
+import metrics_store
 
 logger = logging.getLogger("barenoc.starlink")
 
@@ -303,24 +304,83 @@ def _dish_ip(address: str) -> str:
 
 PHANTOM_METRIC_WINDOW_DAYS = 7  # telemetry within this window = a real dish
 
-def starlink_has_live_dish() -> bool:
-    """True when a REAL dish is evidenced on this box: a dish device record
-    with telemetry within PHANTOM_METRIC_WINDOW_DAYS (the 08-26 evidence
-    rule — same test the purge uses). Drives the System 'Starlink Link
-    Health' card, which must not render for no-dish boxes (forum 9eaa106e)."""
-    from models import Device, Metric
+def has_live_dish(db) -> bool:
+    """Evidence rule over an open session: a dish record with starlink.*
+    telemetry within PHANTOM_METRIC_WINDOW_DAYS is a real, live dish. Drives
+    the Devices 'Uplink / ISP' card (and the phantom purge's keep rule) so a
+    dish card never renders for no-dish boxes (forum 9eaa106e)."""
+    from models import Metric
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=PHANTOM_METRIC_WINDOW_DAYS)
-    db = SessionLocal()
-    try:
-        for d in db.query(Device).filter(Device.device_type == "dish").all():
-            if db.query(Metric).filter(
-                    Metric.device_id == d.id,
-                    Metric.metric.like("starlink.%"),
-                    Metric.ts >= cutoff).first():
-                return True
-    finally:
-        db.close()
+    for d in db.query(Device).filter(Device.device_type == "dish").all():
+        if db.query(Metric).filter(
+                Metric.device_id == d.id,
+                Metric.metric.like("starlink.%"),
+                Metric.ts >= cutoff).first():
+            return True
     return False
+
+
+_TREND_METRICS = (("starlink.ping_ms", "ping_ms"),
+                  ("starlink.down_mbps", "down_mbps"))
+
+
+def _iso(dt) -> "str | None":
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z" if dt else None
+
+
+def status_payload(db, cfg: dict = None) -> dict:
+    """The Starlink read-surface payload shared by the starlink route and the
+    Devices uplink card (which embeds the dish stats when a live dish exists).
+    Returns the collector config + dish device + latest starlink.* metrics +
+    episode health + any open ticket + a one-hour trend for ping/downlink."""
+    from models import Metric
+    cfg = cfg if cfg is not None else starlink_config()
+    device = (db.query(Device).filter(Device.device_type == "dish")
+              .order_by(Device.id.asc()).first())
+    if device is None:
+        return {"enabled": cfg["enabled"], "address": cfg["address"],
+                "device": None, "latest": {}, "latest_ts": None,
+                "health": "unknown", "open_ticket": None, "trend": {}}
+
+    latest = {}
+    latest_ts = None
+    for metric in ALL_METRICS:
+        row = (db.query(Metric)
+               .filter(Metric.device_id == device.id, Metric.metric == metric)
+               .order_by(Metric.ts.desc()).first())
+        if row:
+            latest[metric] = row.value
+            if latest_ts is None or row.ts > latest_ts:
+                latest_ts = row.ts
+
+    ep = (db.query(StarlinkEpisode)
+          .filter(StarlinkEpisode.device_id == device.id).first())
+    health = ep.state if ep is not None else "unknown"
+
+    ticket = None
+    if ep is not None and ep.ticket_id:
+        t = db.query(Ticket).filter(Ticket.ticket_id == ep.ticket_id).first()
+        if t is not None and t.status in ("open", "in_progress"):
+            ticket = {"ticket_id": t.ticket_id, "priority": t.priority,
+                      "status": t.status, "title": t.title}
+
+    trend = {}
+    now = datetime.datetime.utcnow()
+    for metric, name in _TREND_METRICS:
+        trend[name] = metrics_store.trends(
+            db, device.id, metric, now - datetime.timedelta(hours=1), now,
+            "avg", max_buckets=30)
+
+    return {
+        "enabled": cfg["enabled"],
+        "address": cfg["address"],
+        "device": {"id": device.id, "name": device.name},
+        "latest": latest,
+        "latest_ts": _iso(latest_ts),
+        "health": health,
+        "open_ticket": ticket,
+        "trend": trend,
+    }
 
 
 def purge_phantom_dish_at_startup() -> None:

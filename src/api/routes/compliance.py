@@ -123,9 +123,13 @@ def get_attestation(user: User = Depends(require_role("admin"))):
 
 
 @router.get("/attestation/export")
-def export_attestation(user: User = Depends(require_role("admin"))):
+def export_attestation(db: Session = Depends(get_db),
+                      user: User = Depends(require_role("admin"))):
     """Download the attestation snapshot as a file (signed-envelope shape)."""
     snap = compliance.attestation(compliance.read_env(), APP_VERSION)
+    # Export event: who pulled the attestation export, when (compliance).
+    actor = getattr(user, "username", None) or str(getattr(user, "role", "admin"))
+    log_event(db, "export_download", actor, {"kind": "attestation"})
     import datetime as _dt
     fname = f"barenoc-attestation-{_dt.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
     return Response(

@@ -168,6 +168,12 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
     if not user or not verify_password(request.password, user.hashed_password):
         if user:
             _record_failed_login(db, user)
+        try:
+            from audit import log_event as _le
+            _le(db, "auth.login_failed", request.username.strip().lower() or "?",
+                {"ip": _client_ip(request) or ""}, None)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -189,6 +195,13 @@ def login(request: LoginRequest, response: Response, db: Session = Depends(get_d
             )
 
     _reset_failed_logins(db, user)
+
+    try:
+        from audit import log_event as _le
+        _le(db, "auth.login", user.username,
+            {"ip": _client_ip(request) or "", "method": "password"}, None)
+    except Exception:
+        pass
 
     # Update last login
     user.last_login = datetime.utcnow()

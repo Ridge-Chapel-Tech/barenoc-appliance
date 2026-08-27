@@ -144,5 +144,38 @@ class QueueStatusParityTest(unittest.TestCase):
         self.assertEqual(st["label"], "Working on it")
 
 
+class IdentityScrubTest(unittest.TestCase):
+    """Info-sec (TKT-20260823-4534 + 08-26): final answers and work notes must
+    never expose the known developer/owner identity — while generic customer
+    names and emails pass through untouched."""
+
+    def test_strip_meta_narration_redacts_identity(self):
+        answer = ("BareNOC was built by yery — contact yery.odell@gmail.com "
+                  "for details.")
+        cleaned = strip_meta_narration(answer)
+        self.assertNotIn("yery", cleaned)
+        self.assertNotIn("odell", cleaned.lower())
+        self.assertIn("[redacted]", cleaned)
+
+    def test_known_identifiers_redacted(self):
+        from tone_pool import redact_identities
+        self.assertEqual(redact_identities("The developer is yery."),
+                         "The developer is [redacted].")
+        self.assertEqual(redact_identities("Yery O'Dell maintains it"),
+                         "[redacted] maintains it")
+        self.assertEqual(redact_identities("mail yery.odell@gmail.com"),
+                         "mail [redacted]")
+
+    def test_generic_content_preserved(self):
+        from tone_pool import redact_identities
+        self.assertEqual(redact_identities("Contact John Smith"),
+                         "Contact John Smith")
+        self.assertEqual(redact_identities("Email a@b.com"),
+                         "Email a@b.com")
+        # the tailnet-login strip must not touch real emails
+        self.assertEqual(strip_meta_narration("Email a@b.com"),
+                         "Email a@b.com")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

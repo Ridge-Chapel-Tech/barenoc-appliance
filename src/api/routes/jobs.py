@@ -11,7 +11,7 @@ from models import Ticket, User
 from auth import require_any_role, require_role
 from schemas import TicketResponse
 from worknotes import add_note
-from tone_filter import strip_meta_narration
+from tone_filter import ellipsize, strip_meta_narration, structure_answer
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +47,12 @@ def _result_detail_text(result) -> str:
     if isinstance(out, dict):
         raw = out.get("raw_output")
         if isinstance(raw, str) and raw.strip():
-            return raw.strip()[:800]
+            return ellipsize(raw.strip(), 800)
         try:
-            return json.dumps(out, indent=2, default=str)[:800]
+            return ellipsize(json.dumps(out, indent=2, default=str), 800)
         except Exception:
             pass
-    return str(out)[:800]
+    return ellipsize(str(out), 800)
 
 
 
@@ -226,7 +226,7 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
                 lines.append(f"  ✓ {c.get('ap')} -> {c.get('switch')} port {c.get('port')}: now tagged "
                              f"{c.get('tagged_vlan')} (vlan {c.get('vlan')})")
     elif action == "pi_task":
-        response = strip_meta_narration(out.get("response") or "")
+        response = structure_answer(strip_meta_narration(out.get("response") or ""))
         lines.append(response or "Lily finished (no output).")
     elif action == "unifi_set_ssid_password":
         lines.append(f"SSID '{out.get('ssid')}' passphrase updated (security: {out.get('security', 'wpapsk')}).")
@@ -238,14 +238,14 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
 def _result_error_text(result) -> str:
     """Clean, human-readable error from a failed job result."""
     if getattr(result, "error", None):
-        return str(result.error)
+        return ellipsize(str(result.error), 400)
     out = getattr(result, "output", None)
     if isinstance(out, dict):
         if out.get("error"):
-            return str(out["error"])
+            return ellipsize(str(out["error"]), 400)
         if out.get("raw_output"):
-            return str(out["raw_output"])[:400]
-    return str(out or "Unknown error")[:400]
+            return ellipsize(str(out["raw_output"]), 400)
+    return ellipsize(str(out or "Unknown error"), 400)
 
 
 class JobResult(BaseModel):

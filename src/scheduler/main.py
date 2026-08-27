@@ -6,6 +6,7 @@ import sys
 import json
 import time
 import logging
+import hashlib
 import datetime
 import urllib.request
 import urllib.error
@@ -26,6 +27,12 @@ AUTOSYNC_INTERVALS = (5, 10, 15, 30, 60)  # allowed minutes
 # Startup guard: wait this long (s) for the api to be healthy AND the agent
 # credentials to log in before the main loop starts (the 08-14/08-18 family).
 STARTUP_READY_TIMEOUT = 600
+# Scheduler-health incident window: after this many seconds of CONTINUOUS API
+# auth failure, write ONE audit event (the 08-26 missing-agent-creds class —
+# previously only visible in docker logs). Recovery writes its own event.
+AUTH_FAILURE_SUSTAINED_SECONDS = 900  # 15 minutes
+
+_AUTH_STATE = {"since": None, "logged": False}
 
 
 def _read_env() -> dict:
@@ -589,6 +596,67 @@ def _db_path() -> str:
     return path
 
 
+def _audit_hash(data: dict, previous_hash: str = None) -> str:
+    """Mirror api/audit.compute_hash exactly (json sort_keys + prev)."""
+    raw = json.dumps(data, sort_keys=True) + (previous_hash or "0")
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _audit_event(event_type: str, actor: str, data: dict) -> bool:
+    """Write an audit row DIRECTLY via sqlite3 (the scheduler image has no
+    sqlalchemy, but it mounts the DB volume). Mirrors api/audit.log_event's
+    hash chain so the API's verify_chain stays green. Never raises."""
+    path = _db_path()
+    try:
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT sha256_hash FROM audit_log ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            prev = row[0] if row else None
+            ts = datetime.datetime.utcnow()
+            event_id = f"evt_{ts.strftime('%Y%m%d%H%M%S%f')}"
+            cur.execute(
+                "INSERT INTO audit_log (event_id, timestamp, event_type, "
+                "ticket_id, actor, data, previous_hash, sha256_hash) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (event_id, ts.strftime("%Y-%m-%d %H:%M:%S.%f"), event_type,
+                 None, actor, json.dumps(data), prev, _audit_hash(data, prev)))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"scheduler audit event write failed: {e}")
+        return False
+
+
+def _observe_auth_result(ok: bool, reason: str = ""):
+    """Track the scheduler's API-auth health. After AUTH_FAILURE_SUSTAINED_SECONDS
+    of CONTINUOUS failure, write ONE scheduler_health incident event; when auth
+    returns, write a recovery event (each at most once per episode)."""
+    now = time.time()
+    if ok:
+        if _AUTH_STATE["logged"]:
+            _audit_event("scheduler_health", "scheduler", {
+                "result": "recovered",
+                "reason": "agent API auth restored",
+            })
+        _AUTH_STATE["since"] = None
+        _AUTH_STATE["logged"] = False
+        return
+    if _AUTH_STATE["since"] is None:
+        _AUTH_STATE["since"] = now
+        return
+    if not _AUTH_STATE["logged"] and \
+            (now - _AUTH_STATE["since"]) >= AUTH_FAILURE_SUSTAINED_SECONDS:
+        _audit_event("scheduler_health", "scheduler", {
+            "result": "failed",
+            "reason": reason or "agent API auth failing (sustained window)",
+        })
+        _AUTH_STATE["logged"] = True
+
+
 def telemetry_retention_config() -> tuple:
     """(retention_days, disk_min_free_pct) hot-read from .env. The same math
     as metrics_store.retention_days in the api container — keep in sync."""
@@ -616,7 +684,7 @@ def _effective_retention_days(days: int, min_free_pct: int, free_pct: float) -> 
 # sane days, strict days). 0 = never prune.
 RETENTION_CATEGORIES = {
     "metrics": ("metrics", "ts", 30, 14),
-    "audit_log": ("audit_log", "timestamp", 365, 90),
+    "audit_log": ("audit_log", "timestamp", 0, 0),  # never hard-deleted — the API pseudonymizes (08-27 model)
     "tickets": ("tickets", "resolved_at", 0, 365),
     "chat_messages": ("chat_messages", "created_at", 0, 180),
     "scan_runs": ("scan_runs", "created_at", 90, 30),
@@ -756,8 +824,25 @@ def run():
     _last_triggered = {}
 
     while True:
+        token = ""
         try:
             token = _get_token()
+            _observe_auth_result(bool(token))
+        except urllib.error.HTTPError as e:
+            _observe_auth_result(False,
+                                 reason=f"agent API auth rejected (HTTP {e.code})")
+            logger.error(f"Scheduler auth failed: {e}")
+        except Exception as e:
+            _observe_auth_result(False, reason="agent API auth unreachable")
+            logger.error(f"Scheduler auth failed: {e}")
+
+        # No token = auth still failing: skip the poll body (the incident is
+        # already observed above) rather than 401-flood every API call.
+        if not token:
+            time.sleep(15)
+            continue
+
+        try:
             now = time.time()
 
             # Health checks every 60s

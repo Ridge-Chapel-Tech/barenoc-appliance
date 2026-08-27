@@ -168,6 +168,35 @@ _POOL = {
 # certainly several sentences of internal detail.
 _PROGRESS_MAX_FRIENDLY_LEN = 220
 
+# Known personal identifiers (the developer / owner) that must never appear in
+# any agent-visible text — the injected context, work notes, progress notes, or
+# answers. Case-insensitive and token-anchored; ONLY these known identifiers are
+# matched, never a generic first/last-name scan (legit customer names are
+# untouched). Keep in sync with src/agent/runner.py (vendored copy) —
+# src/agent/test_runner.py asserts parity.
+IDENTITY_PATTERNS = (
+    re.compile(r"yery\.odell@[a-z0-9.\-]*", re.IGNORECASE),  # tailnet login + known emails
+    re.compile(r"yery@odell\.dev", re.IGNORECASE),            # dev email
+    re.compile(r"yery[.\-_]odell", re.IGNORECASE),            # dot/dash/underscore-joined
+    re.compile(r"yery\s+o['’]?dell", re.IGNORECASE),          # full name "Yery O'Dell"
+    re.compile(r"\byery\b", re.IGNORECASE),                   # handle / first name
+    re.compile(r"\bo['’]dell\b", re.IGNORECASE),              # surname "O'Dell"
+)
+
+
+def redact_identities(text: str, replacement: str = "[redacted]") -> str:
+    """Replace the known personal identifiers with `replacement`.
+
+    Applied to the ticket context before the agent sees it (runner) and to
+    final answers (tone_filter) so the developer/owner identity never leaks.
+    """
+    if not text:
+        return text
+    for pattern in IDENTITY_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 # Technical-fragment detection (the leak safety net). Any note matching one of
 # these — or that is jargon/length-heavy — is replaced with a friendly phrase;
 # the raw text stays in the session transcript + runner log.
@@ -189,6 +218,9 @@ _TECH_NOTE_PATTERNS = [
     # Tailnet account logins ("name.name@" — the peer owner login from
     # `tailscale status`); never reaches the customer (08-26 identity leak).
     re.compile(r"\b[a-z0-9][a-z0-9._-]*@(?![a-z0-9])", re.IGNORECASE),
+    # Known personal identifiers (developer/owner) — any note naming one is
+    # treated as technical and scrubbed to a friendly generic (IDENTITY_PATTERNS).
+    *IDENTITY_PATTERNS,
 ]
 
 

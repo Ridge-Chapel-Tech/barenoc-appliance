@@ -111,11 +111,11 @@ SESSION_POLICY_VALUES = {
 # Retention presets (days per category; 0 = never prune).
 # KEEP IN SYNC with src/scheduler/main.py RETENTION_CATEGORIES.
 RETENTION_PRESETS = {
-    "sane":   {"metrics": 30, "audit_log": 365, "tickets": 0, "chat_messages": 0,
+    "sane":   {"metrics": 30, "audit_log": 0, "tickets": 0, "chat_messages": 0,
                "scan_runs": 90, "findings": 90, "firmware_upgrades": 365,
                "link_episodes": 30, "starlink_episodes": 30,
                "service_check_episodes": 30},
-    "strict": {"metrics": 14, "audit_log": 90, "tickets": 365, "chat_messages": 180,
+    "strict": {"metrics": 14, "audit_log": 365, "tickets": 365, "chat_messages": 180,
                "scan_runs": 30, "findings": 30, "firmware_upgrades": 180,
                "link_episodes": 7, "starlink_episodes": 7,
                "service_check_episodes": 7},
@@ -329,6 +329,7 @@ def local_endpoint_missing(env: dict = None) -> bool:
 def attestation(env: dict = None, appliance_version: str = None) -> dict:
     """The posture snapshot an auditor asks for ("show me the config")."""
     controls = get_controls(env)
+    from audit_catalog import catalog_summary
     return {
         "schema_version": 1,
         "generated_at": _now_iso(),
@@ -339,6 +340,9 @@ def attestation(env: dict = None, appliance_version: str = None) -> dict:
         "settings_hash": settings_hash(controls),
         "settings_hash_algorithm": "sha256",
         "audit_log_export": "/api/v1/audit-log/export",
+        # The framework-mapped audit event catalog (2026-08-26):
+        # "N audit event types active, hash-chained, retention X".
+        "audit_catalog": catalog_summary(),
         "non_negotiable": NON_NEGOTIABLE,
         "local_endpoint_missing": local_endpoint_missing(env),
     }
