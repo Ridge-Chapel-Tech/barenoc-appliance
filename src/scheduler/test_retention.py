@@ -23,7 +23,7 @@ class RetentionConfigTest(unittest.TestCase):
         with patch.object(scheduler, "_read_env", return_value={}):
             cfg = scheduler.retention_config()
         self.assertEqual(cfg["metrics"]["days"], 30)
-        self.assertEqual(cfg["audit_log"]["days"], 365)
+        self.assertEqual(cfg["audit_log"]["days"], 0)   # never deleted (08-27 model: pseudonymized instead)
         self.assertEqual(cfg["tickets"]["days"], 0)   # never
         self.assertEqual(cfg["chat_messages"]["days"], 0)
 
@@ -31,7 +31,7 @@ class RetentionConfigTest(unittest.TestCase):
         with patch.object(scheduler, "_read_env", return_value={"RETENTION_PROFILE": "strict"}):
             cfg = scheduler.retention_config()
         self.assertEqual(cfg["metrics"]["days"], 14)
-        self.assertEqual(cfg["audit_log"]["days"], 90)
+        self.assertEqual(cfg["audit_log"]["days"], 0)  # never hard-deleted; 365d pseudonymize window is API-side
         self.assertEqual(cfg["tickets"]["days"], 365)
 
     def test_explicit_override_wins(self):
@@ -73,13 +73,13 @@ class PruneRetentionTest(unittest.TestCase):
                           return_value={"RETENTION_PROFILE": "strict"}):
             deleted = scheduler.prune_retention(path)
         self.assertEqual(deleted["metrics"], 1)
-        self.assertEqual(deleted["audit_log"], 1)
+        self.assertEqual(deleted.get("audit_log", 0), 0)  # audit never hard-deleted (08-27 model)
         self.assertEqual(deleted["scan_runs"], 1)
         self.assertEqual(deleted["findings"], 1)
         conn = sqlite3.connect(path)
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0], 1)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0], 2)  # both survive
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0], 1)
         finally:
