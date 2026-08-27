@@ -15,6 +15,21 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.27.a] — 2026-08-27
+
+- **Light / dark / auto theme (web UI):** a theme toggle in the nav (Light ·
+  Dark · Auto — default **Auto** = `prefers-color-scheme`), persisted in
+  `localStorage` and applied **before first paint** by a tiny inline no-flash
+  script in `<head>` (the `.dark` class goes on `<html>`). Tailwind's
+  `darkMode: 'class'` is enabled, and a new `src/api/static/dark.css` override
+  layer maps the high-frequency light utility classes (`bg-white`/`bg-gray-50`/
+  `text-gray-*`/`border-gray-*`/`shadow`/status tints) to a WCAG-AA slate
+  palette for near-free coverage; key surfaces (sidebar, cards, tables, modals,
+  wiki prose + mermaid diagrams) carry explicit dark styling. Covers every
+  base.html page, the login page, the setup wizard, the web chat, and the user
+  wiki. The tkinter desktop chat client (`client/`) is **out of scope**
+  (separate follow-up).
+
 ## [2026.08.26.d] — 2026-08-26
 
 - **Readable ticket threads (formatting)** — long agent answers (`agent_completed`

@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#1d4ed8">
     <title>{{ site_name }} — Chat</title>
+    {% include "_theme_head.html" %}
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
+            darkMode: 'class',
             theme: {
                 extend: {
                     colors: {
@@ -69,6 +71,9 @@
       <div class="text-xs text-white/70 leading-tight">Chat with your network</div>
     </div>
     <button id="btn-dash" onclick="window.location.href='/dashboard'" class="hidden text-sm px-2 py-1 rounded-full hover:bg-white/10" title="Back to the dashboard">Dashboard</button>
+    <button data-theme-btn onclick="window.bnTheme && bnTheme.cycle()" class="text-sm px-2 py-1 rounded-full hover:bg-white/10" title="Theme">
+        <svg class="w-4 h-4" data-theme-icon viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+    </button>
     <button id="btn-logout" onclick="logout()" class="hidden text-sm px-2 py-1 rounded-full hover:bg-white/10">Sign out</button>
   </header>
 

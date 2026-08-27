@@ -1,0 +1,62 @@
+<link rel="stylesheet" href="/static/dark.css">
+<script>
+/*
+ * BareNOC theme controller — Light / Dark / Auto (system).
+ * Modes persist in localStorage (default = Auto → prefers-color-scheme).
+ * The no-flash apply() runs synchronously in <head> so the `.dark` class is
+ * on <html> BEFORE first paint. The toggle buttons in the UI are plain
+ * elements carrying `data-theme-btn` / `data-theme-icon` / `data-theme-label`;
+ * clicking calls bnTheme.cycle().
+ */
+(function () {
+    var KEY = 'barenoc-theme';
+    function read() { try { return localStorage.getItem(KEY) || 'auto'; } catch (e) { return 'auto'; } }
+    function media() { try { return window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null; } catch (e) { return null; } }
+    function resolved() {
+        var m = read();
+        if (m === 'dark') return 'dark';
+        if (m === 'light') return 'light';
+        var q = media();
+        return (q && q.matches) ? 'dark' : 'light';
+    }
+    function icon(m) {
+        if (m === 'dark') return '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+        if (m === 'light') return '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>';
+        return '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>';
+    }
+    function apply() {
+        var d = resolved() === 'dark';
+        document.documentElement.classList.toggle('dark', d);
+        document.documentElement.style.colorScheme = d ? 'dark' : 'light';
+    }
+    function sync() {
+        var m = read();
+        var label = m === 'auto' ? 'Auto' : (m === 'light' ? 'Light' : 'Dark');
+        var title = 'Theme: ' + (m === 'auto' ? 'Auto (follows system)' : m) + ' — click to cycle';
+        document.querySelectorAll('[data-theme-label]').forEach(function (el) { el.textContent = label; });
+        document.querySelectorAll('[data-theme-icon]').forEach(function (el) { el.innerHTML = icon(m); });
+        document.querySelectorAll('[data-theme-btn]').forEach(function (el) {
+            el.setAttribute('title', title);
+            el.setAttribute('aria-label', title);
+        });
+    }
+    function cycle() {
+        var m = read();
+        var next = m === 'auto' ? 'light' : (m === 'light' ? 'dark' : 'auto');
+        try { localStorage.setItem(KEY, next); } catch (e) {}
+        apply();
+        sync();
+    }
+    apply(); // no-flash: resolve + set before first paint
+    window.bnTheme = { cycle: cycle, apply: apply, sync: sync, mode: read, resolved: resolved };
+    var q = media();
+    if (q && q.addEventListener) {
+        q.addEventListener('change', function () { if (read() === 'auto') { apply(); sync(); } });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', sync);
+    } else {
+        sync();
+    }
+})();
+</script>

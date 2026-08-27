@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Setup — BareNOC</title>
+    {% include "_theme_head.html" %}
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = { theme: { extend: { colors: { barenoc: {
+        tailwind.config = { darkMode: 'class', theme: { extend: { colors: { barenoc: {
             50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af' } } } } };
     </script>
 </head>
@@ -21,7 +22,13 @@
         <div class="text-xs text-gray-500">A few quick steps and your network can answer for itself.</div>
       </div>
     </div>
-    <button onclick="toggleAdvanced()" id="adv-toggle" class="shrink-0 text-xs text-gray-400 underline hover:text-gray-600">Advanced setup</button>
+    <div class="flex items-center gap-3">
+      <button data-theme-btn onclick="window.bnTheme && bnTheme.cycle()" class="shrink-0 flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 border border-gray-300 rounded-full px-2.5 py-1">
+        <svg class="w-3.5 h-3.5" data-theme-icon viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+        <span data-theme-label>Auto</span>
+      </button>
+      <button onclick="toggleAdvanced()" id="adv-toggle" class="shrink-0 text-xs text-gray-400 underline hover:text-gray-600">Advanced setup</button>
+    </div>
   </div>
 
   <!-- step dots + counter -->

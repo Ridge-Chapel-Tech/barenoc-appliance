@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }} · BareNOC Wiki</title>
+    {% include "_theme_head.html" %}
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
+            darkMode: 'class',
             theme: {
                 extend: {
                     colors: {
@@ -38,6 +40,18 @@
         .wiki-body blockquote { border-left: 3px solid #bfdbfe; padding-left: .9rem; color: #64748b; margin: .75rem 0; }
         .wiki-body pre code.language-mermaid { background: transparent; border: none; }
         .mermaid-wrap { margin: 1rem 0; display: flex; justify-content: center; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+        /* dark-mode overrides for the hand-written wiki prose styles */
+        .dark .wiki-body h1 { color: #93c5fd; }
+        .dark .wiki-body h2 { color: #93c5fd; border-bottom-color: #334155; }
+        .dark .wiki-body h3 { color: #cbd5e1; }
+        .dark .wiki-body p, .dark .wiki-body ul, .dark .wiki-body ol { color: #cbd5e1; }
+        .dark .wiki-body code { background: #1e293b; border-color: #334155; color: #7dd3fc; }
+        .dark .wiki-body pre { background: #020617; color: #e2e8f0; }
+        .dark .wiki-body th { background: #172554; color: #93c5fd; }
+        .dark .wiki-body th, .dark .wiki-body td { border-color: #334155; }
+        .dark .wiki-body a { color: #60a5fa; }
+        .dark .wiki-body blockquote { border-left-color: #1e40af; color: #94a3b8; }
+        .dark .mermaid-wrap { background: #0f172a; border-color: #334155; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-full">
@@ -48,6 +62,10 @@
                 {% if request.cookies.get('access_token') %}
                 <a href="/dashboard" class="text-gray-300 hover:text-white hover:underline">Dashboard</a>
                 {% endif %}
+                <button data-theme-btn onclick="window.bnTheme && bnTheme.cycle()" class="flex items-center gap-1.5 text-gray-300 hover:text-white text-sm">
+                    <svg class="h-4 w-4" data-theme-icon viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+                    <span data-theme-label>Auto</span>
+                </button>
             </div>
         </div>
     </header>
@@ -82,10 +100,15 @@
                 if (!blocks.length) return;
                 if (!initialized) {
                     try {
+                        var dark = document.documentElement.classList.contains('dark');
                         mermaid.initialize({
                             startOnLoad: false,
                             theme: 'base',
-                            themeVariables: {
+                            themeVariables: dark ? {
+                                primaryColor: '#1e3a8a', primaryTextColor: '#bfdbfe',
+                                primaryBorderColor: '#3b82f6', lineColor: '#475569',
+                                secondaryColor: '#0f172a', tertiaryColor: '#1e293b'
+                            } : {
                                 primaryColor: '#eff6ff', primaryTextColor: '#1e3a8a',
                                 primaryBorderColor: '#bfdbfe', lineColor: '#94a3b8',
                                 secondaryColor: '#f8fafc', tertiaryColor: '#fffbeb'
