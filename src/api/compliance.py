@@ -113,10 +113,12 @@ SESSION_POLICY_VALUES = {
 RETENTION_PRESETS = {
     "sane":   {"metrics": 30, "audit_log": 365, "tickets": 0, "chat_messages": 0,
                "scan_runs": 90, "findings": 90, "firmware_upgrades": 365,
-               "link_episodes": 30, "starlink_episodes": 30},
+               "link_episodes": 30, "starlink_episodes": 30,
+               "service_check_episodes": 30},
     "strict": {"metrics": 14, "audit_log": 90, "tickets": 365, "chat_messages": 180,
                "scan_runs": 30, "findings": 30, "firmware_upgrades": 180,
-               "link_episodes": 7, "starlink_episodes": 7},
+               "link_episodes": 7, "starlink_episodes": 7,
+               "service_check_episodes": 7},
 }
 
 PRESET_PREV_KEY = "COMPLIANCE_PRESET_PREV"

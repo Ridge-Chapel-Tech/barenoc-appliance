@@ -314,7 +314,9 @@ def starlink_has_live_dish() -> bool:
     try:
         for d in db.query(Device).filter(Device.device_type == "dish").all():
             if db.query(Metric).filter(
-                    Metric.device_id == d.id, Metric.ts >= cutoff).first():
+                    Metric.device_id == d.id,
+                    Metric.metric.like("starlink.%"),
+                    Metric.ts >= cutoff).first():
                 return True
     finally:
         db.close()
@@ -358,8 +360,14 @@ def _purge_phantom_dish(db, address: str) -> None:
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=PHANTOM_METRIC_WINDOW_DAYS)
     phantoms = []
     for d in db.query(Device).filter(Device.device_type == "dish").all():
+        # starlink.* telemetry ONLY — the generic device-health pinger writes
+        # ping.* rows for EVERY device (validated 08-26 on loompafoo's box:
+        # the phantom dish had 15k ping rows, zero starlink.* — the ping
+        # evidence made it look real). A real dish always has starlink.*.
         has_evidence = db.query(Metric).filter(
-            Metric.device_id == d.id, Metric.ts >= cutoff).first() is not None
+            Metric.device_id == d.id,
+            Metric.metric.like("starlink.%"),
+            Metric.ts >= cutoff).first() is not None
         if not has_evidence:
             phantoms.append(d)
     for d in phantoms:

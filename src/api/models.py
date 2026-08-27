@@ -268,6 +268,65 @@ class StarlinkEpisode(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 
+class ServiceMonitor(Base):
+    """One per-endpoint service check (ping / TCP port / HTTP(S) status).
+
+    The admin defines these in Settings → Service Checks. A monitor targets a
+    literal host/IP (``target``) OR a device in inventory (``target_device_id``
+    → the check resolves that device's current IP). ``params`` holds the
+    check-type-specific knobs (port / path / expected_status / body_contains /
+    https). ``fail_streak``/``ok_streak`` are the restart-safe consecutive-
+    result counters; ``notify`` only gates the email/push layer — tickets are
+    ALWAYS created regardless.
+    """
+
+    __tablename__ = "service_monitors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)
+    check_type = Column(String(16), default="ping", nullable=False)  # ping | tcp | http
+    target = Column(String(256), nullable=True)      # host/IP (when target_device_id is NULL)
+    target_device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
+    params = Column(JSON, default=dict)
+    interval_min = Column(Integer, default=5)
+    fail_threshold = Column(Integer, default=3)   # consecutive failures to open a ticket
+    recovery_ok = Column(Integer, default=3)      # consecutive successes to close it
+    notify = Column(Boolean, default=True)        # per-monitor 🔔 (email/push layer only)
+    enabled = Column(Boolean, default=True)
+    last_status = Column(String(16), default="unknown")  # unknown | up | down
+    last_check_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    fail_streak = Column(Integer, default=0)
+    ok_streak = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class ServiceCheckEpisode(Base):
+    """In-flight service-check outage episode — one row per monitor with an
+    open ticket. The ticket is the user-facing record; this table is the state
+    machine's restart-safe memory (outage timer + current ticket), so a
+    scheduler/API restart resumes an open episode instead of opening a
+    duplicate. Rows are deleted when the episode auto-closes.
+    """
+
+    __tablename__ = "service_check_episodes"
+    __table_args__ = (
+        UniqueConstraint("monitor_id", name="uq_service_check_episodes_monitor"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    monitor_id = Column(Integer, ForeignKey("service_monitors.id"), index=True, nullable=False)
+    state = Column(String(16), default="down")      # down | outage
+    down_since = Column(DateTime, nullable=True)    # when the P2 ticket opened (outage timer)
+    last_event_at = Column(DateTime, default=datetime.datetime.utcnow)
+    escalated = Column(String(4), default="P2")     # current ticket priority
+    escalation_reason = Column(String(32), nullable=True)  # threshold | outage
+    ticket_id = Column(String(32), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class ScanRun(Base):
     """One Network Optimization scan (P1: read-only audit/report).
 

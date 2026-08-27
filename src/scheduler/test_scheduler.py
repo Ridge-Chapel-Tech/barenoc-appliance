@@ -324,5 +324,36 @@ class UpdateProgressHookTest(unittest.TestCase):
         self.assertEqual(mp.call_count, 1)
 
 
+class ServiceCheckPollTest(unittest.TestCase):
+    """check_service_checks: the scheduler's poll pass for service monitors."""
+
+    def test_config_defaults(self):
+        with patch.object(main, "_read_env", return_value={}):
+            self.assertEqual(main._service_check_config(), (True, 5))
+
+    def test_config_disabled_and_interval(self):
+        with patch.object(main, "_read_env", return_value={
+                "SERVICE_CHECK_ENABLED": "false",
+                "SERVICE_CHECK_INTERVAL_MIN": "10"}):
+            self.assertEqual(main._service_check_config(), (False, 10))
+
+    def test_poll_posts_once(self):
+        with patch.object(main, "_read_env", return_value={
+                "SERVICE_CHECK_ENABLED": "true"}):
+            post = patch.object(main, "_api_post")
+            mp = post.start(); self.addCleanup(post.stop)
+            main.check_service_checks("tok")
+            mp.assert_called_once_with("/service-checks/poll", {}, "tok")
+
+    def test_poll_http_error_is_logged_not_raised(self):
+        with patch.object(main, "_read_env", return_value={
+                "SERVICE_CHECK_ENABLED": "true"}):
+            post = patch.object(main, "_api_post", side_effect=
+                                urllib.error.HTTPError("u", 500, "boom", None, None))
+            mp = post.start(); self.addCleanup(post.stop)
+            main.check_service_checks("tok")   # must not raise
+            self.assertEqual(mp.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

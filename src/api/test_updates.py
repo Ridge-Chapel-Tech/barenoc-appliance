@@ -22,20 +22,37 @@ from routes import updates  # noqa: E402
 
 
 class NotifyTest(unittest.TestCase):
-    def _patch_email(self, sent):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="updates-notify-")
+        self._dir = patch.object(updates, "STATUS_DIR", self.tmp)
+        self._dir.start()
+
+    def tearDown(self):
+        self._dir.stop()
+
+    @staticmethod
+    def _recording_send(sent):
         def fake_send(to, subject, body_html=None, body_text=None, overrides=None):
             sent["to"] = to
             sent["subject"] = subject
+            sent["body_html"] = body_html or ""
+            sent["body_text"] = body_text or ""
             return True, None
+        return fake_send
+
+    def _patch_email(self, sent):
         return [
             patch.object(updates, "_current_version", return_value="2026.08.16.a"),
             patch("llm_providers.read_env_file",
                   return_value={"ALERT_RECIPIENTS": "ops@example.com"}),
-            patch("emailer.send_email", side_effect=fake_send),
+            patch("emailer.send_email", side_effect=self._recording_send(sent)),
             patch("emailer.alert_html", return_value="<table/>"),
+            patch.object(updates, "_fetch_release_body", return_value=(
+                "### Added\n- New shiny dashboard\n- Faster device scans\n"
+                "- Safer release signing\n")),
         ]
 
-    def test_notify_done_sends_alert(self):
+    def test_notify_done_sends_whats_new_note(self):
         sent = {}
         ps = self._patch_email(sent)
         for p in ps:
@@ -47,8 +64,69 @@ class NotifyTest(unittest.TestCase):
             for p in ps:
                 p.stop()
         self.assertEqual(r["notified"], True)
+        self.assertTrue(r.get("whats_new"))
         self.assertEqual(sent["to"], "ops@example.com")
-        self.assertIn("updated to 2026.08.16.a", sent["subject"])
+        self.assertIn("updated to v2026.08.16.a", sent["subject"])
+        self.assertIn("here's what's new", sent["subject"])
+        self.assertIn("New shiny dashboard", sent["body_html"])
+        self.assertIn("Faster device scans", sent["body_html"])
+
+    def test_whats_new_note_only_once_per_version(self):
+        sent = {}
+        ps = self._patch_email(sent)
+        for p in ps:
+            p.start()
+        try:
+            first = updates.update_notify({"stage": "done", "message": "complete"},
+                                          SimpleNamespace(username="admin"))
+            sent.clear()
+            second = updates.update_notify({"stage": "done", "message": "complete"},
+                                           SimpleNamespace(username="admin"))
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertTrue(first["notified"])
+        self.assertFalse(second["notified"])
+        self.assertIn("already sent", second["note"])
+        self.assertEqual(sent, {})
+
+    def test_notify_done_rollback_keeps_plain_email(self):
+        sent = {}
+        with open(os.path.join(self.tmp, "update_result.json"), "w") as f:
+            json.dump({"ok": True, "action": "rollback", "version": "previous"}, f)
+        ps = self._patch_email(sent)
+        for p in ps:
+            p.start()
+        try:
+            r = updates.update_notify({"stage": "done", "message": "restored"},
+                                      SimpleNamespace(username="admin"))
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertTrue(r["notified"])
+        self.assertFalse(r.get("whats_new"))
+        self.assertIn("BareNOC appliance updated to 2026.08.16.a", sent["subject"])
+        self.assertNotIn("here's what's new", sent["subject"])
+
+    def test_whats_new_fallback_when_release_body_unreachable(self):
+        sent = {}
+        ps = [
+            patch.object(updates, "_current_version", return_value="2026.08.16.a"),
+            patch("llm_providers.read_env_file",
+                  return_value={"ALERT_RECIPIENTS": "ops@example.com"}),
+            patch("emailer.send_email", side_effect=self._recording_send(sent)),
+            patch.object(updates, "_fetch_release_body", return_value=""),
+        ]
+        for p in ps:
+            p.start()
+        try:
+            r = updates.update_notify({"stage": "done", "message": "complete"},
+                                      SimpleNamespace(username="admin"))
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertTrue(r["notified"])
+        self.assertIn("See the changelog", sent["body_html"])
 
     def test_notify_failed_sends_alert(self):
         sent = {}
@@ -65,14 +143,69 @@ class NotifyTest(unittest.TestCase):
 
     def test_notify_no_recipients_is_noop(self):
         with patch.object(updates, "_current_version", return_value="2026.08.16.a"), \
-             patch("llm_providers.read_env_file", return_value={}):
+             patch("llm_providers.read_env_file", return_value={}), \
+             patch.object(updates, "_fetch_release_body",
+                          return_value="- a\n- b\n") as fetch:
             r = updates.update_notify({"stage": "done", "message": "x"},
                                       SimpleNamespace(username="admin"))
         self.assertEqual(r["notified"], False)
+        fetch.assert_not_called()
 
     def test_notify_bad_stage_rejected(self):
         with self.assertRaises(Exception):
             updates.update_notify({"stage": "download"}, SimpleNamespace(username="admin"))
+
+
+class WhatsNewSummaryTest(unittest.TestCase):
+    """The 'what's new' owner note: bullet extraction from the sanitized
+    GitHub Release body, changelog URL mapping, and the fallback path."""
+
+    def test_release_bullets_extracts_and_cleans(self):
+        body = (
+            "## [2026.08.26.b]\n\n"
+            "### Added\n"
+            "- **Support SSH** over the tailnet\n"
+            "- `gpg` signed releases are verified\n"
+            "- [forum link](https://forum.barenoc.com/t/1)\n"
+            "### Fixed\n"
+            "- a bug\n"
+        )
+        bullets = updates._release_bullets(body, limit=4)
+        self.assertEqual(bullets, [
+            "Support SSH over the tailnet",
+            "gpg signed releases are verified",
+            "forum link",
+            "a bug",
+        ])
+
+    def test_release_bullets_skips_non_bullets(self):
+        body = "### Added\n\nJust a paragraph, no bullets\n"
+        self.assertEqual(updates._release_bullets(body), [])
+
+    def test_github_release_api_url(self):
+        self.assertEqual(
+            updates._github_release_api_url(
+                "https://github.com/Ridge-Chapel-Tech/barenoc-appliance/releases/tag/v2026.08.26.b"),
+            "https://api.github.com/repos/Ridge-Chapel-Tech/barenoc-appliance/releases/tags/v2026.08.26.b")
+
+    def test_github_release_api_url_bad_shape_empty(self):
+        self.assertEqual(updates._github_release_api_url("https://example.com/x"), "")
+
+    def test_summary_uses_status_changelog_url(self):
+        with patch.object(updates, "_fetch_release_body", return_value="- a\n- b\n"), \
+             patch.object(updates, "_read_status", return_value={
+                 "changelog": "https://github.com/Ridge-Chapel-Tech/barenoc-appliance/releases/tag/v2026.08.26.b"}):
+            s = updates._whats_new_summary("2026.08.26.b")
+        self.assertEqual(s["bullets"], ["a", "b"])
+        self.assertIn("v2026.08.26.b", s["changelog_url"])
+
+    def test_summary_falls_back_when_body_unreachable(self):
+        with patch.object(updates, "_fetch_release_body", return_value=""), \
+             patch.object(updates, "_read_status", return_value={
+                 "changelog": "https://github.com/Ridge-Chapel-Tech/barenoc-appliance/releases/tag/v2026.08.26.b"}):
+            s = updates._whats_new_summary("2026.08.26.b")
+        self.assertEqual(s["bullets"], [])
+        self.assertIn("v2026.08.26.b", s["changelog_url"])
 
 
 class ProgressTest(unittest.TestCase):

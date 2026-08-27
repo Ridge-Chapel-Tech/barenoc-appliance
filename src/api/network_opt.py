@@ -586,13 +586,25 @@ def _effective_port_profile(pt: dict, ov: dict) -> dict:
     """The port's EFFECTIVE name/native/tagged — the port_overrides entry wins
     when it sets the field (a switch-port fix: the override set
     native=Default while the port_table had no native, so the 'no profile'
-    rule fired on a CONFIGURED port)."""
+    rule fired on a CONFIGURED port).
+
+    Field names differ across firmware generations (08-26, validated on
+    UCG-Max/USL8LPB UniFi OS 4.x): the port_table reports
+    ``native_network_id`` + ``tagged_network_ids`` (ARRAY) while overrides
+    carry ``native_networkconf_id``/``tagged_networkconf_id`` (CSV string).
+    Read whichever exists — otherwise non-override ports look native-less and
+    the unused-VLAN rule fires on ports the scan cannot actually see."""
     pt = pt or {}
     ov = ov or {}
+    tagged = ov.get("tagged_networkconf_id") or pt.get("tagged_networkconf_id")
+    if not tagged:
+        arr = pt.get("tagged_network_ids") or []
+        tagged = ",".join(arr) if isinstance(arr, list) else str(arr or "")
     return {
         "name": ov.get("name") or pt.get("name") or f"Port {pt.get('port_idx')}",
-        "native_id": ov.get("native_networkconf_id") or pt.get("native_networkconf_id"),
-        "tagged_ids": ov.get("tagged_networkconf_id") or pt.get("tagged_networkconf_id") or "",
+        "native_id": (ov.get("native_networkconf_id") or ov.get("native_network_id")
+                      or pt.get("native_networkconf_id") or pt.get("native_network_id")),
+        "tagged_ids": tagged or "",
     }
 
 

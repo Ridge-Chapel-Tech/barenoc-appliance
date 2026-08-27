@@ -648,6 +648,17 @@ def delete_device(device_id: int, db: Session = Depends(get_db), ctx: dict = Dep
     db.query(Ticket).filter(Ticket.target_device_id == device_id).update(
         {Ticket.target_device_id: None}
     )
+    # Service checks: a monitor targeting this device is disabled (its target
+    # can no longer resolve) instead of leaving a dangling FK that breaks the
+    # DELETE below. The service-checks engine also has a self-heal for any
+    # dangling reference created out-of-band.
+    from models import ServiceMonitor
+    db.query(ServiceMonitor).filter(
+        ServiceMonitor.target_device_id == device_id).update({
+            ServiceMonitor.target_device_id: None,
+            ServiceMonitor.enabled: False,
+            ServiceMonitor.last_error: "target device was deleted — monitor disabled",
+        })
     db.delete(device)
     db.commit()
     return None

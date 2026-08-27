@@ -12,6 +12,7 @@ Auth: operator/admin (UI) and agent (the scheduler's scheduled updates).
 import datetime
 import json
 import os
+import re
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,16 @@ STATUS_DIR = "/opt/barenoc/volumes/update_status"
 UPDATE_REQ = os.path.join(STATUS_DIR, "update_request.json")
 ROLLBACK_REQ = os.path.join(STATUS_DIR, "rollback_request.json")
 SCHEDULE_FILE = os.path.join(STATUS_DIR, "update_schedule.conf")
+
+# Owner "what's changed" note (post-auto-update, 2026-08-25): after an update
+# actually APPLIES a new version, tell the owner what happened — a short
+# friendly summary (2–4 bullets) + a link to the full GitHub Release changelog.
+# Notification only (never a dashboard card); best-effort; one note per applied
+# version (version-keyed marker); silently skipped when no recipients configured.
+CHANGELOG_URL_TMPL = ("https://github.com/Ridge-Chapel-Tech/"
+                      "barenoc-appliance/releases/tag/v{version}")
+GITHUB_RELEASE_RE = re.compile(
+    r"^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)")
 
 # Auto-update is ON by default (2026-08-25 user directive). Single source of
 # truth for the default schedule: a weekly maintenance window — Sunday
@@ -250,6 +261,163 @@ def _version_gt(a: str, b: str) -> bool:
     return bool(pa and pb and pa > pb)
 
 
+def _release_changelog_url(version: str) -> str:
+    """The GitHub Release changelog URL for a version — the release asset URL
+    versions.json already carries (status.json's `changelog`), falling back to
+    the canonical template when no check has run yet."""
+    url = (_read_status().get("changelog") or "").strip()
+    return url or CHANGELOG_URL_TMPL.format(version=version)
+
+
+def _github_release_api_url(changelog_url: str) -> str:
+    """Map a github.com release page URL to its API endpoint; '' when the URL
+    doesn't match the expected shape."""
+    m = GITHUB_RELEASE_RE.match((changelog_url or "").strip())
+    if not m:
+        return ""
+    owner, repo, tag = m.groups()
+    return f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+
+
+def _fetch_release_body(version: str) -> str:
+    """Best-effort fetch of the sanitized GitHub Release body (the release
+    workflow writes the CHANGELOG section straight into the release notes).
+    Returns '' on ANY failure — the note must never block the update."""
+    api_url = _github_release_api_url(_release_changelog_url(version))
+    if not api_url:
+        api_url = ("https://api.github.com/repos/Ridge-Chapel-Tech/"
+                   f"barenoc-appliance/releases/tags/v{version}")
+    try:
+        import urllib.request
+        req = urllib.request.Request(api_url, headers={
+            "User-Agent": "bareNOC-update/1",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read().decode())
+        return str(data.get("body") or "").strip()
+    except Exception:
+        return ""
+
+
+def _release_bullets(body: str, limit: int = 4) -> list:
+    """Lift up to `limit` cleaned bullet lines from a markdown release body.
+    Skips section headers; strips inline markdown formatting and truncates."""
+    out = []
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ">", "|")):
+            continue
+        if line.startswith(("-", "*", "+")) and len(line) > 1 and line[1] in " \t":
+            text = line[1:].strip()
+        else:
+            m = re.match(r"^\d+[.)]\s+(.*)$", line)
+            if not m:
+                continue
+            text = m.group(1).strip()
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        text = re.sub(r"\*(.+?)\*", r"\1", text)
+        text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+        text = text.strip()
+        if not text:
+            continue
+        if len(text) > 240:
+            text = text[:240].rstrip() + "…"
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _whats_new_summary(version: str) -> dict:
+    """Build the owner note's 'what's new' content: 2–4 summary bullets (from
+    the sanitized release body) + the full changelog link. Falls back to a
+    'see the changelog' summary when the body is unreachable/empty. Never
+    raises."""
+    body = _fetch_release_body(version)
+    bullets = _release_bullets(body, limit=4)
+    if len(bullets) < 2:
+        bullets = []
+    return {
+        "version": version,
+        "date": _local_now().strftime("%Y-%m-%d"),
+        "bullets": bullets,
+        "changelog_url": _release_changelog_url(version),
+    }
+
+
+def _whats_new_marker() -> str:
+    """The version-keyed marker path (derived from STATUS_DIR so tests can
+    patch STATUS_DIR without touching the real volume)."""
+    return os.path.join(STATUS_DIR, "whats_new_notified.key")
+
+
+def _whats_new_sent() -> str:
+    """The last version the what's-new note was sent for ('' when never)."""
+    try:
+        with open(_whats_new_marker()) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _whats_new_already_sent(version: str) -> bool:
+    return _whats_new_sent() == (version or "").strip()
+
+
+def _mark_whats_new_sent(version: str):
+    try:
+        os.makedirs(STATUS_DIR, exist_ok=True)
+        with open(_whats_new_marker(), "w") as f:
+            f.write((version or "").strip())
+    except Exception:
+        pass
+
+
+def _whats_new_html(summary: dict) -> str:
+    import html as _html
+    ver = _html.escape(str(summary.get("version") or ""))
+    date_str = _html.escape(str(summary.get("date") or ""))
+    bullets = summary.get("bullets") or []
+    link = summary.get("changelog_url") or ""
+    parts = [
+        f"<h2 style='color:#1d4ed8;margin:0 0 12px'>BareNOC updated to v{ver}</h2>",
+        f"<p style='margin:0 0 12px;color:#333'>Your appliance updated itself "
+        f"on {date_str}. Here's what's new:</p>",
+    ]
+    if bullets:
+        parts.append("<ul style='margin:0 0 12px;padding-left:20px'>")
+        for b in bullets:
+            parts.append(f"<li style='margin:4px 0'>{_html.escape(b)}</li>")
+        parts.append("</ul>")
+    else:
+        parts.append("<p style='margin:0 0 12px;color:#333'>See the changelog "
+                     "for what's new in this release.</p>")
+    if link:
+        parts.append(
+            f"<p style='margin:0 0 16px'><a href='{_html.escape(link, quote=True)}'>"
+            f"Full changelog</a></p>")
+    parts.append("<p style='color:#888;font-size:12px;margin-top:16px'>— BareNOC</p>")
+    return "".join(parts)
+
+
+def _whats_new_text(summary: dict) -> str:
+    ver = str(summary.get("version") or "")
+    date_str = str(summary.get("date") or "")
+    bullets = summary.get("bullets") or []
+    link = summary.get("changelog_url") or ""
+    lines = [f"BareNOC updated to v{ver}",
+             f"Your appliance updated itself on {date_str}. Here's what's new:"]
+    if bullets:
+        lines.extend(f"  • {b}" for b in bullets)
+    else:
+        lines.append("See the changelog for what's new in this release.")
+    if link:
+        lines.append(f"Full changelog: {link}")
+    return "\n".join(lines)
+
+
 def _run_check() -> dict:
     env = _read_env_file()
     access = _update_access(env)
@@ -436,7 +604,12 @@ def update_notify(body: dict = None,
                   user: User = Depends(require_any_role("technician", "operator", "admin", "agent"))):
     """Email the terminal update state (called by the scheduler when the
     host service's progress flips to done/failed). Best-effort; never raises.
-    Reuses the alert channel (ALERT_RECIPIENTS) with a rendered HTML table.
+
+    On a successful update that actually APPLIES a new version, the 'done'
+    note becomes the owner's "what changed" note — a short friendly summary
+    (2–4 bullets lifted from the sanitized GitHub Release body) + a link to
+    the full changelog. One note per applied version; a rollback keeps the
+    plain "updated" email; a duplicate version is silently skipped.
     """
     body = body or {}
     stage = str(body.get("stage") or "").strip()
@@ -449,21 +622,49 @@ def update_notify(body: dict = None,
         from llm_providers import read_env_file as _env
         recipients = (_env().get("ALERT_RECIPIENTS") or "").strip() or None
         if not recipients:
-            return {"status": "ok", "notified": False, "note": "no ALERT_RECIPIENTS configured"}
-        ok = stage == "done"
-        rows = [
-            ["Appliance", "BareNOC"],
-            ["Version", version],
-            ["Outcome", "✅ update complete" if ok else "❌ update failed"],
-            ["Detail", message or ("—" if ok else "see the Updates card")],
-        ]
-        subject = (
-            f"BareNOC appliance updated to {version}"
-            if ok else f"BareNOC update FAILED ({version})"
-        )
-        body_html = alert_html(subject, rows)
-        result, err = send_email(recipients, subject, body_html=body_html)
-        return {"status": "ok", "notified": result, "error": err}
+            return {"status": "ok", "notified": False,
+                    "note": "no ALERT_RECIPIENTS configured"}
+
+        if stage == "failed":
+            rows = [
+                ["Appliance", "BareNOC"],
+                ["Version", version],
+                ["Outcome", "❌ update failed"],
+                ["Detail", message or "see the Updates card"],
+            ]
+            subject = f"BareNOC update FAILED ({version})"
+            body_html = alert_html(subject, rows)
+            result, err = send_email(recipients, subject, body_html=body_html)
+            return {"status": "ok", "notified": result, "error": err}
+
+        # stage == done. Only a genuine version upgrade gets the what's-new
+        # note — a rollback reports action=rollback and keeps the plain email.
+        last = _read_update_result()
+        if str(last.get("action") or "").strip() == "rollback":
+            rows = [
+                ["Appliance", "BareNOC"],
+                ["Version", version],
+                ["Outcome", "✅ update complete"],
+                ["Detail", message or "—"],
+            ]
+            subject = f"BareNOC appliance updated to {version}"
+            body_html = alert_html(subject, rows)
+            result, err = send_email(recipients, subject, body_html=body_html)
+            return {"status": "ok", "notified": result, "error": err}
+
+        if _whats_new_already_sent(version):
+            return {"status": "ok", "notified": False,
+                    "note": f"what's-new note already sent for {version}"}
+
+        summary = _whats_new_summary(version)
+        subject = f"BareNOC updated to v{version} — here's what's new"
+        result, err = send_email(recipients, subject,
+                                 body_html=_whats_new_html(summary),
+                                 body_text=_whats_new_text(summary))
+        if result:
+            _mark_whats_new_sent(version)
+        return {"status": "ok", "notified": result, "error": err,
+                "whats_new": True}
     except Exception as e:
         return {"status": "ok", "notified": False, "error": str(e)}
 

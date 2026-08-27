@@ -585,6 +585,27 @@ class PortCollectorTest(unittest.TestCase):
         self.assertEqual(prof["native_id"], "def-net")
         self.assertEqual(prof["tagged_ids"], "v5,v9")
 
+    def test_effective_port_profile_os4x_fields(self):
+        """UniFi OS 4.x port_table reports native_network_id + tagged_network_ids
+        (ARRAY) — the collector must read them or non-override ports look
+        native-less and the unused-VLAN rule fires on ports it cannot see
+        (validated 08-26 on UCG-Max/USL8LPB; forum: 'Storage VLAN unused')."""
+        pt = {"port_idx": 3, "name": "Port 3",
+              "native_network_id": "net-storage",
+              "tagged_network_ids": ["net-prod", "net-mgmt"]}
+        prof = network_opt._effective_port_profile(pt, {})
+        self.assertEqual(prof["native_id"], "net-storage")
+        self.assertEqual(prof["tagged_ids"], "net-prod,net-mgmt")
+
+    def test_effective_port_profile_override_beats_os4x_table(self):
+        ov = {"port_idx": 4, "name": "Port 4", "native_networkconf_id": "net-wifi"}
+        pt = {"port_idx": 4, "name": "Port 4", "native_network_id": "net-prod",
+              "tagged_network_ids": ["net-x"]}
+        prof = network_opt._effective_port_profile(pt, ov)
+        self.assertEqual(prof["native_id"], "net-wifi")   # override wins
+        # or-semantics: override sets no tagged -> the table's tagged applies
+        self.assertEqual(prof["tagged_ids"], "net-x")
+
     def test_effective_port_profile_falls_back_to_port_table(self):
         pt = {"port_idx": 7, "name": "Port 7", "native_networkconf_id": "pt-native",
               "tagged_networkconf_id": "pt-tag"}

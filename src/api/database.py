@@ -271,6 +271,62 @@ def init_db():
             ))
     except OperationalError:
         pass  # Table/index already exists
+    # Migration: service_monitors + service_check_episodes (service checks —
+    # ping/TCP/HTTP monitors → tickets, 2026-08-25). NEW tables — create_all
+    # above already creates them; the guarded CREATEs are idempotent belt-and-
+    # suspenders no-ops. KEEP IN SYNC with models.ServiceMonitor/ServiceCheckEpisode.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS service_monitors ("
+                " id INTEGER PRIMARY KEY,"
+                " name VARCHAR(128) NOT NULL,"
+                " check_type VARCHAR(16) DEFAULT 'ping' NOT NULL,"
+                " target VARCHAR(256),"
+                " target_device_id INTEGER,"
+                " params JSON,"
+                " interval_min INTEGER DEFAULT 5,"
+                " fail_threshold INTEGER DEFAULT 3,"
+                " recovery_ok INTEGER DEFAULT 3,"
+                " notify BOOLEAN DEFAULT 1,"
+                " enabled BOOLEAN DEFAULT 1,"
+                " last_status VARCHAR(16) DEFAULT 'unknown',"
+                " last_check_at DATETIME,"
+                " last_error TEXT,"
+                " fail_streak INTEGER DEFAULT 0,"
+                " ok_streak INTEGER DEFAULT 0,"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_service_monitors_enabled "
+                "ON service_monitors(enabled)"
+            ))
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS service_check_episodes ("
+                " id INTEGER PRIMARY KEY,"
+                " monitor_id INTEGER NOT NULL,"
+                " state VARCHAR(16) DEFAULT 'down',"
+                " down_since DATETIME,"
+                " last_event_at DATETIME,"
+                " escalated VARCHAR(4) DEFAULT 'P2',"
+                " escalation_reason VARCHAR(32),"
+                " ticket_id VARCHAR(32),"
+                " created_at DATETIME,"
+                " updated_at DATETIME"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_service_check_episodes_monitor "
+                "ON service_check_episodes(monitor_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_service_check_episodes_ticket_id "
+                "ON service_check_episodes(ticket_id)"
+            ))
+    except OperationalError:
+        pass  # Tables/indexes already exist
     # Migration: scan_runs + findings (Network Optimization, P1). NEW tables —
     # create_all above already creates them; the guarded CREATEs are idempotent
     # belt-and-suspenders no-ops. KEEP IN SYNC with models.ScanRun/Finding.

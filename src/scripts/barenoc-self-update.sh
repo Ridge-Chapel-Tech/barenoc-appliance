@@ -257,6 +257,19 @@ if [ "$HEALTH_CODE" = "200" ] && [ -n "$REQV" ] && [ "$REQV" = "$GOTV" ]; then
     echo "!! provision_agent.sh reported a problem — verify_post_update.sh re-checks"
   fi
 
+  # 6b. Recreate the scheduler — the agent password rotates on every
+  #  provision, and a scheduler started before it holds a STALE bind mount
+  #  (it keeps reading an empty/old /opt/barenoc/agent → every API call 401s
+  #  → scheduled updates silently never fire). Validated 08-26 on a customer
+  #  box whose daily auto-update was dead for days for exactly this. The api
+  #  is healthy at this point (the health/version check above), so this is
+  #  safe; best-effort.
+  echo "==> recreating scheduler (fresh agent credentials mount)"
+  if docker rm -f barenoc-scheduler >/dev/null 2>&1; then
+    ( cd /opt/barenoc && docker compose up -d scheduler ) >/dev/null 2>&1 || true
+    echo "==> scheduler recreated"
+  fi
+
   # 7. post-update verification suite (entitlement + tailscale self-heal).
   echo "==> post-update verification"
   if bash /opt/barenoc/scripts/verify_post_update.sh; then

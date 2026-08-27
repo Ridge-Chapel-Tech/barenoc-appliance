@@ -122,3 +122,28 @@ auto-adopted.
 UniFi sync ingests *clients* (not just infrastructure): hostname, MAC vendor,
 wired/wireless, online status. Endpoints get a guessed type (server vs
 workstation) from hostname/vendor hints — fingerprint confirms it.
+
+## Service checks
+
+Beyond device status, BareNOC can watch **specific endpoints** — a host ping, a
+TCP port, or an HTTP(S) URL — and open/escalate/close tickets automatically.
+Configure them in **Settings → Service Checks** (admin).
+
+| Check | What "up" means |
+|-------|------------------|
+| **ping** | the host answers an ICMP echo |
+| **tcp** | a TCP connect to `host:port` succeeds |
+| **http** | `GET path` returns `expected_status` (and the body contains `body_contains`, if set) |
+
+Each check targets a literal host/IP **or** a linked device (its current IP is
+always used — DHCP changes are picked up automatically). The lifecycle:
+
+1. `fail_threshold` consecutive failures (default 3) → a **P2** ticket opens.
+2. Still down more than 10 minutes → the **same** ticket escalates to **P1**.
+3. `recovery_ok` consecutive successes (default 3) → the ticket **auto-closes**
+   with a summary note.
+
+A monitor holds **one** open ticket at a time (the episode is restart-safe — a
+scheduler restart mid-outage never duplicates it). The 🔔 toggle controls only
+the email/push alerts; tickets are always created. The **Test now** button runs
+one check immediately without changing state.

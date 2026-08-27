@@ -15,6 +15,26 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.26.c] — 2026-08-26
+
+- **Service Checks (ping/TCP/HTTP monitors → tickets):** Settings → Service
+  Checks defines per-endpoint monitors — a host/IP or a linked device (its
+  current IP is always used). `fail_threshold` consecutive failures open a
+  **P2** ticket; a sustained outage (&gt;10 min) escalates the **same** ticket
+  to **P1**; `recovery_ok` consecutive successes auto-close it with a summary
+  note. Restart-safe `service_check_episodes` prevent duplicate tickets after
+  a scheduler/API restart, and deleting a device disables its monitors. The
+  per-monitor 🔔 toggle gates only the email/push layer — tickets are always
+  created. The scheduler polls on a configurable cadence (`SERVICE_CHECK_*`
+  env knobs, default every 5 min).
+
+- **Post-update "what changed" note:** after an auto-update applies a new
+  version, the appliance now emails the owner a short friendly summary of
+  what's new (the top bullets from the sanitized GitHub Release notes) plus a
+  link to the full changelog — via the existing alert/notify channel. One
+  note per applied version; silently skipped when no recipients are
+  configured; never blocks the update.
+
 ## [2026.08.26.b] — 2026-08-26
 
 ### Fixed

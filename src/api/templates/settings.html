@@ -14,6 +14,7 @@
       <button onclick="switchTab('tickets')" id="tab-tickets" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Tickets</button>
       <a href="/system#updates" id="tab-updates" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Updates</a>
       <button onclick="switchTab('backups')" id="tab-backups" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Backups</button>
+      <button onclick="switchTab('servicechecks')" id="tab-servicechecks" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Service Checks</button>
       <button onclick="switchAdvTab('llm')" id="tab-advanced" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Advanced</button>
     </nav>
   </div>
@@ -418,6 +419,67 @@
       <p id="tickets-msg" class="text-sm mt-3"></p>
     </div>
   </div>
+
+  <!-- Service Checks (ping/TCP/HTTP monitors → tickets) -->
+  <div id="panel-servicechecks" class="mt-6 max-w-4xl hidden">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="text-lg font-medium">Service Checks</h3>
+        <p class="text-xs text-gray-500 mt-1">Ping / TCP port / HTTP(S) monitors. A check that fails <code>fail threshold</code> times in a row opens a <b>P2</b> ticket; a sustained outage (&gt;10 min) escalates it to <b>P1</b>; recovery auto-closes it. Tickets are always created — the 🔔 toggle only controls the email/push layer.</p>
+      </div>
+      <button onclick="showMonitorModal()" class="shrink-0 rounded-md bg-barenoc-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-barenoc-700">+ Add Check</button>
+    </div>
+    <div id="sc-list" class="space-y-3"></div>
+    <p id="sc-msg" class="text-sm mt-3"></p>
+  </div>
+</div>
+
+<!-- Service Check Modal -->
+<div id="sc-modal" class="hidden fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+    <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium" id="sc-modal-title">Add Service Check</h3></div>
+    <div class="px-6 py-4 space-y-4">
+      <div><label class="block text-sm font-medium text-gray-700">Name *</label><input id="sc-name" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="Gateway ping"></div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Check type</label>
+        <select id="sc-type" onchange="scTypeChange()" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm">
+          <option value="ping">Ping (ICMP echo)</option>
+          <option value="tcp">TCP (connect to a port)</option>
+          <option value="http">HTTP(S) (status code / body)</option>
+        </select>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div><label class="block text-sm font-medium text-gray-700">Target (host/IP)</label><input id="sc-target" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="10.0.0.1 or nas.local"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Linked device <span class="text-gray-400 font-normal">(optional)</span></label><select id="sc-device" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><option value="">— use target above —</option></select></div>
+      </div>
+      <p class="text-xs text-gray-400 -mt-2">Link a device to always check its current IP (survives DHCP changes); otherwise set a host/IP directly.</p>
+
+      <!-- type-specific params -->
+      <div id="sc-param-tcp" class="hidden"><label class="block text-sm font-medium text-gray-700">Port *</label><input id="sc-port" type="number" min="1" max="65535" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="443"></div>
+      <div id="sc-param-http" class="hidden space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-sm font-medium text-gray-700">Path</label><input id="sc-path" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="/health"></div>
+          <div><label class="block text-sm font-medium text-gray-700">Expected status</label><input id="sc-status" type="number" min="100" max="599" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="200"></div>
+        </div>
+        <div><label class="block text-sm font-medium text-gray-700">Body contains <span class="text-gray-400 font-normal">(optional)</span></label><input id="sc-body" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm" placeholder="ok"></div>
+        <label class="flex items-center gap-2 text-sm text-gray-700"><input id="sc-https" type="checkbox" class="rounded border-gray-300"> Use HTTPS</label>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3">
+        <div><label class="block text-sm font-medium text-gray-700">Interval (min)</label><input id="sc-interval" type="number" min="1" max="1440" value="5" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Fail threshold</label><input id="sc-fail" type="number" min="1" max="100" value="3" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1">consecutive failures → P2</p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Recover after</label><input id="sc-recover" type="number" min="1" max="100" value="3" class="mt-1 block w-full rounded-md border-gray-300 border px-3 py-2 text-sm"><p class="text-xs text-gray-400 mt-1">consecutive successes → close</p></div>
+      </div>
+      <div class="flex gap-8">
+        <label class="flex items-center gap-2 text-sm text-gray-700"><input id="sc-enabled" type="checkbox" checked class="rounded border-gray-300"> Enabled</label>
+        <label class="flex items-center gap-2 text-sm text-gray-700"><input id="sc-notify" type="checkbox" checked class="rounded border-gray-300"> 🔔 Notify on open/escalate/recover</label>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t flex justify-end gap-3">
+      <button onclick="hideMonitorModal()" class="px-4 py-2 text-sm text-gray-700">Cancel</button>
+      <button onclick="saveMonitor()" class="rounded-md bg-barenoc-600 px-4 py-2 text-sm font-semibold text-white">Save Check</button>
+    </div>
+  </div>
 </div>
 
 <!-- Add User Modal -->
@@ -707,12 +769,13 @@ function switchTab(tab) {
     var t = p.id.replace('panel-', '');
     p.classList.toggle('hidden', t !== tab);
   });
-  ['general', 'unifi', 'tickets', 'backups'].forEach(function(t) { setTabButton(t, t === tab); });
+  ['general', 'unifi', 'tickets', 'backups', 'servicechecks'].forEach(function(t) { setTabButton(t, t === tab); });
   setTabButton('advanced', false);
   if (tab === 'general') { loadGeneral(); loadRemoteAccess(); }
   if (tab === 'unifi') loadUnifi();
   if (tab === 'tickets') loadTickets();
   if (tab === 'backups') loadBackups();
+  if (tab === 'servicechecks') loadServiceChecks();
 }
 
 function switchAdvTab(tab) {
@@ -723,7 +786,7 @@ function switchAdvTab(tab) {
     var t = p.id.replace('panel-', '');
     p.classList.toggle('hidden', t !== tab);
   });
-  ['general', 'unifi', 'tickets', 'backups'].forEach(function(t) { setTabButton(t, false); });
+  ['general', 'unifi', 'tickets', 'backups', 'servicechecks'].forEach(function(t) { setTabButton(t, false); });
   setTabButton('advanced', true);
   ['llm', 'email', 'identity', 'restrictions', 'security', 'support', 'users'].forEach(function(t) {
     var b = document.getElementById('advtab-' + t);
@@ -1682,6 +1745,221 @@ async function saveTickets() {
       msg.className = 'text-sm text-red-600';
     }
   } catch (e) { msg.textContent = '❌ ' + e.message; msg.className = 'text-sm text-red-600'; }
+}
+
+// ── Service Checks (ping/TCP/HTTP monitors → tickets) ──
+var SC_MONITORS = {};
+var SC_EDIT_ID = null;
+
+function scTypeChange() {
+  var t = document.getElementById('sc-type').value;
+  document.getElementById('sc-param-tcp').classList.toggle('hidden', t !== 'tcp');
+  document.getElementById('sc-param-http').classList.toggle('hidden', t !== 'http');
+}
+
+async function loadServiceChecks() {
+  try {
+    var r = await fetch('/api/v1/service-checks', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var d = await r.json();
+    SC_MONITORS = {};
+    (d.monitors || []).forEach(function(m) { SC_MONITORS[m.id] = m; });
+    renderServiceChecks();
+  } catch (e) { console.error('service checks:', e); }
+}
+
+function scStatusBadge(m) {
+  if (!m.enabled) return '<span class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">disabled</span>';
+  if (m.last_status === 'up') return '<span class="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700">up</span>';
+  if (m.last_status === 'down') return '<span class="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700">down</span>';
+  return '<span class="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">unknown</span>';
+}
+
+function renderServiceChecks() {
+  var el = document.getElementById('sc-list');
+  var ids = Object.keys(SC_MONITORS);
+  if (!ids.length) {
+    el.innerHTML = '<div class="bg-white shadow rounded-lg p-6 text-center text-gray-500">No service checks yet — add one to watch a host, port, or web endpoint.</div>';
+    return;
+  }
+  el.innerHTML = ids.map(function(id) {
+    var m = SC_MONITORS[id];
+    var target = m.target_device_id ? (m.target_device_name || ('device #' + m.target_device_id)) : m.target;
+    var type = String(m.check_type || '').toUpperCase();
+    if (m.check_type === 'http' && m.params && m.params.https) type = 'HTTPS';
+    var ticket = m.open_ticket
+      ? '<a class="text-xs text-barenoc-600 hover:underline" href="/tickets?q=' + esc(m.open_ticket.ticket_id) + '">📨 ' + esc(m.open_ticket.ticket_id) + ' <span class="text-gray-500">[' + esc(m.open_ticket.priority) + ']</span></a>'
+      : '<span class="text-xs text-gray-400">no open ticket</span>';
+    var last = 'never';
+    if (m.last_check_at) {
+      var ts = String(m.last_check_at).replace(' ', 'T');
+      if (!/(Z|[+-]\d{2}:\d{2})$/.test(ts)) ts += 'Z';
+      var dt = new Date(ts);
+      if (!isNaN(dt)) last = dt.toLocaleString();
+    }
+    return '<div class="bg-white shadow rounded-lg p-4">' +
+      '<div class="flex items-start justify-between gap-3 flex-wrap">' +
+        '<div class="min-w-0">' +
+          '<div class="flex items-center gap-2 flex-wrap">' +
+            '<span class="text-sm font-medium text-gray-900">' + esc(m.name) + '</span>' +
+            scStatusBadge(m) +
+            '<span class="px-2 py-0.5 text-xs rounded-full bg-blue-50 text-blue-700">' + esc(type) + '</span>' +
+            '<label class="ml-1 inline-flex items-center gap-1 text-xs text-gray-600"><input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleMonitor(' + m.id + ', \'enabled\', this.checked)"> enabled</label>' +
+            '<label class="inline-flex items-center gap-1 text-xs text-gray-600"><input type="checkbox" ' + (m.notify ? 'checked' : '') + ' onchange="toggleMonitor(' + m.id + ', \'notify\', this.checked)"> 🔔 notify</label>' +
+          '</div>' +
+          '<div class="mt-1 text-xs text-gray-500 font-mono">' + esc(target) + (m.resolved_target && m.target_device_id ? ' → ' + esc(m.resolved_target) : '') + ' · every ' + m.interval_min + 'm · fail ' + m.fail_threshold + ' · recover ' + m.recovery_ok + '</div>' +
+          (m.last_error ? '<div class="mt-1 text-xs text-red-500">' + esc(m.last_error) + '</div>' : '') +
+          '<div class="mt-1 text-xs text-gray-400">last check ' + esc(last) + ' · ' + ticket + '</div>' +
+        '</div>' +
+        '<div class="shrink-0 flex items-center gap-2">' +
+          '<button onclick="testMonitor(' + m.id + ')" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200">Test now</button>' +
+          '<button onclick="showMonitorModal(' + m.id + ')" class="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200">Edit</button>' +
+          '<button onclick="deleteMonitor(' + m.id + ')" class="rounded-md bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100">Delete</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function toggleMonitor(id, field, value) {
+  try {
+    var body = {}; body[field] = value;
+    var r = await fetch('/api/v1/service-checks/' + id, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){return{};}); throw new Error(e.detail || 'HTTP ' + r.status); }
+    var d = await r.json();
+    SC_MONITORS[id] = d;
+    renderServiceChecks();
+  } catch (e) { alert('Service check: ' + e.message); loadServiceChecks(); }
+}
+
+async function loadDeviceOptions() {
+  var sel = document.getElementById('sc-device');
+  if (sel.options.length > 1) return;
+  try {
+    var r = await fetch('/api/v1/devices?limit=500', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+    var d = await r.json();
+    (d.devices || []).forEach(function(dev) {
+      var o = document.createElement('option');
+      o.value = dev.id;
+      o.textContent = dev.name + ' (' + dev.ip_address + ')';
+      sel.appendChild(o);
+    });
+  } catch (e) { console.error('devices:', e); }
+}
+
+function showMonitorModal(id) {
+  loadDeviceOptions();
+  SC_EDIT_ID = id || null;
+  document.getElementById('sc-modal-title').textContent = id ? 'Edit Service Check' : 'Add Service Check';
+  document.getElementById('sc-name').value = '';
+  document.getElementById('sc-type').value = 'ping';
+  document.getElementById('sc-target').value = '';
+  document.getElementById('sc-device').value = '';
+  document.getElementById('sc-port').value = '';
+  document.getElementById('sc-path').value = '/';
+  document.getElementById('sc-status').value = '200';
+  document.getElementById('sc-body').value = '';
+  document.getElementById('sc-https').checked = false;
+  document.getElementById('sc-interval').value = 5;
+  document.getElementById('sc-fail').value = 3;
+  document.getElementById('sc-recover').value = 3;
+  document.getElementById('sc-enabled').checked = true;
+  document.getElementById('sc-notify').checked = true;
+  if (id && SC_MONITORS[id]) {
+    var m = SC_MONITORS[id];
+    document.getElementById('sc-name').value = m.name || '';
+    document.getElementById('sc-type').value = m.check_type || 'ping';
+    document.getElementById('sc-target').value = m.target || '';
+    document.getElementById('sc-device').value = m.target_device_id || '';
+    document.getElementById('sc-port').value = (m.params && m.params.port) || '';
+    document.getElementById('sc-path').value = (m.params && m.params.path) || '/';
+    document.getElementById('sc-status').value = (m.params && m.params.expected_status) || 200;
+    document.getElementById('sc-body').value = (m.params && m.params.body_contains) || '';
+    document.getElementById('sc-https').checked = !!(m.params && m.params.https);
+    document.getElementById('sc-interval').value = m.interval_min || 5;
+    document.getElementById('sc-fail').value = m.fail_threshold || 3;
+    document.getElementById('sc-recover').value = m.recovery_ok || 3;
+    document.getElementById('sc-enabled').checked = !!m.enabled;
+    document.getElementById('sc-notify').checked = !!m.notify;
+  }
+  scTypeChange();
+  document.getElementById('sc-modal').classList.remove('hidden');
+}
+
+function hideMonitorModal() {
+  document.getElementById('sc-modal').classList.add('hidden');
+}
+
+function scFormParams() {
+  var t = document.getElementById('sc-type').value;
+  if (t === 'tcp') return { port: parseInt(document.getElementById('sc-port').value, 10) };
+  if (t === 'http') return {
+    path: document.getElementById('sc-path').value || '/',
+    expected_status: parseInt(document.getElementById('sc-status').value, 10) || 200,
+    body_contains: document.getElementById('sc-body').value,
+    https: document.getElementById('sc-https').checked
+  };
+  return {};
+}
+
+async function saveMonitor() {
+  var id = SC_EDIT_ID;
+  var deviceVal = document.getElementById('sc-device').value;
+  var body = {
+    name: document.getElementById('sc-name').value.trim(),
+    check_type: document.getElementById('sc-type').value,
+    target: document.getElementById('sc-target').value.trim(),
+    target_device_id: deviceVal ? parseInt(deviceVal, 10) : null,
+    params: scFormParams(),
+    interval_min: parseInt(document.getElementById('sc-interval').value, 10),
+    fail_threshold: parseInt(document.getElementById('sc-fail').value, 10),
+    recovery_ok: parseInt(document.getElementById('sc-recover').value, 10),
+    enabled: document.getElementById('sc-enabled').checked,
+    notify: document.getElementById('sc-notify').checked
+  };
+  try {
+    var r = await fetch('/api/v1/service-checks' + (id ? '/' + id : ''), {
+      method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify(body)
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+    SC_MONITORS[d.id] = d;
+    hideMonitorModal();
+    renderServiceChecks();
+    var msg = document.getElementById('sc-msg');
+    msg.textContent = id ? '✅ Check updated.' : '✅ Check created — the scheduler polls it on its next cycle.';
+    msg.className = 'text-sm text-green-600';
+  } catch (e) { alert('Service check: ' + e.message); }
+}
+
+async function testMonitor(id) {
+  try {
+    var r = await fetch('/api/v1/service-checks/' + id + '/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() }, body: '{}'
+    });
+    var d = await r.json();
+    if (d.status === 'up') alert('✅ UP — ' + d.detail);
+    else if (d.status === 'down') alert('❌ DOWN — ' + d.detail);
+    else alert('⚠ ' + (d.detail || 'test failed'));
+  } catch (e) { alert('Test failed: ' + e.message); }
+}
+
+async function deleteMonitor(id) {
+  var m = SC_MONITORS[id];
+  if (!confirm('Delete service check "' + (m ? m.name : id) + '"?' + (m && m.open_ticket ? ' Its open ticket will be closed.' : ''))) return;
+  try {
+    var r = await fetch('/api/v1/service-checks/' + id, {
+      method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){return{};}); throw new Error(e.detail || 'HTTP ' + r.status); }
+    delete SC_MONITORS[id];
+    renderServiceChecks();
+  } catch (e) { alert('Delete failed: ' + e.message); }
 }
 
 // ── Restrictions (hard denies — enforced even in Autonomous mode) ──

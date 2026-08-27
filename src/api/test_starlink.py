@@ -449,6 +449,22 @@ class DeviceTest(unittest.TestCase):
         self.assertIsNotNone(db.get(Device, pid))
         db.close()
 
+    def test_ping_only_evidence_dish_purged(self):
+        """Generic device-health ping rows are NOT dish evidence (validated
+        08-26 on loompafoo's box: 15k ping.* rows, zero starlink.* — the
+        phantom was being kept by ping noise)."""
+        import datetime
+        db = SessionLocal()
+        pid = st.ensure_dish_device(db, "192.168.100.1:9200")
+        db.add(Metric(device_id=pid, metric="ping.reachable",
+                      ts=datetime.datetime.utcnow(), value=0.0))
+        db.add(Metric(device_id=pid, metric="ping.loss_pct",
+                      ts=datetime.datetime.utcnow(), value=100.0))
+        db.commit()
+        st._purge_phantom_dish(db, "192.168.100.1:9200")
+        self.assertIsNone(db.get(Device, pid))
+        db.close()
+
     def test_stale_evidence_dish_purged(self):
         """A dish record whose telemetry is older than the window is a phantom —
         the purge removes it (no real dish has answered recently)."""

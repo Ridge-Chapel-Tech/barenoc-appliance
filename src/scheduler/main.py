@@ -479,6 +479,31 @@ def check_netopt_schedule(token: str, last_triggered: dict):
     _queue_netopt(token, key, last_triggered, complete=False)
 
 
+def _service_check_config() -> tuple:
+    """Service-check poll settings from .env. Returns (enabled, interval_min).
+    The api container owns the check engine — the scheduler only triggers the
+    POST /service-checks/poll pass on the cadence below."""
+    env = _read_env()
+    enabled = str(env.get("SERVICE_CHECK_ENABLED", "true")).strip().lower() \
+        in ("1", "true", "yes", "on")
+    try:
+        interval = int(env.get("SERVICE_CHECK_INTERVAL_MIN", "5") or 5)
+    except ValueError:
+        interval = 5
+    return enabled, max(1, interval)
+
+
+def check_service_checks(token: str):
+    """Trigger one service-check pass (ping/TCP/HTTP monitors → tickets)."""
+    try:
+        _api_post("/service-checks/poll", {}, token)
+        logger.info("Service checks polled")
+    except urllib.error.HTTPError as e:
+        logger.warning(f"Service checks poll not run: {e}")
+    except Exception as e:
+        logger.warning(f"Service checks poll failed: {e}")
+
+
 def _transient_done(marker_path: str, key: str, memory: dict, memory_key: str) -> bool:
     """True when this transition key has NOT been handled before (in-memory or
     on-disk marker) — the once-per-transition guard used by both the notify and
@@ -599,12 +624,13 @@ RETENTION_CATEGORIES = {
     "firmware_upgrades": ("firmware_upgrades", "created_at", 365, 180),
     "link_episodes": ("link_episodes", "updated_at", 30, 7),
     "starlink_episodes": ("starlink_episodes", "updated_at", 30, 7),
+    "service_check_episodes": ("service_check_episodes", "updated_at", 30, 7),
 }
 
 # categories that must be pruned before their parent (findings before scan_runs)
 _RETENTION_ORDER = ("findings", "metrics", "chat_messages", "tickets",
-                    "link_episodes", "starlink_episodes", "firmware_upgrades",
-                    "scan_runs", "audit_log")
+                    "link_episodes", "starlink_episodes", "service_check_episodes",
+                    "firmware_upgrades", "scan_runs", "audit_log")
 
 
 def retention_config() -> dict:
@@ -725,6 +751,7 @@ def run():
     last_upd_sched = 0
     last_upd_prog = 0
     last_netopt = 0
+    last_service_checks = 0
     last_prune = 0
     _last_triggered = {}
 
@@ -767,6 +794,15 @@ def run():
             if now - last_netopt >= 60:
                 check_netopt_schedule(token, _last_triggered)
                 last_netopt = now
+
+            # Service checks (ping/TCP/HTTP monitors → tickets) — the api
+            # container owns the engine; this pass just triggers it on the
+            # configured cadence (hot-reloaded each cycle).
+            sc_enabled, sc_interval = _service_check_config()
+            if sc_enabled and now - last_service_checks >= sc_interval * 60:
+                logger.info("Running service checks...")
+                check_service_checks(token)
+                last_service_checks = now
 
             # Telemetry retention prune — hourly, disk-aware (the collectors
             # run in the api container; the scheduler owns the prune).
