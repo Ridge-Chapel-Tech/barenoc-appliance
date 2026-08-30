@@ -611,6 +611,10 @@ def _audit_event(event_type: str, actor: str, data: dict) -> bool:
         conn = sqlite3.connect(path, timeout=5)
         try:
             cur = conn.cursor()
+            # BEGIN IMMEDIATE takes the write lock BEFORE the tail read so this
+            # scheduler writer can't fork the chain against a concurrent api /
+            # worker log_event (same race the audit.py fix addresses).
+            cur.execute("BEGIN IMMEDIATE")
             cur.execute("SELECT sha256_hash FROM audit_log ORDER BY id DESC LIMIT 1")
             row = cur.fetchone()
             prev = row[0] if row else None

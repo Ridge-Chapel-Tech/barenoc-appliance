@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import secrets
 import datetime
 from typing import Optional
 
@@ -26,7 +27,10 @@ def _audit_enabled() -> bool:
 
 def generate_event_id() -> str:
     ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
-    return f"evt_{ts}"
+    # Microsecond timestamps alone can collide when concurrent writers fire in
+    # the same microsecond (event_id is UNIQUE). A short random suffix keeps
+    # the id collision-free within the 32-char column.
+    return f"evt_{ts}_{secrets.token_hex(3)}"
 
 
 def compute_hash(data: dict, previous_hash: Optional[str] = None) -> str:
@@ -77,6 +81,26 @@ def enforce_payload_limits(data: dict) -> dict:
         return {"error": "payload sanitize failed"}
 
 
+def _begin_write_transaction(db_session):
+    """Serialize the read-then-write that follows against other SQLite writers.
+
+    ``BEGIN IMMEDIATE`` takes SQLite's RESERVED lock up front so the previous-
+    hash READ and the INSERT commit as one atomic step — a second writer can't
+    read the same tail hash and fork the chain. If the caller's session is
+    already inside a write transaction (a prior flush/DML already holds the
+    lock), SQLite raises "cannot start a transaction within a transaction":
+    that existing transaction already serializes us, so only that error is
+    swallowed. Any other error (e.g. a busy database) propagates.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    try:
+        db_session.execute(text("BEGIN IMMEDIATE"))
+    except OperationalError as e:
+        if "cannot start a transaction" not in str(e):
+            raise
+
+
 def log_event(
     db_session,
     event_type: str,
@@ -92,28 +116,40 @@ def log_event(
         return None
     from models import AuditLog
 
-    # Get previous hash for chain
-    prev = (
-        db_session.query(AuditLog)
-        .order_by(AuditLog.id.desc())
-        .first()
-    )
-    previous_hash = prev.sha256_hash if prev else None
+    # Atomic chain append: acquire the write lock BEFORE reading the tail so
+    # two concurrent writers can't both read the same previous_hash and fork.
+    try:
+        _begin_write_transaction(db_session)
+    except Exception:
+        db_session.rollback()
+        raise
 
-    # Volume-honesty guard: scrub secrets + keep payload small before hashing.
-    safe_data = enforce_payload_limits(data or {})
+    try:
+        # Get previous hash for chain (inside the write transaction).
+        prev = (
+            db_session.query(AuditLog)
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+        previous_hash = prev.sha256_hash if prev else None
 
-    event = AuditLog(
-        event_id=generate_event_id(),
-        event_type=event_type,
-        ticket_id=ticket_id,
-        actor=actor,
-        data=safe_data,
-        previous_hash=previous_hash,
-        sha256_hash=compute_hash(safe_data, previous_hash),
-    )
-    db_session.add(event)
-    db_session.commit()
+        # Volume-honesty guard: scrub secrets + keep payload small before hashing.
+        safe_data = enforce_payload_limits(data or {})
+
+        event = AuditLog(
+            event_id=generate_event_id(),
+            event_type=event_type,
+            ticket_id=ticket_id,
+            actor=actor,
+            data=safe_data,
+            previous_hash=previous_hash,
+            sha256_hash=compute_hash(safe_data, previous_hash),
+        )
+        db_session.add(event)
+        db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
     return event
 
 
@@ -156,21 +192,17 @@ def pseudonymize_audit_log(db_session, keep_days: int) -> dict:
                 first_edited = r.id
             out["pseudonymized"] += 1
     if first_edited is not None:
-        # re-chain from the first edited row forward
+        # re-chain from the first edited row forward (same logic as
+        # repair_chain, scoped to the aged segment's tail).
         after = (db_session.query(AuditLog)
                  .filter(AuditLog.id >= first_edited)
                  .order_by(AuditLog.id.asc()).all())
-        prev_hash = None
-        for i, r in enumerate(after):
-            if i == 0:
-                prev_hash = (db_session.query(AuditLog)
-                             .filter(AuditLog.id < first_edited)
-                             .order_by(AuditLog.id.desc()).first())
-                prev_hash = prev_hash.sha256_hash if prev_hash else None
-            r.previous_hash = prev_hash
-            r.sha256_hash = compute_hash(r.data, prev_hash)
-            prev_hash = r.sha256_hash
-            out["rechained"] += 1
+        anchor = (db_session.query(AuditLog)
+                  .filter(AuditLog.id < first_edited)
+                  .order_by(AuditLog.id.desc()).first())
+        _rechain(db_session, after,
+                 anchor_prev=anchor.sha256_hash if anchor else None)
+        out["rechained"] = len(after)
         db_session.commit()
         ev = log_event(db_session, "retention.pseudonymized", "system",
                        {"window_days": keep_days,
@@ -179,6 +211,88 @@ def pseudonymize_audit_log(db_session, keep_days: int) -> dict:
         out["event"] = ev.event_id if ev else None
     else:
         db_session.commit()
+    return out
+
+
+def _compact_ids(ids) -> str:
+    """Collapse a sorted list of int ids into a compact range string so the
+    chain.repaired payload stays small even when a whole tail is re-chained
+    (e.g. [8502, 8503, 8504, 13601] -> "8502-8504,13601")."""
+    if not ids:
+        return ""
+    parts = []
+    start = prev = ids[0]
+    for x in ids[1:]:
+        if x == prev + 1:
+            prev = x
+        else:
+            parts.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = x
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(parts)
+
+
+def _rechain(db_session, rows, anchor_prev=None):
+    """Recompute previous_hash + sha256_hash for `rows` (already in id order)
+    into one consistent chain anchored at `anchor_prev` (the sha256_hash of the
+    row preceding the first row in `rows`, or None for the very first row).
+
+    Only rows whose pointer/hash actually differs are rewritten; returns the
+    list of ids that changed. Does NOT commit or log — the caller owns the
+    transaction and the audit event.
+    """
+    changed = []
+    prev_hash = anchor_prev
+    for r in rows:
+        new_sha = compute_hash(r.data, prev_hash)
+        if ((r.previous_hash or None) != (prev_hash or None)
+                or r.sha256_hash != new_sha):
+            r.previous_hash = prev_hash
+            r.sha256_hash = new_sha
+            changed.append(r.id)
+        prev_hash = new_sha
+    return changed
+
+
+def repair_chain(db_session) -> dict:
+    """Re-chain the whole audit log in id order, fixing any forks the
+    pre-atomic log_event writer left behind (two rows sharing one
+    previous_hash). Idempotent: a green chain is a no-op that records no
+    event. When rows ARE fixed it records a `chain.repaired` audit event
+    (ids + count) so the repair itself is audited.
+
+    Gate-runs this once on test then prod after the atomic-write fix lands;
+    do NOT run it on a live DB casually.
+    """
+    from models import AuditLog
+    out = {"repaired": 0, "fixed_ids": [], "event": None, "note": ""}
+    try:
+        _begin_write_transaction(db_session)
+    except Exception:
+        db_session.rollback()
+        raise
+    try:
+        rows = db_session.query(AuditLog).order_by(AuditLog.id.asc()).all()
+        if not rows:
+            out["note"] = "empty log"
+            db_session.commit()
+            return out
+        changed = _rechain(db_session, rows, anchor_prev=None)
+        if changed:
+            db_session.commit()
+            out["repaired"] = len(changed)
+            out["fixed_ids"] = changed
+            ev = log_event(db_session, "chain.repaired", "system", {
+                "count": len(changed),
+                "ids": _compact_ids(changed),
+            })
+            out["event"] = ev.event_id if ev else None
+        else:
+            out["note"] = "chain already consistent"
+            db_session.commit()
+    except Exception:
+        db_session.rollback()
+        raise
     return out
 
 

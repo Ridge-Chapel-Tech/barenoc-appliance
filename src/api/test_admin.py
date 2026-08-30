@@ -6,6 +6,7 @@ aggregates from the audit log (llm_request events) — survives ticket wipes.
 """
 
 import os
+import re
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -149,6 +150,27 @@ class CustomerActionEmailTest(unittest.TestCase):
             self.assertIn("owner@example.com", args[0][0])
             self.assertIn("needs your input", args[0][1])
         db.close()
+
+
+class LlmMonitorTemplateTest(unittest.TestCase):
+    """admin.html period-selector: the pre-rendered default highlight must match
+    the default 7-day fetch (the 7d button's active classes were once hardcoded
+    and never updated by JS; loadUsage() now drives them via data-range +
+    setActiveRange())."""
+
+    def test_default_active_button_is_7_days(self):
+        tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "templates", "admin.html")
+        with open(tpl) as f:
+            html = f.read()
+        # Every range button carries a data-range hook for setActiveRange().
+        ranges = re.findall(r'<button data-range="(\d+)"', html)
+        self.assertEqual(ranges, ["1", "7", "30"])
+        # Exactly one button is pre-highlighted, and it is the 7-day default.
+        active = re.findall(
+            r'<button data-range="(\d+)"[^>]*class="[^"]*bg-barenoc-50[^"]*"',
+            html)
+        self.assertEqual(active, ["7"])
 
 
 if __name__ == "__main__":

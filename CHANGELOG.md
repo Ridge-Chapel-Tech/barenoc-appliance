@@ -15,6 +15,37 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.30.d] — 2026-08-30
+
+### Added
+- **`repair_chain`:** a reusable, idempotent audit-chain re-chain pass
+  (extracted from the pseudonymize re-link loop). It walks the whole audit log
+  in id order, rewrites each row's `previous_hash` + `sha256_hash`, returns the
+  break points it fixed, and records a `chain.repaired` audit event (ids +
+  count) when it repairs anything — so the repair itself is audited. A green
+  chain is a no-op. Gate-runs once on test then prod after deploy (never run
+  on a live DB by a worker).
+
+### Fixed
+- **Audit hash-chain fork under concurrent writes:** `audit.log_event` read the
+  tail hash and inserted the next row WITHOUT a write lock, so two concurrent
+  writers (api/worker/scheduler) could read the same `previous_hash` and both
+  insert — forking the linear chain (prod: verify_chain broke at ids 8502 +
+  13601). The writer now acquires SQLite's write lock with `BEGIN IMMEDIATE`
+  BEFORE the tail read (the read happens INSIDE the write transaction), and
+  `generate_event_id` gained a random suffix so concurrent writers can't collide
+  on the same microsecond (event_id is UNIQUE). The scheduler's direct-sqlite3
+  audit writer received the same `BEGIN IMMEDIATE` guard.
+- **LLM Monitor range buttons + honest empty state:** the 24h / 7d / 30d
+  buttons now highlight the *selected* range. The active classes were hardcoded
+  on "7 days" and `loadUsage()` never updated them, so the highlight stayed
+  stuck on 7d even while the 24h/30d data was shown. `loadUsage()` now drives
+  the highlight via a `setActiveRange()` helper keyed off each button's
+  `data-range`, defaulting to 7 days. The summary cards also stop showing a
+  bare `0` for empty periods and instead show "No LLM activity in the last N
+  days" (the daily chart, by-model breakdown, and recent-calls table use the
+  same honest empty state).
+
 ## [2026.08.30.c] — 2026-08-30
 
 ### Fixed

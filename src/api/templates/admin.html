@@ -7,9 +7,9 @@
 
   <!-- Period Selector -->
   <div class="mt-4 flex gap-2">
-    <button onclick="loadUsage(1)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50">24h</button>
-    <button onclick="loadUsage(7)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50 bg-barenoc-50 text-barenoc-700">7 days</button>
-    <button onclick="loadUsage(30)" class="px-3 py-1 text-sm border rounded hover:bg-gray-50">30 days</button>
+    <button data-range="1" onclick="loadUsage(1)" class="range-btn px-3 py-1 text-sm border rounded hover:bg-gray-50">24h</button>
+    <button data-range="7" onclick="loadUsage(7)" class="range-btn px-3 py-1 text-sm border rounded hover:bg-gray-50 bg-barenoc-50 text-barenoc-700">7 days</button>
+    <button data-range="30" onclick="loadUsage(30)" class="range-btn px-3 py-1 text-sm border rounded hover:bg-gray-50">30 days</button>
   </div>
 
   <!-- Summary Cards -->
@@ -60,22 +60,44 @@ function getToken() { return localStorage.getItem('access_token'); }
 
 function fmtUsd(n) { return '$' + (n || 0).toFixed(6); }
 
+// Range-button active state: the highlight must always match the fetched
+// range. The active classes used to be hardcoded on the "7 days" button, so
+// clicking 24h/30d changed the data while the highlight stayed stuck on 7d.
+var RANGE_ACTIVE_CLASSES = ['bg-barenoc-50', 'text-barenoc-700'];
+function setActiveRange(days) {
+  document.querySelectorAll('.range-btn').forEach(function(btn) {
+    var isActive = btn.getAttribute('data-range') === String(days);
+    RANGE_ACTIVE_CLASSES.forEach(function(cls) {
+      btn.classList.toggle(cls, isActive);
+    });
+  });
+}
+
 async function loadUsage(days) {
+  days = days || 7;
+  setActiveRange(days);
   document.getElementById('loading-admin').style.display = 'block';
 
   try {
-    var resp = await fetch('/api/v1/admin/llm-usage?days=' + (days || 7), {
+    var resp = await fetch('/api/v1/admin/llm-usage?days=' + days, {
       headers: { 'Authorization': 'Bearer ' + getToken() }
     });
     var d = await resp.json();
 
-    // Summary cards
-    document.getElementById('summary-cards').innerHTML = `
-      <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Calls</div><div class="text-2xl font-semibold mt-1">${d.total_calls}</div></div>
-      <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Tokens</div><div class="text-2xl font-semibold mt-1">${d.total_tokens.toLocaleString()}</div></div>
-      <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Cost</div><div class="text-2xl font-semibold mt-1">${fmtUsd(d.total_cost_usd)}</div></div>
-      <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Period</div><div class="text-2xl font-semibold mt-1">${d.period_days}d</div></div>
-    `;
+    // Summary cards — honest empty state when the period has zero LLM calls.
+    if (d.total_calls === 0) {
+      document.getElementById('summary-cards').innerHTML = `
+        <div class="bg-white shadow rounded-lg p-4 sm:col-span-4 text-center">
+          <div class="text-sm text-gray-500">No LLM activity in the last ${d.period_days} days</div>
+        </div>`;
+    } else {
+      document.getElementById('summary-cards').innerHTML = `
+        <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Calls</div><div class="text-2xl font-semibold mt-1">${d.total_calls}</div></div>
+        <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Tokens</div><div class="text-2xl font-semibold mt-1">${d.total_tokens.toLocaleString()}</div></div>
+        <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Total Cost</div><div class="text-2xl font-semibold mt-1">${fmtUsd(d.total_cost_usd)}</div></div>
+        <div class="bg-white shadow rounded-lg p-4"><div class="text-sm text-gray-500">Period</div><div class="text-2xl font-semibold mt-1">${d.period_days}d</div></div>
+      `;
+    }
 
     // Daily chart
     var chart = document.getElementById('daily-chart');
@@ -94,17 +116,20 @@ async function loadUsage(days) {
           </div>`;
       });
     } else {
-      chart.innerHTML = '<p class="text-gray-400 text-sm">No LLM activity in this period.</p>';
+      chart.innerHTML = '<p class="text-gray-400 text-sm">No LLM activity in the last ' + d.period_days + ' days.</p>';
     }
 
     // Model breakdown
     var models = document.getElementById('model-breakdown');
     models.innerHTML = '';
-    if (d.by_model) {
-      Object.keys(d.by_model).forEach(function(m) {
+    var modelNames = d.by_model ? Object.keys(d.by_model) : [];
+    if (modelNames.length) {
+      modelNames.forEach(function(m) {
         var md = d.by_model[m];
         models.innerHTML += `<div class="flex justify-between text-sm py-1 border-b"><span class="font-medium">${m}</span><span>${md.calls} calls, ${md.tokens.toLocaleString()} tokens, ${fmtUsd(md.cost)}</span></div>`;
       });
+    } else {
+      models.innerHTML = '<p class="text-gray-400 text-sm">No LLM activity in the last ' + d.period_days + ' days.</p>';
     }
 
     // Recent activity
@@ -123,7 +148,7 @@ async function loadUsage(days) {
         </tr>`;
       });
     } else {
-      tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No activity</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No LLM activity in the last ' + d.period_days + ' days</td></tr>';
     }
 
     // Config
