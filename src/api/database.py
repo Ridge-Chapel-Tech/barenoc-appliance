@@ -171,7 +171,17 @@ def init_db():
                 "ALTER TABLE users ADD COLUMN locked_until DATETIME"
             ))
     except OperationalError:
-        pass  # Columns already exist
+        pass  # Column already exists
+    # Migration: llm_cost_estimate (cost-metering honesty, 2026-08-30) — flags
+    # a ticket whose llm_cost_usd is an estimate (pi chars/4 fallback or an
+    # unknown-model price), so the UI labels it instead of a silent number.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE tickets ADD COLUMN llm_cost_estimate BOOLEAN DEFAULT 0"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: auth_sessions (P0 revocation batch 2026-08-25). NEW table —
     # create_all above already creates it; the guarded CREATEs are idempotent
     # belt-and-suspenders no-ops. KEEP IN SYNC with models.AuthSession.

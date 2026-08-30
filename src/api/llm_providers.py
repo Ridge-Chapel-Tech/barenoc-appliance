@@ -353,8 +353,21 @@ def judge_model_name(provider: dict) -> str:
     return ""
 
 
+# Documented blended fallback for HOSTED providers whose model is absent from
+# DEFAULT_PRICE_TABLE and has no explicit LLM_PROVIDER_*_INPUT/OUTPUT_PRICE.
+# Marked as an estimate in every consumer (audit + KPI + tickets) — never a
+# silent $0.00. (on-prem endpoints price at $0 — local inference has no
+# per-token API spend — and are NOT flagged as estimates.)
+FALLBACK_ESTIMATE_PRICE = {"input": 3.0, "output": 15.0}
+
+
 def resolve_prices(provider: dict, model: str) -> tuple:
-    """Return (input_per_1m, output_per_1m, is_estimate)."""
+    """Return (input_per_1m, output_per_1m, is_estimate).
+
+    `is_estimate` is True ONLY when the price is unknown and a documented
+    blended fallback is used (unknown hosted model) — a static-table or env
+    price is a KNOWN number, so metered cost stays metered.
+    """
     mode = (provider.get("price_mode") or "auto").lower()
     if mode == "zero":
         return 0.0, 0.0, False
@@ -373,13 +386,63 @@ def resolve_prices(provider: dict, model: str) -> tuple:
                 live = fetched
         if model in live:
             return live[model]["input"], live[model]["output"], False
-        if mode == "live":
-            return 0.0, 0.0, True  # wanted live pricing, unavailable
+        # mode == "live" and unavailable: fall through to the static table
+        # (still priced + marked estimate) instead of returning a silent 0.
 
     table = DEFAULT_PRICE_TABLE.get(model, {})
     inp = float(provider.get("input_price") or 0) or table.get("input", 0.0)
     out = float(provider.get("output_price") or 0) or table.get("output", 0.0)
-    return inp, out, True
+    if inp or out:
+        # Known price (explicit env override or the maintained static table) —
+        # the cost is metered, not estimated.
+        return inp, out, False
+    # Unknown model, no explicit price: local inference is free; a hosted
+    # endpoint gets the documented blended estimate so the KPI never shows a
+    # silent $0.00 for an unknown hosted model.
+    if (provider.get("deployment") or "hosted").lower() == "on_prem":
+        return 0.0, 0.0, False
+    return FALLBACK_ESTIMATE_PRICE["input"], FALLBACK_ESTIMATE_PRICE["output"], True
+
+
+def cost_for_tokens(provider: dict, model: str, input_tokens: int,
+                    output_tokens: int) -> tuple:
+    """Return (cost_usd, is_estimate) for a known token count.
+
+    cost = (input_tokens / 1M × input_price) + (output_tokens / 1M × output_price),
+    rounded to 6 decimals (sub-cent LLM spend stays visible).
+    """
+    inp, out, is_estimate = resolve_prices(provider, model)
+    cost = (int(input_tokens or 0) / 1_000_000 * inp) + \
+           (int(output_tokens or 0) / 1_000_000 * out)
+    return round(cost, 6), is_estimate
+
+
+def provider_for_model(model: str) -> Optional[dict]:
+    """Find a configured provider whose chat/reasoner/judge model == model.
+
+    Used to price the pi-agent path (the runner reports the model it ran; the
+    provider block owns the price). Returns a minimal hosted provider when the
+    model isn't in the registry so DEFAULT_PRICE_TABLE / the blended fallback
+    still apply.
+    """
+    if not model:
+        return None
+    for p in load_providers().values():
+        for k in ("chat_model", "reasoner_model", "judge_model"):
+            if (p.get(k) or "").lower() == str(model).lower():
+                return p
+    return {"name": "unknown", "type": "openai", "base_url": "",
+            "deployment": "hosted", "input_price": 0.0, "output_price": 0.0,
+            "price_mode": "auto"}
+
+
+def resolve_model_cost(model: str, input_tokens: int, output_tokens: int) -> tuple:
+    """(cost_usd, is_estimate) for a model name, priced via the registry."""
+    provider = provider_for_model(model) or {
+        "name": "unknown", "type": "openai", "base_url": "",
+        "deployment": "hosted", "input_price": 0.0, "output_price": 0.0,
+        "price_mode": "auto"}
+    return cost_for_tokens(provider, model, input_tokens, output_tokens)
 
 
 # ── probe (settings test-connection) ────────────────────────────────────────

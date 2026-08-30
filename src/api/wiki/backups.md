@@ -7,6 +7,25 @@ BareNOC backs itself up in three layers:
 | 1 — App data | SQLite DB + `.env` + Fernet key + certs (a `0600` archive) | on the VM, `/opt/barenoc/backups` | every 6 hours (30-day retention) |
 | 2 — VM snapshot | full VM image (`vma.zst`, compressed) | on the Proxmox host disk | daily 1 AM (keep-last 7) |
 | 3 — USB stick | Layer-2 archive **plus** the Layer-1 app backups, **LUKS2-encrypted** | on a USB stick plugged into the Proxmox host | **Settings → Backups** |
+| 4 — Offsite/remote | Layer-1 archive, **client-side AES-256-GCM encrypted**, uploaded to an S3-compatible endpoint (BareNOC-managed or BYO) | offsite (managed backend or your own bucket) | **Settings → Backups → Offsite** (daily) |
+
+## Offsite/remote backup (Layer 4)
+
+**Settings → Backups → Offsite** keeps an encrypted copy of the app-data
+archive off the appliance — two flavors, one transport:
+
+- **BareNOC-managed (subscription):** enter your plan key; the archive is
+  encrypted on the appliance and uploaded to the BareNOC backend (beta: a
+  MinIO box your OMV NAS runs). Retention 30 days (beta).
+- **My own storage (S3-compatible):** R2 / B2 / MinIO / Synology — endpoint,
+  bucket, region, access key/secret, optional prefix. Works for everyone; your
+  data never touches BareNOC.
+
+A **recovery key is shown once** when you first enable it — save it (paper /
+password manager). It decrypts the offsite copy; **losing it makes the offsite
+copy unrecoverable.** Restore via **Download a copy** + `decrypt_remote_backup.py`.
+
+See the **Backups wiki** and `docs/remote-backup.md` for the full runbook.
 
 ## Bring your own host (BYO) — what applies
 

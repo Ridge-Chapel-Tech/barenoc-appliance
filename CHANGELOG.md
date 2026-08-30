@@ -15,6 +15,56 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.30.b] — 2026-08-30
+
+### Added
+- **Offsite / remote backup (Layer 4):** a new **Settings → Backups → Offsite**
+  section with one S3-compatible transport and two flavors — **BareNOC-managed**
+  (subscription, plan-key gated) and **bring-your-own** (any R2/B2/MinIO/Synology
+  endpoint). The appliance generates a per-install data-encryption key, encrypts
+  the app-data archive **before** upload (AES-256-GCM), and shows a **recovery key
+  once** (losing it = unrecoverable offsite copy). A daily offsite schedule (its
+  own host cron, self-gating on the conf) uploads the latest archive with a
+  dependency-light AWS SigV4 signed-request client (no boto3), prunes by retention
+  (managed 30d beta), and writes a status record (last ok/failed/size/next-run)
+  the Backups UI renders. Restore is a browser **Download a copy** + local decrypt
+  with `decrypt_remote_backup.py`. Managed mode is gated by an offline-verifiable
+  beta static plan key (`BARENOC_BETA_PLAN_KEY`); the Stripe→webhook→plan-key
+  automation stays a separate later lane. Ships `proxmox/setup_omv_remote_backup.sh`
+  (MinIO on the OMV box + per-customer bucket/key strategy — gate-run, not executed
+  by the worker) and `docs/remote-backup.md`. See the Backups wiki page.
+- **Honest AI support spend (cost metering):** the reports KPI now meters pi/Lily
+  sessions — the agent runner sums pi's persisted per-message token usage from the
+  session JSONL and reports it in the job result, and the API prices it via the
+  provider registry (`llm_providers`) into the same `llm_request` audit events the
+  catalog path writes. Where pi exposes no usage, a documented chars/4 estimate is
+  reported and clearly labeled (never a silent $0.00).
+
+### Changed
+- **Reports "AI support spend" KPI:** follows the days dropdown, aggregates metered
+  + estimated spend, and counts/labels tickets whose AI work was never metered
+  (legacy pi sessions) instead of understating them as $0.00. Ticket detail views
+  now show "unknown" (not $0.00) for un-metered cost and " est." for estimates.
+- **Direct-LLM token accounting (worker/llm_client.py):** repair-retry calls now
+  accumulate their tokens, ticket `llm_cost_usd` accumulates across re-dispatches
+  instead of overwriting, and the judge's own LLM call is metered alongside the
+  executor's.
+
+### Fixed
+- **Unknown hosted models priced at $0.00:** `resolve_prices` no longer returns a
+  silent zero for a hosted model it doesn't recognize — it uses a documented
+  blended fallback and marks the cost as an estimate; on-prem (local) inference
+  stays a true $0.
+
+### Ops
+- **publish_release.sh --sign hardened (08-30):** the .sig upload could land on the
+  WRONG repo (gh resolves to the dev repo's tag-triggered release unless pinned
+  with `--repo`) and was never verified — after this fix every gh call pins the
+  public repo, the script waits for the tag's release workflow to go green
+  before uploading, and it VERIFIES the .sig is byte-exact served from GitHub
+  AND on barenoc.com (the Hostinger 404 page is an HTML 200; PGP header check)
+  before declaring success, failing loudly with the manual fix otherwise.
+
 ## [2026.08.30.a] — 2026-08-30
 
 ### Fixed
@@ -171,7 +221,6 @@ Categories per release:
   overwritten. Opt out is one click in System → Updates (the **Auto-update**
   toggle). Safe because releases ≥ v2026.08.25.a are GPG-signed and verified
   before apply (fail-closed).
->>>>>>> origin/feat/updates-default-on
 
 ## [2026.08.25.c] — 2026-08-25
 

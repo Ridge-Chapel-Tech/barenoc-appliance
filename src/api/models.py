@@ -150,6 +150,7 @@ class Ticket(Base):
     llm_prompt_tokens = Column(Integer, nullable=True)
     llm_response_tokens = Column(Integer, nullable=True)
     llm_cost_usd = Column(Float, nullable=True)
+    llm_cost_estimate = Column(Boolean, default=False)  # True = cost is an estimate (chars/4 fallback or unknown-model price)
     job_file_path = Column(String(256), nullable=True)
     resolution = Column(Text, nullable=True)
     work_notes = Column(Text, default="[]")  # JSON array of {timestamp, event, detail}

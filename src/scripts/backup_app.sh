@@ -95,4 +95,11 @@ if [ -n "$TARGET" ] && [ -d "$TARGET" ]; then
 fi
 
 log "Backup complete: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+
+# 7. Publish a pointer to the newest archive — the offsite (remote) backup job
+#    consumes it so the daily offsite upload always encrypts + ships the exact
+#    archive this run just produced. Best-effort; the offsite job falls back to
+#    globbing app-backup-*.tar.gz if the pointer is missing.
+echo "$ARCHIVE" > "$BACKUP_DIR/latest_archive" 2>/dev/null || true
+
 echo "$ARCHIVE"

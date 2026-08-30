@@ -899,5 +899,94 @@ class PiLocalProviderTest(unittest.TestCase):
         self.assertIn("provider", cfg)
 
 
+class PiUsageMeteringTest(unittest.TestCase):
+    """The runner sums pi's persisted per-message usage from the session JSONL
+    and reports it in the job result; when pi exposes no usage it falls back to
+    a clearly-labeled chars/4 estimate (never a silent 0.00)."""
+
+    def _write_session(self, session_dir, entries):
+        os.makedirs(session_dir, exist_ok=True)
+        path = os.path.join(session_dir, "run.jsonl")
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        return path
+
+    def _assistant(self, mid, parent, inp, out, cache_read=0):
+        return {
+            "type": "message", "id": mid, "parentId": parent,
+            "timestamp": "2026-08-30T00:00:00.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input": inp, "output": out,
+                          "cacheRead": cache_read, "cacheWrite": 0,
+                          "reasoning": 0, "totalTokens": inp + out + cache_read},
+                "stopReason": "stop",
+            },
+        }
+
+    def test_sums_real_usage(self):
+        d = tempfile.mkdtemp(prefix="pi-usage-")
+        try:
+            self._write_session(d, [
+                {"type": "session", "version": 3},
+                self._assistant("a", None, 100, 50, 10),
+                self._assistant("b", "a", 40, 20, 5),
+            ])
+            s = runner._sum_pi_session_usage(d)
+            self.assertEqual(s, {"input": 140, "output": 70,
+                                 "cache_read": 15, "cache_write": 0,
+                                 "reasoning": 0})
+            block = runner._pi_usage_block(d, "task text", "reply")
+            self.assertFalse(block["estimated"])
+            self.assertEqual(block["input_tokens"], 140)
+            self.assertEqual(block["output_tokens"], 70)
+            self.assertEqual(block["total_tokens"], 225)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_estimates_when_no_usage(self):
+        d = tempfile.mkdtemp(prefix="pi-usage-empty-")
+        try:
+            block = runner._pi_usage_block(d, "x" * 400, "y" * 200)
+            self.assertTrue(block["estimated"])
+            self.assertEqual(block["input_tokens"], 100)   # 400 / 4
+            self.assertEqual(block["output_tokens"], 50)   # 200 / 4
+            self.assertIn("estimate", block["note"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_ignores_non_usage_entries(self):
+        d = tempfile.mkdtemp(prefix="pi-usage-mixed-")
+        try:
+            self._write_session(d, [
+                {"type": "session", "version": 3},
+                {"type": "message", "id": "u", "parentId": None,
+                 "timestamp": "2026-08-30T00:00:00.000Z",
+                 "message": {"role": "user", "content": "hi"}},
+                {"type": "custom", "id": "c", "parentId": "u",
+                 "timestamp": "2026-08-30T00:00:01.000Z",
+                 "customType": "x", "data": {}},
+            ])
+            self.assertEqual(runner._sum_pi_session_usage(d), {})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_file_scope_prevents_double_count(self):
+        # A re-dispatched ticket reuses its session dir — summing only THIS
+        # run's files must not pick up an earlier run's usage.
+        d = tempfile.mkdtemp(prefix="pi-usage-scope-")
+        try:
+            self._write_session(d, [self._assistant("old", None, 1000, 500)])
+            with open(os.path.join(d, "new.jsonl"), "w") as f:
+                f.write(json.dumps(self._assistant("new", "old", 40, 20)) + "\n")
+            s = runner._sum_pi_session_usage(d, files=["new.jsonl"])
+            self.assertEqual(s["input"], 40)
+            self.assertEqual(s["output"], 20)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -44,6 +44,12 @@ log() { echo "[publish] $*"; }
 # downloads and add the signature reference to versions.json (backward
 # compatible). Run AFTER `publish_release.sh --tag vX` + a green release
 # workflow:   publish_release.sh --sign vX
+#
+# The script now ENFORCES the green-workflow premise (waits for the tag's
+# release run), pins every gh call to $PUBLIC_REPO (the dev repo has its own
+# tag-triggered release — without --repo the .sig lands on the WRONG release),
+# and VERIFIES both destinations serve the exact signed bytes before declaring
+# success (the create step's asset list + the Hostinger auto-deploy both race).
 # See docs/security/release-signing.md.
 if [ "$SIGN" = "1" ]; then
   [ -n "$TAG" ] || { log "sign: pass the version — publish_release.sh --sign vX"; exit 1; }
@@ -81,13 +87,43 @@ PY
     log "warning: versions.json not fetched — generate it via build_release_manifest.py --sign"
   fi
 
-  # (3) GitHub Release asset
-  if command -v gh >/dev/null 2>&1 && gh release view "v$VER" >/dev/null 2>&1; then
-    gh release upload "v$VER" "$DL/bareNOC-$VER.tar.gz.sig" --clobber \
-      && log "attached .sig to GitHub Release v$VER" \
-      || log "warning: gh release upload failed — upload manually"
+  # (3) GitHub Release asset — upload + VERIFY. Every gh call pins
+  #     --repo $PUBLIC_REPO: run from the dev repo, gh resolves to the DEV
+  #     release (tag-triggered) and the .sig silently lands on the wrong one.
+  #     Also wait for the tag's release run to go green first — uploading
+  #     while `gh release create` is finalizing the asset list can drop it.
+  GH_ARGS="--repo $PUBLIC_REPO"
+  if command -v gh >/dev/null 2>&1; then
+    # 3a. wait for the tag's release workflow run to complete successfully
+    RUN_STATE=""
+    for _ in $(seq 1 60); do
+      RUN_STATE="$(gh run list $GH_ARGS --limit 30 --json status,conclusion,headBranch \
+        --jq "[.[] | select(.headBranch == \"v$VER\")][0] | .status + \"/\" + (.conclusion // \"none\")" 2>/dev/null || true)"
+      case "$RUN_STATE" in
+        completed/success) break ;;
+        completed/failure|completed/cancelled)
+          log "ABORT: release workflow for v$VER ended $RUN_STATE — fix it before signing"; exit 1 ;;
+      esac
+      sleep 10
+    done
+    [ "$RUN_STATE" = "completed/success" ] \
+      || { log "ABORT: release workflow for v$VER not green after 10 min (state: $RUN_STATE)"; exit 1; }
+
+    gh release upload "v$VER" "$DL/bareNOC-$VER.tar.gz.sig" --clobber $GH_ARGS \
+      || { log "ABORT: gh release upload failed — run: gh release upload v$VER $DL/bareNOC-$VER.tar.gz.sig --clobber --repo $PUBLIC_REPO"; exit 1; }
+
+    # 3b. verify the asset is actually served from the release, byte-exact
+    ok=0
+    for _ in $(seq 1 12); do
+      if curl -fsSL "https://github.com/$PUBLIC_REPO/releases/download/v$VER/bareNOC-$VER.tar.gz.sig" -o "$DL/verify.sig" 2>/dev/null \
+         && cmp -s "$DL/verify.sig" "$DL/bareNOC-$VER.tar.gz.sig"; then ok=1; break; fi
+      sleep 5
+    done
+    [ "$ok" = "1" ] \
+      || { log "ABORT: .sig not live on the v$VER release after retries — upload manually + re-run --sign"; exit 1; }
+    log "attached + verified .sig on GitHub Release v$VER ($PUBLIC_REPO)"
   else
-    log "note: GitHub Release v$VER not found yet — run: gh release upload v$VER $DL/bareNOC-$VER.tar.gz.sig --clobber"
+    log "note: gh not installed — run: gh release upload v$VER $DL/bareNOC-$VER.tar.gz.sig --clobber --repo $PUBLIC_REPO"
   fi
 
   # (4) mirror to barenoc.com/downloads (same path as the tarball)
@@ -104,9 +140,31 @@ PY
     git -C "$TMP/site" config user.name "bareNOC release bot"
     git -C "$TMP/site" add downloads/
     git -C "$TMP/site" commit -q -m "release v$VER: detached signature + signed manifest" || true
-    git -C "$TMP/site" push -q \
-      && log "mirrored .sig + signed versions.json to barenoc.com/downloads" \
-      || log "warning: website push failed — push manually"
+    if git -C "$TMP/site" push -q; then
+      # Hostinger auto-deploy is async + flaky (its 404 page is an HTML 200) —
+      # verify the mirror actually serves the PGP .sig and the signed manifest,
+      # retrying up to ~4 min, and fail loudly if it never lands.
+      ok=0
+      for _ in $(seq 1 24); do
+        if curl -fsSL "https://barenoc.com/downloads/bareNOC-$VER.tar.gz.sig" -o "$DL/mirror.sig" 2>/dev/null \
+           && grep -q -- "-----BEGIN PGP SIGNATURE-----" "$DL/mirror.sig" \
+           && cmp -s "$DL/mirror.sig" "$DL/bareNOC-$VER.tar.gz.sig" \
+           && curl -fsSL "https://barenoc.com/downloads/versions.json" -o "$DL/mirror.json" 2>/dev/null \
+           && grep -q "\"signature\": \"https://barenoc.com/downloads/bareNOC-$VER.tar.gz.sig\"" "$DL/mirror.json"; then
+          ok=1; break
+        fi
+        sleep 10
+      done
+      if [ "$ok" = "1" ]; then
+        log "mirrored + verified .sig + signed versions.json on barenoc.com/downloads"
+      else
+        log "WARNING: website push landed but barenoc.com is not serving the .sig yet (Hostinger flake) —"
+        log "         rerun the website deploy (gh run rerun) then re-run: publish_release.sh --sign v$VER"
+        exit 1
+      fi
+    else
+      log "ABORT: website push failed — push $DL/bareNOC-$VER.tar.gz.sig + versions.json to downloads/ manually"; exit 1
+    fi
   else
     log "note: BareNOC-Website not clonable here — push $DL/bareNOC-$VER.tar.gz.sig to downloads/ manually"
   fi

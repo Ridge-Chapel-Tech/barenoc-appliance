@@ -76,6 +76,7 @@ class TicketResponse(BaseModel):
     llm_confidence: Optional[float] = None
     llm_model: Optional[str] = None
     llm_cost_usd: Optional[float] = None
+    llm_cost_estimate: Optional[bool] = None
     resolution: Optional[str] = None
     work_notes: Optional[str] = None
     created_at: datetime

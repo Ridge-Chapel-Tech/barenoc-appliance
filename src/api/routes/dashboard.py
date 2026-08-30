@@ -179,13 +179,41 @@ def _report_stats(db, days: int = 30) -> dict:
         AuditLog.event_type == "ticket_checkin", AuditLog.timestamp >= since).count()
     llm_rows = db.query(AuditLog).filter(
         AuditLog.event_type == "llm_request", AuditLog.timestamp >= since).all()
-    llm_cost = round(sum(float((a.data or {}).get("cost_usd") or 0) for a in llm_rows), 6)
+    metered = 0.0
+    estimated = 0.0
+    pi_calls = 0
+    metered_ids = set()
+    for a in llm_rows:
+        data = a.data or {}
+        cost = float(data.get("cost_usd") or 0)
+        if data.get("source") == "pi_agent":
+            pi_calls += 1
+        if data.get("cost_estimate"):
+            estimated += cost
+        else:
+            metered += cost
+        if a.ticket_id:
+            metered_ids.add(a.ticket_id)
+    llm_cost = round(metered + estimated, 6)
+    metered = round(metered, 6)
+    estimated = round(estimated, 6)
 
-    # Support cost: direct AI spend (the real tracked catalog-path LLM cost —
-    # see llm_metering_note; pi/Lily sessions aren't metered yet) vs estimated
-    # manned-NOC labor. The manned estimate = support tickets CREATED in the
-    # window (the workload that arrived) × configurable rate/hours-per-ticket,
-    # so it scales with the days dropdown exactly like the "created" KPIs.
+    # Tickets whose AI work was never metered (legacy pi/Lily sessions from
+    # before runner-side usage reporting) — the honest gap, counted + labeled
+    # so the KPI never silently reads $0.00 for work that clearly used the AI.
+    unknown_cost_tickets = 0
+    for t in support_created:
+        if t.ticket_id in metered_ids or t.llm_cost_usd is not None:
+            continue
+        if t.status in ("closed", "completed", "customer_action") and \
+                (t.action == "pi_task" or t.assigned_to == "ai-tech"):
+            unknown_cost_tickets += 1
+
+    # Support cost: direct AI spend (metered catalog + pi/Lily usage, plus any
+    # labeled estimates — see llm_metering_note) vs estimated manned-NOC labor.
+    # The manned estimate = support tickets CREATED in the window (the workload
+    # that arrived) × configurable rate/hours-per-ticket, so it scales with the
+    # days dropdown exactly like the "created" KPIs.
     labor_rate = _report_env_float("SUPPORT_LABOR_RATE_USD", 45.0)
     hours_per_ticket = _report_env_float("SUPPORT_HOURS_PER_TICKET", 1.0)
     est_manned_noc_cost = round(len(support_created) * hours_per_ticket * labor_rate, 2)
@@ -247,9 +275,15 @@ def _report_stats(db, days: int = 30) -> dict:
         "checkins": checkins,
         "reopens": reopens,
         "llm_cost_usd": llm_cost,
+        "llm_cost_metered_usd": metered,
+        "llm_cost_estimate_usd": estimated,
         "llm_calls": len(llm_rows),
-        "llm_metering_note": ("AI support spend only counts catalog-path LLM usage; "
-                              "pi/Lily sessions aren't metered yet"),
+        "llm_pi_calls": pi_calls,
+        "llm_unknown_cost_tickets": unknown_cost_tickets,
+        "llm_metering_note": ("AI support spend = metered LLM usage (catalog + "
+                              "pi/Lily sessions) plus clearly-labeled estimates; "
+                              "unmetered legacy pi sessions are counted "
+                              "separately, never shown as $0.00."),
         "support_cost_usd": llm_cost,
         "est_manned_noc_cost_usd": est_manned_noc_cost,
         "savings_usd": savings_usd,
@@ -294,10 +328,9 @@ def _ticket_rows(db, since: datetime, now: datetime) -> list:
         checkins = sum(1 for n in notes if isinstance(n, dict) and n.get("event") == "checkin_request")
         autoclosed = any(isinstance(n, dict) and n.get("event") == "autoclosed" for n in notes)
         close_ts = t.resolved_at or (t.updated_at if t.status == "closed" else None)
-        # Authoritative per-ticket cost first (ticket.llm_cost_usd — set by the
-        # worker for caged-pipeline calls); audit sum as fallback. Note: the
-        # pi/Lily path doesn't meter LLM usage yet — those tickets show 0 until
-        # runner-side cost reporting lands.
+        # Authoritative per-ticket cost first (ticket.llm_cost_usd — accumulated
+        # by the worker for caged-pipeline calls and by jobs.py for pi/Lily
+        # sessions); audit sum as fallback.
         ticket_cost = t.llm_cost_usd if t.llm_cost_usd is not None else llm_cost.get(t.ticket_id, 0)
         out.append({
             "ticket_id": t.ticket_id,

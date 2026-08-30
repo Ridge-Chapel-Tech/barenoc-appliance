@@ -2,6 +2,52 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 
+class PricingTest(unittest.TestCase):
+    """Cost metering: known prices are metered; unknown hosted models use a
+    documented, labeled fallback; on-prem (local) inference is free."""
+
+    @staticmethod
+    def _hosted():
+        return {"deployment": "hosted", "input_price": 0, "output_price": 0,
+                "price_mode": "auto", "base_url": ""}
+
+    def test_known_static_table_price_is_not_estimate(self):
+        from llm_providers import resolve_prices
+        inp, out, est = resolve_prices(self._hosted(), "deepseek-chat")
+        self.assertEqual((inp, out), (0.27, 1.10))
+        self.assertFalse(est)
+
+    def test_unknown_hosted_model_uses_fallback_estimate(self):
+        from llm_providers import resolve_prices, FALLBACK_ESTIMATE_PRICE
+        inp, out, est = resolve_prices(self._hosted(), "some-unknown-model")
+        self.assertEqual(inp, FALLBACK_ESTIMATE_PRICE["input"])
+        self.assertEqual(out, FALLBACK_ESTIMATE_PRICE["output"])
+        self.assertTrue(est)
+
+    def test_on_prem_unknown_model_is_free(self):
+        from llm_providers import resolve_prices
+        provider = {"deployment": "on_prem", "input_price": 0, "output_price": 0,
+                    "price_mode": "auto", "base_url": ""}
+        inp, out, est = resolve_prices(provider, "llama3")
+        self.assertEqual((inp, out), (0.0, 0.0))
+        self.assertFalse(est)
+
+    def test_cost_for_tokens_math(self):
+        from llm_providers import cost_for_tokens
+        # deepseek-chat: input 0.27, output 1.10 per 1M tokens
+        cost, est = cost_for_tokens(self._hosted(), "deepseek-chat",
+                                    1_000_000, 1_000_000)
+        self.assertAlmostEqual(cost, 0.27 + 1.10, places=6)
+        self.assertFalse(est)
+
+    def test_resolve_model_cost_falls_back_to_table(self):
+        from llm_providers import resolve_model_cost
+        # Not in the registry — but a known model name still prices from the table.
+        cost, est = resolve_model_cost("deepseek-reasoner", 1_000_000, 0)
+        self.assertAlmostEqual(cost, 0.55, places=6)
+        self.assertFalse(est)
+
+
 class ReasoningFallbackTest(unittest.TestCase):
     """Regression (08-17 forum): DeepSeek returns content='' with a long system
     prompt — the answer lands in reasoning_content. The adapter must fall back

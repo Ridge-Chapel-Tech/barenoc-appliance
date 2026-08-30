@@ -327,6 +327,23 @@ def process_ticket(db, ticket):
             "short_circuit": verdict.short_circuit,
             "cost_usd": verdict.cost_usd,
         }, ticket_id)
+        # Meter the judge's own LLM call (a real call, not the cache/short-
+        # circuit/mock path) so judge spend is no longer under-counted in the
+        # reports KPI. Accumulate onto the ticket like the executor call does.
+        if verdict.model and not verdict.short_circuit and not verdict.cached:
+            ticket.llm_prompt_tokens = (ticket.llm_prompt_tokens or 0) + verdict.prompt_tokens
+            ticket.llm_response_tokens = (ticket.llm_response_tokens or 0) + verdict.response_tokens
+            ticket.llm_cost_usd = round((ticket.llm_cost_usd or 0.0) + verdict.cost_usd, 6)
+            ticket.llm_cost_estimate = bool(ticket.llm_cost_estimate or verdict.cost_estimate)
+            log_event(db, "llm_request", "system", {
+                "ticket_id": ticket_id,
+                "model": verdict.model,
+                "source": "judge",
+                "prompt_tokens": verdict.prompt_tokens,
+                "response_tokens": verdict.response_tokens,
+                "cost_usd": verdict.cost_usd,
+                "cost_estimate": verdict.cost_estimate,
+            }, ticket_id)
         if verdict.lawful == "no":
             add_note(ticket, "escalated",
                      f"Judge: request ruled UNLAWFUL — {verdict.reason} "
@@ -447,14 +464,19 @@ def process_ticket(db, ticket):
     add_note(ticket, "agent_response", f"{_assistant_name()} suggested {llm_response.action} on {llm_response.target or '(no target)'} (confidence {llm_response.confidence}, via {llm_response.model})")
     ticket.llm_confidence = llm_response.confidence
     ticket.llm_model = llm_response.model
-    ticket.llm_prompt_tokens = llm_response.prompt_tokens
-    ticket.llm_response_tokens = llm_response.response_tokens
-    ticket.llm_cost_usd = llm_response.cost_usd
+    # Accumulate (never overwrite): a ticket re-dispatched across retries / new
+    # customer replies makes a fresh LLM call each time, and each call's cost
+    # must be counted exactly once — this mirrors the audit log's per-call rows.
+    ticket.llm_prompt_tokens = (ticket.llm_prompt_tokens or 0) + llm_response.prompt_tokens
+    ticket.llm_response_tokens = (ticket.llm_response_tokens or 0) + llm_response.response_tokens
+    ticket.llm_cost_usd = round((ticket.llm_cost_usd or 0.0) + llm_response.cost_usd, 6)
+    ticket.llm_cost_estimate = bool(ticket.llm_cost_estimate or llm_response.cost_estimate)
 
     # Step 7: Log LLM audit
     log_event(db, "llm_request", "system", {
         "ticket_id": ticket_id,
         "model": llm_response.model,
+        "source": "catalog",
         "prompt_tokens": llm_response.prompt_tokens,
         "response_tokens": llm_response.response_tokens,
         "cost_usd": llm_response.cost_usd,

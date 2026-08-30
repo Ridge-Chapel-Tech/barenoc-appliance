@@ -145,6 +145,7 @@ class Verdict:
     prompt_tokens: int = 0
     response_tokens: int = 0
     cost_usd: float = 0.0
+    cost_estimate: bool = False
     cached: bool = False
     short_circuit: bool = False
 
@@ -354,7 +355,8 @@ def judge_request(ticket_text: str, priority: str,
                     checks={},
                     reason=f"Judge returned an unparseable verdict: {resp.raw_text[:200]}",
                     model=resp.model, prompt_tokens=resp.prompt_tokens,
-                    response_tokens=resp.response_tokens, cost_usd=resp.cost_usd)
+                    response_tokens=resp.response_tokens, cost_usd=resp.cost_usd,
+                    cost_estimate=resp.cost_estimate)
         _cache_set(key, v)
         return v
 
@@ -364,11 +366,13 @@ def judge_request(ticket_text: str, priority: str,
                     checks={},
                     reason=f"Judge verdict failed schema validation: {resp.raw_text[:200]}",
                     model=resp.model, prompt_tokens=resp.prompt_tokens,
-                    response_tokens=resp.response_tokens, cost_usd=resp.cost_usd)
+                    response_tokens=resp.response_tokens, cost_usd=resp.cost_usd,
+                    cost_estimate=resp.cost_estimate)
     else:
         v.model = resp.model
         v.prompt_tokens = resp.prompt_tokens
         v.response_tokens = resp.response_tokens
         v.cost_usd = resp.cost_usd
+        v.cost_estimate = resp.cost_estimate
     _cache_set(key, v)
     return v

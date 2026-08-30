@@ -1371,6 +1371,95 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
     return sysctx
 
 
+# ── pi usage metering (honest AI support spend) ──────────────────────────────
+# pi persists per-message `usage` (input/output/cacheRead/cacheWrite + total)
+# in its session JSONL files (see the pi SDK session-format doc). The runner
+# sums that after the run and reports it in the job result so the API can price
+# it with BareNOC's provider registry. If pi genuinely exposes no usage for a
+# session, a clearly-labeled chars/4 estimate is reported instead — never a
+# silent 0.00.
+
+
+def _sum_pi_session_usage(session_dir: str, files=None) -> dict:
+    """Sum pi's persisted per-message usage across the given session JSONL
+    files (default: every .jsonl in `session_dir`).
+
+    Returns a flat dict {input, output, cache_read, cache_write, reasoning} or
+    {} when no usage was persisted (e.g. an ephemeral run). pi stores `usage`
+    on assistant `message` entries and on compaction/branch-summary entries.
+    """
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+              "reasoning": 0}
+    if files is None:
+        try:
+            files = sorted(f for f in os.listdir(session_dir)
+                           if f.endswith(".jsonl"))
+        except OSError:
+            return {}
+    found = False
+    for fn in files:
+        try:
+            with open(os.path.join(session_dir, fn)) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+                    usage = None
+                    if entry.get("type") == "message":
+                        msg = entry.get("message") or {}
+                        if isinstance(msg, dict):
+                            usage = msg.get("usage")
+                    else:
+                        usage = entry.get("usage")
+                    if not isinstance(usage, dict):
+                        continue
+                    totals["input"] += int(usage.get("input") or 0)
+                    totals["output"] += int(usage.get("output") or 0)
+                    totals["cache_read"] += int(usage.get("cacheRead") or 0)
+                    totals["cache_write"] += int(usage.get("cacheWrite") or 0)
+                    totals["reasoning"] += int(usage.get("reasoning") or 0)
+                    found = True
+        except OSError:
+            continue
+    return totals if found else {}
+
+
+def _pi_usage_block(session_dir: str, task_text: str, response_text: str,
+                    files=None) -> dict:
+    """The job-result usage block for a pi run.
+
+    Real summed usage when pi persisted it (metered, not an estimate);
+    otherwise a documented chars/4 estimate over the task + final response,
+    clearly labeled so the API/UI can mark it as an estimate. `files` scopes
+    the sum to THIS run's session files so a re-dispatch never double-counts
+    an earlier run's usage in the same session dir.
+    """
+    s = _sum_pi_session_usage(session_dir, files)
+    if s:
+        return {
+            "input_tokens": s["input"],
+            "output_tokens": s["output"],
+            "cache_read_tokens": s["cache_read"],
+            "cache_write_tokens": s["cache_write"],
+            "total_tokens": s["input"] + s["output"] + s["cache_read"] + s["cache_write"],
+            "estimated": False,
+        }
+    # Estimate: transcript tokens ≈ chars / 4 (the documented 08-13 fallback).
+    return {
+        "input_tokens": max(1, int(len(task_text or "") / 4)),
+        "output_tokens": max(0, int(len(response_text or "") / 4)),
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": max(1, int(len(task_text or "") / 4)) + max(0, int(len(response_text or "") / 4)),
+        "estimated": True,
+        "note": "pi did not expose token usage for this session; tokens are an estimate (chars/4).",
+    }
+
+
 def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
     """Run the Pi Coding Agent headlessly on a ticket task.
 
@@ -1418,6 +1507,10 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
     def run_once(provider, model, api_key, session_subdir, label):
         sdir = os.path.join(workdir, "sessions", session_subdir)
         os.makedirs(sdir, exist_ok=True)
+        # Snapshot pre-existing session files so the usage sum is scoped to
+        # THIS run — a ticket re-dispatched later reuses the same session dir,
+        # and summing stale files would double-count an earlier run's tokens.
+        pre_files = set(f for f in os.listdir(sdir) if f.endswith(".jsonl"))
         cmd = [pi_bin, "-p", "--provider", provider, "--model", model,
                "--api-key", api_key, "--thinking", "off",
                "--session-dir", sdir,
@@ -1503,12 +1596,23 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
             timed_out = True
         out = (out or "").strip()
         err = (err or "").strip()
+        session_files = [f for f in os.listdir(sdir)
+                         if f.endswith(".jsonl") and f not in pre_files]
+        usage = _pi_usage_block(sdir, task, out, files=session_files)
         if proc.returncode == 0 and out:
-            return {"success": True, "output": {"response": out[:20000]}}
+            return {"success": True, "output": {"response": out[:20000],
+                                                "usage": usage,
+                                                "model": model,
+                                                "provider": provider}}
         if timed_out:
-            return _timeout_result(ticket_id, timeout)
+            tr = _timeout_result(ticket_id, timeout)
+            tr.setdefault("output", {})["usage"] = usage
+            tr["output"]["model"] = model
+            tr["output"]["provider"] = provider
+            return tr
         return {"success": False,
-                "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}"}
+                "error": f"pi exited {proc.returncode}: {err[:500] or out[:500] or 'no output'}",
+                "output": {"usage": usage, "model": model, "provider": provider}}
 
     result = run_once(cfg["provider"], cfg["model"], cfg["api_key"], ticket_id, "primary")
     if result["success"]:

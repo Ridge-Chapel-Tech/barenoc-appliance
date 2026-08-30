@@ -100,11 +100,12 @@ class ReportsKpiDaysSensitivityTest(unittest.TestCase):
         db.commit()
         db.close()
 
-    def _llm_audit(self, ticket_id, cost, days_ago):
+    def _llm_audit(self, ticket_id, cost, days_ago, **extra):
         db = SessionLocal()
         from models import AuditLog
         from audit import generate_event_id, compute_hash
         data = {"ticket_id": ticket_id, "model": "test", "cost_usd": cost}
+        data.update(extra)
         prev = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
         prev_hash = prev.sha256_hash if prev else None
         e = AuditLog(
@@ -150,8 +151,49 @@ class ReportsKpiDaysSensitivityTest(unittest.TestCase):
         db.close()
         self.assertAlmostEqual(s["llm_cost_usd"], 0.000682, places=6)
         self.assertEqual(s["support_cost_usd"], s["llm_cost_usd"])
-        self.assertIn("catalog-path", s["llm_metering_note"])
-        self.assertIn("aren't metered yet", s["llm_metering_note"])
+        # Known-price catalog calls are metered, not estimated.
+        self.assertAlmostEqual(s["llm_cost_metered_usd"], 0.000682, places=6)
+        self.assertEqual(s["llm_cost_estimate_usd"], 0.0)
+        self.assertIn("metered", s["llm_metering_note"])
+        self.assertIn("$0.00", s["llm_metering_note"])
+
+    def test_ai_spend_splits_metered_and_estimate(self):
+        self._llm_audit("TKT-E1", 0.0001, 1, cost_estimate=True, source="pi_agent")
+        self._llm_audit("TKT-E2", 0.0005, 1, cost_estimate=False, source="catalog")
+        db = SessionLocal()
+        s = dashboard._report_stats(db, days=7)
+        db.close()
+        self.assertAlmostEqual(s["llm_cost_usd"], 0.0006, places=6)
+        self.assertAlmostEqual(s["llm_cost_estimate_usd"], 0.0001, places=6)
+        self.assertAlmostEqual(s["llm_cost_metered_usd"], 0.0005, places=6)
+        self.assertEqual(s["llm_pi_calls"], 1)
+
+    def test_unknown_cost_tickets_are_counted_not_silent(self):
+        # A legacy pi-dispatched ticket with no cost record at all.
+        db = SessionLocal()
+        now = datetime.utcnow()
+        t = Ticket(ticket_id="TKT-U1", title="legacy pi", description="",
+                   priority="P3", status="closed", source="manual",
+                   action="pi_task", assigned_to="customer",
+                   created_at=now - timedelta(days=1),
+                   resolved_at=now - timedelta(hours=23))
+        db.add(t)
+        db.commit()
+        db.close()
+        db = SessionLocal()
+        s = dashboard._report_stats(db, days=7)
+        db.close()
+        self.assertEqual(s["llm_calls"], 0)
+        self.assertEqual(s["llm_unknown_cost_tickets"], 1)
+        self.assertEqual(s["support_cost_usd"], 0.0)
+
+    def test_unknown_cost_ignores_unworked_tickets(self):
+        # A ticket with no AI work and no cost is legitimately $0 — not unknown.
+        self._ticket("TKT-ESC", 1, status="escalated", resolved_days_ago=1)
+        db = SessionLocal()
+        s = dashboard._report_stats(db, days=7)
+        db.close()
+        self.assertEqual(s["llm_unknown_cost_tickets"], 0)
 
 
 class ReportsAveragesTest(unittest.TestCase):

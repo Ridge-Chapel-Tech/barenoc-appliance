@@ -349,9 +349,25 @@ function loadReports() {
       card('Escalations', d.escalated_tickets,
            (d.escalations ? d.escalations + ' events · ' : '') + (d.support_created ? Math.round(d.escalation_rate * 100) + '% of support tickets created this period' : '—')) +
       card('Auto-closed', d.autoclosed, (d.reopens ? d.reopens + ' reopened / follow-ups' : 'no reopens') + ' · ' + d.checkins + ' check-ins') +
-      card('AI support spend', fmtUsd(d.support_cost_usd),
-           d.llm_calls + ' tracked LLM calls · catalog-path only',
-           (d.llm_metering_note || '') + ' The runner does not report token usage yet.') +
+      (function() {
+        var calls = d.llm_calls || 0;
+        var pi = d.llm_pi_calls || 0;
+        var est = d.llm_cost_estimate_usd || 0;
+        var unk = d.llm_unknown_cost_tickets || 0;
+        // A silent $0.00 is never honest when AI work happened but wasn't
+        // metered — say so explicitly.
+        var value = (calls === 0 && unk > 0) ? 'unknown' : fmtUsd(d.support_cost_usd);
+        var parts = [];
+        if (calls === 0 && unk === 0) {
+          parts.push('no metered AI activity in this period');
+        } else {
+          parts.push(calls + ' tracked LLM calls');
+          if (pi) parts.push(pi + ' pi/Lily sessions');
+          if (est > 0) parts.push(fmtUsd(est) + ' estimated');
+          if (unk) parts.push(unk + ' ticket' + (unk === 1 ? '' : 's') + ' with un-metered AI work');
+        }
+        return card('AI support spend', value, parts.join(' · '), d.llm_metering_note || '');
+      })() +
       card('Est. manned-NOC cost', fmtUsd(d.est_manned_noc_cost_usd),
            d.support_created + ' support tickets created × human labor (est.)',
            'Estimated human-NOC labor for the support tickets created in the window (rate × hours-per-ticket from Settings → Reports).') +

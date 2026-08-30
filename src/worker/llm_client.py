@@ -303,14 +303,19 @@ def call_llm(
             if not parsed:
                 # One repair attempt: thinking models sometimes reply with a
                 # chain of thought and no JSON. Nudge once for the envelope.
+                # The failed parse call DID consume tokens — accumulate the
+                # repair call's usage so the metered cost is honest (retries
+                # included, each API call counted exactly once).
                 print("[LLM] No JSON envelope — one repair attempt")
                 try:
-                    retry_raw, _, _ = adapter(
+                    retry_raw, retry_pt, retry_rt = adapter(
                         provider, model,
                         messages + [{"role": "user", "content":
                             "Your previous reply was not valid JSON. Reply with ONLY the JSON object "
                             "in the exact format specified — no prose, no markdown, no reasoning."}],
                         temperature=0.0, max_tokens=max_tokens, timeout=timeout)
+                    prompt_tokens += retry_pt
+                    response_tokens += retry_rt
                     print(f"[LLM] Repair response: {retry_raw[:300]}...")
                     repaired = _parse_llm_response(retry_raw)
                     if repaired:

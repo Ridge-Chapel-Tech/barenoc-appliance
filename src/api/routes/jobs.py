@@ -11,6 +11,7 @@ from models import Ticket, User
 from auth import require_any_role, require_role
 from schemas import TicketResponse
 from worknotes import add_note
+from audit import log_event
 from tone_filter import ellipsize, strip_meta_narration, structure_answer
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,48 @@ def _result_error_text(result) -> str:
     return ellipsize(str(out or "Unknown error"), 400)
 
 
+def _meter_usage(ticket, output, db) -> "float | None":
+    """Store metered LLM usage from a job result's output.usage on the ticket
+    and write an llm_request audit event (the same event the catalog path
+    writes) so the reports KPI aggregates pi/Lily spend with everything else.
+
+    Prices come from BareNOC's provider registry (llm_providers); the runner
+    only reports honest token counts (+ an `estimated` flag for its chars/4
+    fallback). Returns the computed cost or None when there was no usage.
+    """
+    if not isinstance(output, dict):
+        return None
+    usage = output.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    if input_tokens <= 0 and output_tokens <= 0:
+        return None
+    model = str(output.get("model") or "").strip()
+    from llm_providers import resolve_model_cost
+    cost, is_estimate = resolve_model_cost(model, input_tokens, output_tokens)
+    # Trust the runner's own chars/4 estimate flag too.
+    is_estimate = bool(is_estimate or usage.get("estimated"))
+
+    ticket.llm_prompt_tokens = (ticket.llm_prompt_tokens or 0) + input_tokens
+    ticket.llm_response_tokens = (ticket.llm_response_tokens or 0) + output_tokens
+    ticket.llm_cost_usd = round((ticket.llm_cost_usd or 0.0) + cost, 6)
+    ticket.llm_cost_estimate = bool(ticket.llm_cost_estimate or is_estimate)
+    if model:
+        ticket.llm_model = f"pi/{model}"
+    log_event(db, "llm_request", "system", {
+        "ticket_id": ticket.ticket_id,
+        "model": model or "pi",
+        "source": "pi_agent",
+        "prompt_tokens": input_tokens,
+        "response_tokens": output_tokens,
+        "cost_usd": cost,
+        "cost_estimate": is_estimate,
+    }, ticket.ticket_id)
+    return cost
+
+
 class JobResult(BaseModel):
     ticket_id: str
     action: str
@@ -292,6 +335,11 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
                         "new_status": ticket.status, "deduplicated": True}
         except Exception:
             pass
+
+    # Meter LLM usage reported in the job result (pi_task sessions). The
+    # catalog-path worker meters its own calls; the runner reports token usage
+    # here so Lily's pi sessions are no longer a silent $0.00.
+    _meter_usage(ticket, result.output, db)
 
     info_answer = None
 

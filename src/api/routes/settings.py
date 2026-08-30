@@ -407,6 +407,57 @@ def _backups_section() -> dict:
         "net_host": cfg.get("NET_HOST") or "",
         "net_share": cfg.get("NET_SHARE") or "",
         "net_mounted": _net_mounted(),
+        "offsite": _offsite_section(),
+    }
+
+
+def _offsite_section() -> dict:
+    """Settings → Backups → Offsite (remote/offsite backup, Layer 4).
+
+    Managed (subscription) and BYO share one S3-compatible transport. Secrets
+    are never returned: BYO creds are presence-only, the managed profile shows
+    the endpoint host (gate-provisioned), and the recovery key is shown once
+    via a dedicated endpoint.
+    """
+    import remote_backup as rb
+    cfg = rb.read_offsite_conf()
+    status = rb.read_offsite_status()
+    creds = rb.read_offsite_credentials()
+    plan = rb.verify_plan_key(cfg.get("PLAN_KEY") or "")
+    prof = rb.managed_profile()
+    mode = (cfg.get("OFF_SITE_MODE") or "off").strip().lower()
+    byo_ak = bool(creds["access_key"])
+    byo_sk = bool(creds["secret"])
+    managed_configured = bool(prof["endpoint"] and prof["bucket"]
+                              and prof["access_key"] and prof["secret"])
+    return {
+        "mode": mode,
+        "day": (cfg.get("OFF_SITE_DAY") or "daily").strip() or "daily",
+        "hour": rb._int(cfg.get("OFF_SITE_HOUR", "3"), 3),
+        "retention_days": rb._int(cfg.get("OFF_SITE_RETENTION_DAYS", "30"), 30),
+        "plan_key_valid": plan["valid"],
+        "plan_tier": plan["tier"],
+        "plan_beta": plan["beta"],
+        "managed_configured": managed_configured,
+        "managed_endpoint": prof["endpoint"],
+        "byo": {
+            "endpoint": (cfg.get("BYO_ENDPOINT") or "").strip(),
+            "bucket": (cfg.get("BYO_BUCKET") or "").strip(),
+            "region": (cfg.get("BYO_REGION") or "us-east-1").strip(),
+            "prefix": (cfg.get("BYO_PREFIX") or "").strip(),
+            "access_key_configured": byo_ak,
+            "secret_configured": byo_sk,
+        },
+        "recovery_key_shown": (cfg.get("RECOVERY_KEY_SHOWN") or "").strip().lower() == "true",
+        "download_available": bool(rb.list_local_encrypted()),
+        "status": {
+            "last_ok": status.get("last_ok") or "none",
+            "last_failed": status.get("last_failed") or "none",
+            "last_error": status.get("last_error") or "",
+            "last_size_bytes": status.get("last_size_bytes") or 0,
+            "next_run": status.get("next_run") or rb.next_run(cfg),
+            "object_key": status.get("object_key") or "",
+        },
     }
 
 
@@ -1431,6 +1482,86 @@ def _update_backups(config: dict, db: Session, user: User) -> dict:
         _net_write_creds(str(config.get("net_user", "")), str(config.get("net_pass", "")))
         changed.append("net_user")
         values["net_user"] = str(config.get("net_user", ""))
+    # Offsite/remote backup (Layer 4) — S3-compatible, managed or BYO. The
+    # schedule/mode/plan live in offsite.conf; BYO secrets are Fernet-encrypted
+    # in the 0600 offsite-credentials file (never in the 0644 conf).
+    import remote_backup as rb
+    ocfg = rb.read_offsite_conf()
+    ochanged = []
+    if "offsite_mode" in config:
+        m = str(config["offsite_mode"]).strip().lower()
+        if m not in ("off", "managed", "byo"):
+            raise HTTPException(status_code=400,
+                                detail="offsite_mode must be off, managed or byo")
+        ocfg["OFF_SITE_MODE"] = m
+        ochanged.append("offsite_mode")
+        values["offsite_mode"] = m
+    if "offsite_day" in config:
+        d = str(config["offsite_day"]).strip().lower()
+        if d != "daily" and d not in ("0", "1", "2", "3", "4", "5", "6"):
+            raise HTTPException(status_code=400,
+                                detail="offsite_day must be 'daily' or 0-6 (0=Sunday)")
+        ocfg["OFF_SITE_DAY"] = d
+        ochanged.append("offsite_day")
+        values["offsite_day"] = d
+    if "offsite_hour" in config:
+        try:
+            h = int(config["offsite_hour"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="offsite_hour must be 0-23")
+        if not 0 <= h <= 23:
+            raise HTTPException(status_code=400, detail="offsite_hour must be 0-23")
+        ocfg["OFF_SITE_HOUR"] = str(h)
+        ochanged.append("offsite_hour")
+        values["offsite_hour"] = str(h)
+    if "offsite_retention_days" in config:
+        try:
+            r = int(config["offsite_retention_days"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="offsite_retention_days must be 1-3650")
+        if not 1 <= r <= 3650:
+            raise HTTPException(status_code=400, detail="offsite_retention_days must be 1-3650")
+        ocfg["OFF_SITE_RETENTION_DAYS"] = str(r)
+        ochanged.append("offsite_retention_days")
+        values["offsite_retention_days"] = str(r)
+    if "plan_key" in config:
+        pk = str(config["plan_key"]).strip()
+        ocfg["PLAN_KEY"] = pk
+        ochanged.append("plan_key")
+        values["plan_key"] = (pk[:6] + "…") if pk else ""  # never log the full key
+    if "byo_endpoint" in config:
+        ocfg["BYO_ENDPOINT"] = str(config["byo_endpoint"]).strip()
+        ochanged.append("byo_endpoint")
+        values["byo_endpoint"] = ocfg["BYO_ENDPOINT"]
+    if "byo_bucket" in config:
+        ocfg["BYO_BUCKET"] = str(config["byo_bucket"]).strip()
+        ochanged.append("byo_bucket")
+        values["byo_bucket"] = ocfg["BYO_BUCKET"]
+    if "byo_region" in config:
+        ocfg["BYO_REGION"] = str(config["byo_region"]).strip() or "us-east-1"
+        ochanged.append("byo_region")
+        values["byo_region"] = ocfg["BYO_REGION"]
+    if "byo_prefix" in config:
+        ocfg["BYO_PREFIX"] = str(config["byo_prefix"]).strip()
+        ochanged.append("byo_prefix")
+        values["byo_prefix"] = ocfg["BYO_PREFIX"]
+    if "byo_access_key" in config or "byo_secret" in config:
+        creds = rb.read_offsite_credentials()
+        ak = str(config.get("byo_access_key", creds["access_key"] or ""))
+        sk = str(config.get("byo_secret", creds["secret"] or ""))
+        rb.write_offsite_credentials(ak, sk)
+        ochanged.append("byo_credentials")
+        values["byo_credentials"] = "saved"
+    if ochanged:
+        # Managed is plan-gated: refuse to enable it without a valid plan key
+        # (BYO works for everyone — no key required).
+        if ocfg.get("OFF_SITE_MODE") == "managed" \
+                and not rb.verify_plan_key(ocfg.get("PLAN_KEY") or "")["valid"]:
+            raise HTTPException(status_code=400,
+                                detail="Managed remote backup requires a valid plan key "
+                                       "(subscription). BYO storage needs no key.")
+        rb.write_offsite_conf(ocfg)
+        changed.append("offsite:" + ",".join(sorted(set(ochanged))))
     if not changed:
         return {"status": "ok", "updated": 0}
     _write_backup_conf(cfg)
@@ -1641,6 +1772,83 @@ def backup_usb_setup(config: dict, db: Session = Depends(get_db),
                                 detail="Confirm the stick will be ERASED before continuing")
         return _usb_setup(dev, db, user)
     raise HTTPException(status_code=400, detail="action must be 'list' or 'setup'")
+
+
+# ── Offsite/remote backup (Layer 4) — S3-compatible, managed or BYO ─────────
+
+@router.post("/backups/offsite/recovery-key")
+def offsite_recovery_key(config: dict, user: User = Depends(require_role("admin"))):
+    """Show the offsite recovery key ONCE (confirm required). After this the
+    key is never displayed again — losing it makes the offsite copy
+    unrecoverable (documented honestly in the UI + wiki)."""
+    if not config.get("confirm"):
+        raise HTTPException(status_code=400,
+                            detail="Confirm you have saved the recovery key before it is shown")
+    import remote_backup as rb
+    cfg = rb.read_offsite_conf()
+    if (cfg.get("RECOVERY_KEY_SHOWN") or "").strip().lower() == "true":
+        raise HTTPException(status_code=409,
+                            detail="Recovery key already shown — it is never displayed again. "
+                                   "If it was lost, the offsite copy cannot be restored.")
+    raw = rb.ensure_dek()
+    cfg["RECOVERY_KEY_SHOWN"] = "true"
+    rb.write_offsite_conf(cfg)
+    return {"status": "ok", "recovery_key": rb.encode_recovery_key(raw),
+            "warning": "Save this key now (print / password manager). It is shown "
+                       "once; without it the offsite copy is unrecoverable."}
+
+
+@router.get("/backups/offsite/download")
+def offsite_download(user: User = Depends(require_role("admin"))):
+    """Browser download of the latest encrypted offsite archive. Decrypt
+    locally with the recovery key (decrypt_remote_backup.py) — restore UX keeps
+    plaintext off the appliance and out of our hands."""
+    import remote_backup as rb
+    from fastapi.responses import FileResponse
+    files = rb.list_local_encrypted()
+    if not files:
+        raise HTTPException(status_code=404,
+                            detail="No offsite archive yet — run the offsite backup first.")
+    return FileResponse(files[0], filename=os.path.basename(files[0]),
+                        media_type="application/octet-stream")
+
+
+@router.post("/backups/offsite/run")
+def offsite_run(user: User = Depends(require_role("admin"))):
+    """Run the offsite backup now (encrypt the latest archive → upload → prune)."""
+    import remote_backup as rb
+    rc = rb.run_offsite_backup(force=True)
+    status = rb.read_offsite_status()
+    if rc != 0:
+        return {"status": "error",
+                "detail": status.get("last_error") or "Offsite backup failed"}
+    return {"status": "ok",
+            "detail": ("Offsite backup uploaded — "
+                       f"{status.get('last_size_bytes', 0)} bytes → "
+                       f"{status.get('object_key', '')}")}
+
+
+@router.post("/backups/offsite/test")
+def offsite_test(user: User = Depends(require_role("admin"))):
+    """Test the resolved offsite target (managed or BYO) before trusting it."""
+    import remote_backup as rb
+    cfg = rb.read_offsite_conf()
+    try:
+        t = rb.resolve_target(cfg)
+    except rb.OffsiteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        client = rb.S3Client(t["endpoint"], t["region"], t["access_key"], t["secret"])
+        code, body, _ = client.list_objects(t["bucket"], t["prefix"], max_keys=1)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502,
+                            detail=f"Couldn't reach the endpoint: {e}")
+    if code == 200:
+        return {"status": "ok",
+                "detail": (f"✅ Reachable — bucket '{t['bucket']}' is readable via "
+                           f"{t['endpoint']}.")}
+    return {"status": "error",
+            "detail": f"Endpoint answered HTTP {code}: {rb._snippet(body)}"}
 
 
 def _llm_section(env: dict) -> dict:
