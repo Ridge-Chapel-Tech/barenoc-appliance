@@ -106,7 +106,7 @@ ssh "$VM" "crontab -l 2>/dev/null | grep -q backup_app.sh || (crontab -l 2>/dev/
 
 # Shared modules the worker image needs in its build context (see worker/Dockerfile).
 # They live in api/ in the repo; copy into the worker context on the VM.
-SHARED_MODULES=(action_validator.py audit.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py llm_providers.py emailer.py)
+SHARED_MODULES=(action_validator.py audit.py audit_catalog.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py llm_providers.py emailer.py)
 
 # Sync each service directory (no --delete: VM may have runtime-only files).
 rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/api/"            "$VM:/opt/barenoc/api/"

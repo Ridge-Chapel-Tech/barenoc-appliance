@@ -21,6 +21,7 @@ COPY test_integration.py .
 COPY sanitizer.py .
 COPY action_validator.py .
 COPY audit.py .
+COPY audit_catalog.py .
 COPY worknotes.py .
 COPY queue_status.py .
 COPY tone_pool.py .

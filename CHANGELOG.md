@@ -15,6 +15,16 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.30.a] — 2026-08-30
+
+### Fixed
+
+- **Worker hotfix — audit_catalog.py missing from the worker image (INCIDENT):**
+  the .27.a audit-catalog change made `audit.py` import `audit_catalog`, but the
+  module was missing from the worker build chain (deploy.sh `SHARED_MODULES` +
+  `worker/Dockerfile` COPY list) → worker crash-looped `ModuleNotFoundError` on
+  deploy. Both spots updated; the rebuilt worker starts clean.
+
 ## [2026.08.27.a] — 2026-08-27
 
 - **Light / dark / auto theme (web UI):** a theme toggle in the nav (Light ·
