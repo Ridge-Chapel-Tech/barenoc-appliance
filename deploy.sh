@@ -111,6 +111,8 @@ ssh "$VM" "crontab -l 2>/dev/null | grep -q offsite_backup.sh || (crontab -l 2>/
 
 # Shared modules the worker image needs in its build context (see worker/Dockerfile).
 # They live in api/ in the repo; copy into the worker context on the VM.
+# ⚠️ KEEP THIS LIST IN SYNC with barenoc-self-update.sh + bootstrap_appliance.sh —
+# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
 SHARED_MODULES=(action_validator.py audit.py audit_catalog.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py llm_providers.py emailer.py)
 
 # Sync each service directory (no --delete: VM may have runtime-only files).

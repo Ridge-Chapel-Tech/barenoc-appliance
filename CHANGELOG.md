@@ -15,6 +15,17 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.30.c] — 2026-08-30
+
+### Fixed
+- **Self-update broken for releases with a new shared module (.30.b bug):** the
+  worker shared-module list existed in THREE places (deploy.sh SHARED_MODULES,
+  barenoc-self-update.sh, bootstrap_appliance.sh) and only deploy.sh got
+  audit_catalog.py in .30.a — a self-updating box (or fresh ISO install) then
+  hit `COPY audit_catalog.py . not found` in the worker build and ROLLED BACK.
+  All three lists now include audit_catalog.py with cross-referencing
+  keep-in-sync comments (the 2026-08-16 two-homes lesson, again).
+
 ## [2026.08.30.b] — 2026-08-30
 
 ### Added

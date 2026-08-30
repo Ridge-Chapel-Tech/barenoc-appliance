@@ -229,7 +229,9 @@ chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
 chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
 
 # shared modules the worker image needs in its build context (mirror deploy.sh)
-for m in action_validator.py audit.py crypto.py database.py models.py \
+# ⚠️ KEEP THIS LIST IN SYNC with deploy.sh SHARED_MODULES + bootstrap_appliance.sh —
+# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
+for m in action_validator.py audit.py audit_catalog.py crypto.py database.py models.py \
          sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
          llm_providers.py emailer.py; do
   [ -f "$BASE/api/$m" ] && cp "$BASE/api/$m" "$BASE/worker/$m"

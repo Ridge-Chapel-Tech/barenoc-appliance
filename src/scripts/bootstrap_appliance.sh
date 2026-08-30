@@ -81,7 +81,9 @@ chown -R pi-agent:pi-agent "$B/jobs" "$B/volumes/logs/agent" "$B/pi-work" "$B/ag
 # ships them side-by-side, so first-boot must do the same or the worker build
 # fails with '"/emailer.py": not found').
 echo "==> bootstrap: worker shared modules"
-for m in action_validator.py audit.py crypto.py database.py models.py \
+# ⚠️ KEEP THIS LIST IN SYNC with deploy.sh SHARED_MODULES + barenoc-self-update.sh —
+# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
+for m in action_validator.py audit.py audit_catalog.py crypto.py database.py models.py \
          sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
          llm_providers.py emailer.py; do
   [ -f "$B/api/$m" ] && cp -f "$B/api/$m" "$B/worker/$m"
