@@ -7,7 +7,7 @@ from sqlalchemy import or_, and_
 from typing import Optional
 from datetime import datetime
 from database import get_db
-from models import Device, User, is_customer
+from models import Device, User, DeviceJob, is_customer
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
@@ -17,6 +17,7 @@ from action_validator import (
     CHANNELS,
 )
 import network_scope
+import discovery
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
@@ -121,10 +122,12 @@ def device_control_key(db: Session = Depends(get_db),
 @router.post("/snmp-sweep-results")
 def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
                        user: User = Depends(require_role("agent"))):
-    """Ingest the SNMP discovery sweep (agent callback). Creates/updates
-    unclaimed device records with the identity SNMP gear announces."""
+    """Ingest the SNMP discovery sweep (agent callback). Match-before-insert +
+    self-exclusion via discovery.upsert_discovered — a repeated sweep UPDATEs
+    the same record (by MAC then IP) instead of INSERTing duplicates, and the
+    appliance's own identity is never recorded."""
     found = (body or {}).get("found") or []
-    added = updated = 0
+    added = updated = skipped_self = skipped_claimed = 0
     for hit in found:
         ip = (hit or {}).get("ip") or ""
         if not ip:
@@ -134,23 +137,57 @@ def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
         name = (hit.get("sysname") or "").strip() or None
         vendor = (hit.get("vendor") or "").strip() or None
         desc = (hit.get("sysdescr") or "").strip()
-        d = db.query(Device).filter(Device.ip_address == ip).first()
-        if d:
-            d.vendor = d.vendor or vendor
-            if name and (not d.name or d.name.startswith("discovered-") or d.name == "unknown"):
-                d.name = name
-            if d.device_type == "unknown" and desc:
-                d.device_type = _guess_snmp_type(desc)
-            updated += 1
-        else:
-            d = Device(name=name or f"discovered-{ip.replace('.', '-')}",
-                       ip_address=ip, device_type=_guess_snmp_type(desc),
-                       vendor=vendor, status="unknown", claimed=False,
-                       tags=["snmp-discovered"])
-            db.add(d)
+        outcome, _d = discovery.upsert_discovered(
+            db, ip=ip, name=name, vendor=vendor,
+            device_type=_guess_snmp_type(desc) if desc else None,
+            status="unknown", claimed=False, tags=["snmp-discovered"],
+            source="snmp-sweep")
+        if outcome == "added":
             added += 1
+        elif outcome == "updated":
+            updated += 1
+        elif outcome == "skipped_self":
+            skipped_self += 1
+        else:
+            skipped_claimed += 1
     db.commit()
-    return {"status": "ok", "added": added, "updated": updated, "count": len(found)}
+    return {"status": "ok", "added": added, "updated": updated,
+            "skipped_self": skipped_self, "skipped_claimed": skipped_claimed,
+            "count": len(found)}
+
+
+@router.post("/discover-results")
+def discover_results(body: dict, db: Session = Depends(get_db),
+                     user: User = Depends(require_role("agent"))):
+    """Ingest ping/discover-sweep finds (runner callback). Match-before-insert +
+    self-exclusion via discovery.upsert_discovered — repeated scans of the same
+    host yield ONE record (by MAC then IP), and the appliance is never added."""
+    found = (body or {}).get("found") or []
+    added = updated = skipped_self = skipped_claimed = 0
+    for hit in found:
+        ip = (hit or {}).get("ip") or ""
+        mac = (hit or {}).get("mac") or None
+        if not ip and not mac:
+            continue
+        if ip and network_scope.is_tunnel_or_cgnat(ip):
+            continue  # never inventory CGNAT/Tailscale overlay addresses
+        name = (hit or {}).get("name") or (f"discovered-{ip.replace('.', '-')}" if ip else None)
+        outcome, _d = discovery.upsert_discovered(
+            db, mac=mac, ip=ip or None, name=name, hostname=(hit or {}).get("hostname"),
+            device_type="unknown", status="online", claimed=False,
+            tags=["discovered"], source="ping-sweep")
+        if outcome == "added":
+            added += 1
+        elif outcome == "updated":
+            updated += 1
+        elif outcome == "skipped_self":
+            skipped_self += 1
+        else:
+            skipped_claimed += 1
+    db.commit()
+    return {"status": "ok", "added": added, "updated": updated,
+            "skipped_self": skipped_self, "skipped_claimed": skipped_claimed,
+            "count": len(found)}
 
 
 def _guess_snmp_type(desc: str) -> str:
@@ -299,6 +336,14 @@ def create_device(
     if network_scope.is_tunnel_or_cgnat(device_data.ip_address):
         raise HTTPException(status_code=400,
                             detail="100.64.0.0/10 is CGNAT/Tailscale space — it can never be a device record.")
+    # SELF-EXCLUSION: the appliance itself is never a device record (manual
+    # add OR discovery ping-sweep backstop).
+    if discovery.is_self_identity(ip=device_data.ip_address,
+                                  mac=device_data.mac_address,
+                                  name=device_data.name,
+                                  hostname=device_data.hostname):
+        raise HTTPException(status_code=400,
+                            detail="the appliance itself is never a device record (self-exclusion)")
     # Check for duplicate IP
     existing = db.query(Device).filter(Device.ip_address == device_data.ip_address).first()
     if existing:
@@ -432,6 +477,82 @@ def verify_device(device_id: int, db: Session = Depends(get_db), ctx: dict = Dep
     return {"device_id": device_id, "status": "pending", "message": "Verification job queued"}
 
 
+# ── NOC_Agent update actions (Part B) ──────────────────────────────────────
+# "Check for updates" + "Apply updates" on the Devices page for agent-managed
+# devices. Enqueues a device_jobs row; the NOC_Agent pulls + executes it on its
+# next poll (routes/device_agent transport), and the result reports back to
+# jobs/result. apply_updates is confirm-gated (body.confirm must be true).
+_AGENT_UPDATE_ACTIONS = {"check_updates", "apply_updates"}
+
+
+def _is_agent_managed(device: Device) -> bool:
+    """The NOC_Agent channel is present (the update capability lives there)."""
+    return bool(device.adoption_method == "agent" or device.agent_version)
+
+
+def _agent_job_brief(job: DeviceJob) -> dict:
+    return {
+        "id": str(job.id),
+        "action": job.action,
+        "params": job.params,
+        "status": job.status,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "result": job.result_json,
+    }
+
+
+@router.get("/{device_id}/agent-jobs")
+def list_agent_jobs(device_id: int, db: Session = Depends(get_db),
+                    ctx: dict = Depends(get_access_context)):
+    """Recent NOC_Agent jobs + results for a device (Devices-page result
+    reporting: the check list, the apply outcome, reboot-required hint)."""
+    device = _get_checked(db, device_id, ctx)
+    jobs = (db.query(DeviceJob)
+            .filter(DeviceJob.device_id == device.id)
+            .order_by(DeviceJob.id.desc())
+            .limit(5).all())
+    return {"device_id": device.id, "agent_managed": _is_agent_managed(device),
+            "jobs": [_agent_job_brief(j) for j in jobs]}
+
+
+@router.post("/{device_id}/agent-job")
+def enqueue_agent_update_job(device_id: int, body: dict,
+                             db: Session = Depends(get_db),
+                             ctx: dict = Depends(get_access_context)):
+    """Enqueue check_updates or apply_updates for an AGENT-managed device.
+
+    apply_updates writes to the endpoint OS: the Devices page prompts the
+    operator first and sends confirm=true (the SAME gate as reboot).
+    """
+    device = _get_checked(db, device_id, ctx)
+    action = str((body or {}).get("action") or "").strip()
+    if action not in _AGENT_UPDATE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action must be one of {sorted(_AGENT_UPDATE_ACTIONS)}")
+    if not _is_agent_managed(device):
+        raise HTTPException(
+            status_code=400,
+            detail="updates require an agent-managed device (NOC_Agent channel)")
+    params = {}
+    if action == "apply_updates":
+        if not (body or {}).get("confirm"):
+            raise HTTPException(status_code=400,
+                                detail="apply_updates requires confirm=true")
+        params["confirm"] = True
+
+    from routes.device_agent import enqueue_job
+    job = enqueue_job(db, device.id, action, params, ttl_seconds=1800)
+    log_event(db, "job_created", _actor_name(ctx["user"]), {
+        "device_id": device.id,
+        "device": device.name,
+        "action": action,
+        "job_id": str(job.id),
+        "via": "devices-page",
+    })
+    return {"device_id": device.id, "job": _agent_job_brief(job)}
+
+
 @router.post("/discover")
 def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Queue ping sweep jobs for the Pi Agent."""
@@ -448,6 +569,8 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
             existing_ips = set(row[0] for row in s.query(Device.ip_address).all())
         finally:
             s.close()
+        # Self-exclusion: never even ping the appliance's own IPs.
+        excl = discovery.self_exclusion(env)
         # Multi-VLAN discovery: DISCOVERY_SUBNETS is a comma list of CIDRs
         # (e.g. 10.0.4.0/24,10.0.8.0/24). Legacy DISCOVERY_SUBNET
         # (a bare 3-octet prefix) still works. Default: derive the LAN from
@@ -483,6 +606,8 @@ def discover_devices(db: Session = Depends(get_db), user: User = Depends(get_cur
                 ip = str(ip)
                 if network_scope.is_tunnel_or_cgnat(ip):
                     continue  # CGNAT/Tailscale overlay — never a scan target
+                if discovery.is_self_ip(ip, excl):
+                    continue  # appliance's own IP — never a scan target
                 if ip in existing_ips or count >= max_per_subnet:
                     continue
                 job = {
@@ -764,6 +889,147 @@ def revoke_adoption(device_id: int, db: Session = Depends(get_db),
     log_event(db, "device_adopt_revoke", ctx["user"].username, {
         "device_id": device.id, "device": device.name, "cn": device.cert_cn})
     return _adoption_brief(device)
+
+
+def _repoint_device_refs(db: Session, from_id: int, to_id: int) -> None:
+    """Re-point every FK that referenced the duplicate onto the survivor, so
+    the FK-enforced DELETE below can proceed (PRAGMA foreign_keys=ON)."""
+    from models import (Ticket, DeviceJob, ServiceMonitor, DeviceFirmware,
+                        FirmwareUpgrade, PendingAction, Metric, Finding,
+                        LinkEpisode, StarlinkEpisode)
+    db.query(Ticket).filter(Ticket.target_device_id == from_id).update(
+        {Ticket.target_device_id: to_id}, synchronize_session=False)
+    db.query(DeviceJob).filter(DeviceJob.device_id == from_id).update(
+        {DeviceJob.device_id: to_id}, synchronize_session=False)
+    db.query(ServiceMonitor).filter(ServiceMonitor.target_device_id == from_id).update(
+        {ServiceMonitor.target_device_id: to_id}, synchronize_session=False)
+    db.query(DeviceFirmware).filter(DeviceFirmware.device_id == from_id).update(
+        {DeviceFirmware.device_id: to_id}, synchronize_session=False)
+    db.query(FirmwareUpgrade).filter(FirmwareUpgrade.device_id == from_id).update(
+        {FirmwareUpgrade.device_id: to_id}, synchronize_session=False)
+    db.query(PendingAction).filter(PendingAction.device_id == from_id).update(
+        {PendingAction.device_id: to_id}, synchronize_session=False)
+    db.query(Metric).filter(Metric.device_id == from_id).update(
+        {Metric.device_id: to_id}, synchronize_session=False)
+    db.query(Finding).filter(Finding.device_id == from_id).update(
+        {Finding.device_id: to_id}, synchronize_session=False)
+    # Unique-constrained episode rows: drop the duplicate-side row when the
+    # survivor already owns that key (one physical box → one episode row).
+    for ep in db.query(LinkEpisode).filter(LinkEpisode.device_id == from_id).all():
+        clash = db.query(LinkEpisode).filter(
+            LinkEpisode.device_id == to_id,
+            LinkEpisode.interface == ep.interface).first()
+        if clash is not None:
+            db.delete(ep)
+        else:
+            ep.device_id = to_id
+    for ep in db.query(StarlinkEpisode).filter(StarlinkEpisode.device_id == from_id).all():
+        clash = db.query(StarlinkEpisode).filter(
+            StarlinkEpisode.device_id == to_id).first()
+        if clash is not None:
+            db.delete(ep)
+        else:
+            ep.device_id = to_id
+
+
+def merge_duplicates(db: Session, keep_id: int, duplicate_id: int,
+                     actor: str, reason: str = "device-dedupe merge") -> dict:
+    """Merge two records for the same physical box (device-dedupe).
+
+    `keep_id` is the DISCOVERY record (survives — its name/MAC/device_type are
+    preserved); `duplicate_id` is the duplicate whose adoption identity is
+    transferred onto the survivor and then deleted. Audited as
+    `device_merged` (from_id, into_id). This is the admin cleanup shape for
+    pre-existing dupes (e.g. Plex id 12 + id 46); the report path now prevents
+    them (adopt-in-place).
+    """
+    keep = db.query(Device).filter(Device.id == keep_id).first()
+    dup = db.query(Device).filter(Device.id == duplicate_id).first()
+    if keep is None:
+        raise HTTPException(status_code=404, detail=f"Device {keep_id} not found")
+    if dup is None:
+        raise HTTPException(status_code=404, detail=f"Device {duplicate_id} not found")
+    if keep.id == dup.id:
+        raise HTTPException(status_code=400, detail="Cannot merge a device with itself")
+    if keep.adoption_status == "revoked":
+        raise HTTPException(status_code=400, detail="Refusing to merge into a revoked record")
+    # Never overwrite a record already linked to a DIFFERENT cert identity.
+    if (keep.adoption_status == "linked" and keep.cert_cn and dup.cert_cn
+            and keep.cert_cn != dup.cert_cn):
+        raise HTTPException(
+            status_code=409,
+            detail="Target device is already linked to a different certificate identity")
+
+    # Adopt the survivor with the duplicate's identity (the reverse of the
+    # report-path fix: here we fold a pre-existing duplicate back together).
+    for field in ("cert_cn", "cert_serial", "cert_enrolled_at", "cert_last_seen",
+                  "adoption_status", "adoption_method", "agent_version",
+                  "agent_capabilities", "facts_json"):
+        value = getattr(dup, field)
+        if value not in (None, ""):
+            setattr(keep, field, value)
+    keep.claimed = bool(keep.claimed or dup.claimed)
+    if dup.status and dup.status not in ("unknown", "unclaimed"):
+        keep.status = dup.status
+    if not keep.hostname and dup.hostname:
+        keep.hostname = dup.hostname
+    if (not keep.ip_address or keep.ip_address == "0.0.0.0") and dup.ip_address:
+        keep.ip_address = dup.ip_address
+    if not keep.owner_id and dup.owner_id:
+        keep.owner_id = dup.owner_id
+    # Preserve any control channel only the duplicate had (the discovery record
+    # stays canonical for MAC/device_type/name).
+    for field in ("ssh_user", "ssh_key_fingerprint", "snmp_community",
+                  "channels", "vendor", "model"):
+        if getattr(keep, field) in (None, "", []) \
+                and getattr(dup, field) not in (None, "", []):
+            setattr(keep, field, getattr(dup, field))
+    keep.updated_at = datetime.utcnow()
+
+    _repoint_device_refs(db, dup.id, keep.id)
+    db.delete(dup)
+    log_event(db, "device_merged", actor, {
+        "from_id": duplicate_id, "into_id": keep_id, "reason": reason})
+    return {
+        "ok": True,
+        "merged": {"from_id": duplicate_id, "into_id": keep_id},
+        "device": {"id": keep.id, "name": keep.name, "cert_cn": keep.cert_cn,
+                   "adoption_status": keep.adoption_status,
+                   "adoption_method": keep.adoption_method,
+                   "claimed": keep.claimed},
+    }
+
+
+@router.post("/merge-duplicates")
+def merge_duplicates_route(body: dict = None, db: Session = Depends(get_db),
+                           ctx: dict = Depends(get_access_context)):
+    """Admin cleanup for pre-existing same-box duplicates (device-dedupe).
+
+    Body: {"keep_id": <discovery record>, "duplicate_id": <dupe to fold in>}
+    (aliases into_id/from_id accepted). Adopts the discovery record with the
+    duplicate's identity and deletes the duplicate; audited `device_merged`.
+    """
+    from auth import require_any_role
+    require_any_role("admin")(ctx["user"])
+    body = body or {}
+
+    def _int(*keys):
+        for k in keys:
+            v = body.get(k)
+            if v is not None:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"Invalid {k}")
+        return None
+
+    keep_id = _int("keep_id", "into_id")
+    duplicate_id = _int("duplicate_id", "from_id")
+    if keep_id is None or duplicate_id is None:
+        raise HTTPException(status_code=400,
+                            detail="keep_id and duplicate_id are required")
+    return merge_duplicates(db, keep_id, duplicate_id, _actor_name(ctx["user"]),
+                            reason=body.get("reason") or "device-dedupe merge")
 
 
 @router.get("/{device_id}/credentials")

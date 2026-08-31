@@ -15,6 +15,76 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.08.30.e] — 2026-08-30
+
+### Added
+- **Interpreted chat-ticket titles:** chat-spawned tickets (Juniper intake) now
+  get a short, fitting title instead of the raw message text. Preferred path is
+  a cheap one-shot LLM summary (≤8 words, short timeout, provider-chain
+  failover) via the existing registry/`llm_client`; on any LLM failure/timeout it
+  falls back to a first-sentence heuristic (trimmed to ~80 chars, title-cased,
+  URL/IP dots preserved) and never blocks ticket creation. Manual/auto/escalation
+  tickets are untouched.
+- **“Act on this” / Engage action:** `customer_action`, `open`, and `in_progress`
+  tickets now show an **⚡ Act on this** button that prompts “What should I do?”
+  and posts the instruction as a customer reply (`POST /api/v1/tickets/{id}/engage`),
+  re-queuing the ticket through the worker’s existing re-dispatch flow (the
+  one-active-pi-session guard still holds — no parallel dispatch). Escalated
+  tickets keep their Approve/Retry/Reject actions.
+- **Device-revoke integrity sweep** (`src/api/revoke_integrity.py` +
+  `src/api/routes/revoke_integrity.py` + the scheduler's poll hook): detects
+  devices whose `adoption_status` is `revoked` but that have **no matching
+  `device_adopt_revoke` audit event** (matched by `device_id` in the event
+  data) — i.e. the "silent revoke" gap from the 08-30 laptop case where a
+  direct, un-audited DB update flipped the state. Each flagged device gets a
+  `device_revoke_integrity` audit event and **one** alert email via the live
+  vendor transport (idempotent: the audit event itself is the once-per-device
+  guard). The scheduler POSTs `/api/v1/revoke-integrity/sweep` every 5 minutes
+  (same trigger pattern as service checks); the engine runs in the API
+  container so it shares the emailer + audit hash chain.
+## [Unreleased]
+- **Chat tickets bind to their target device (agent updates, Part A):** a chat
+  message that references a device (name / hostname / IP, case-insensitive)
+  now sets the spawned ticket's `target_device_id` and puts the device into the
+  agent's context, so "update my plex server" acts on the right box. Agent-
+  managed devices are preferred on a tie; an ambiguous reference leaves the
+  ticket unbound (never guess wrong) and notes it. A new worker-only helper
+  `resolve_device_from_text` (`src/worker/device_resolver.py`) + tests; the
+  chat intake also treats "update/upgrade …" as a request (intake marker).
+- **Apply updates on agent devices (Devices page, Part B):** the Devices page
+  now shows **Check for updates** and (confirm-gated) **Apply updates** for
+  agent-managed devices. Both enqueue a `device_jobs` row via the NOC_Agent
+  transport (`POST /api/v1/devices/{id}/agent-job`); the result reports back
+  (updates applied / available + reboot-required) through
+  `GET /api/v1/devices/{id}/agent-jobs`. `apply_updates` is confirm-gated on
+  the appliance (`body.confirm=true`) AND in the agent catalog — never
+  autonomous-unprompted. The appliance action allowlist (`action_validator.py`)
+  now carries `check_updates`/`apply_updates` as agent-channel-only actions,
+  kept in sync with `routes/device_agent.AGENT_ACTIONS` and the agent-go
+  catalog (the three allowlist homes).
+### Fixed
+- **Device dedupe at adoption (Plex showed in BOTH Managed + Unclaimed):** the
+  cert/agent report link path matched a device by `cert_cn` then by name only;
+  when the discovery record's name differed (e.g. "PLEX Server" vs the
+  agent-derived CN "device-plex"), it self-registered a duplicate instead of
+  adopting the existing unclaimed record. The report path now falls back to an
+  **IP/MAC match against unclaimed, not-yet-linked/revoked discovery records**
+  and adopts that record in place (sets `cert_cn`/`adoption_status`/`claimed`/
+  `adoption_method`, refreshes hostname/IP, preserves discovery MAC/device_type/
+  name) before self-registration. A claimed/linked record with a different cert
+  identity is never adopted/overwritten, and a revoked record is never adopted.
+- **Discovery-side device duplicates + appliance self-exclusion:** the discovery
+  writers (UniFi sync, the ping/discover sweep, and the SNMP sweep) now
+  **match-before-insert** — every discovered identity is looked up by
+  ``mac_address`` (case/separator-insensitive) first, then ``ip_address``, and
+  UPDATEs the existing record (refreshing last_seen/name/status) instead of
+  INSERTing a duplicate. A ``claimed=1`` record's identity is never stolen: a
+  conflicting discovery is logged and skipped. The appliance's own IPs/MACs
+  (``APPLIANCE_IP`` + host interfaces + loopback, overridable via
+  ``SELF_EXCLUDE_IPS`` / ``SELF_EXCLUDE_MACS``) are **self-excluded** so the
+  box never appears in its own inventory. The ping sweep now records through a
+  dedicated ``/devices/discover-results`` upsert path (runner-side callback
+  change).
 ## [2026.08.30.d] — 2026-08-30
 
 ### Added
@@ -45,6 +115,7 @@ Categories per release:
   bare `0` for empty periods and instead show "No LLM activity in the last N
   days" (the daily chart, by-model breakdown, and recent-calls table use the
   same honest empty state).
+
 
 ## [2026.08.30.c] — 2026-08-30
 

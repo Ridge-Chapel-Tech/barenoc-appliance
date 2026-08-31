@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Device, DeviceJob
-from routes.device_certs import _client_cn
+from routes.device_certs import _client_cn, _report_ips, resolve_device
 
 router = APIRouter(prefix="/api/v1/device", tags=["device"])
 
@@ -30,6 +30,9 @@ router = APIRouter(prefix="/api/v1/device", tags=["device"])
 # the agent re-validates against its own embedded catalog — neither side alone
 # can widen the other. apply_updates is the gated OS apply (customer-requested
 # only, confirm-gated on BOTH sides — it never runs autonomous-unprompted).
+# KEEP IN SYNC with action_validator.AllowedAction (check_updates/apply_updates
+# are agent-channel-only there) and the agent-go embedded catalog — the three
+# allowlist homes (08-30 lesson).
 AGENT_ACTIONS = {"collect_logs", "reboot", "check_updates", "apply_updates",
                 "report_facts"}
 
@@ -37,16 +40,13 @@ _PULL_DEFAULT = 10
 _PULL_MAX = 50
 
 
-def _device_for_cn(db: Session, cn: str) -> "Device | None":
+def _device_for_cn(db: Session, cn: str, request: Request = None) -> "Device | None":
     """Resolve the device record for a cert CN (link order mirrors
-    device_certs.device_report). Returns None when the device is unknown."""
-    device = db.query(Device).filter(Device.cert_cn == cn).first()
-    if device:
-        return device
-    name = cn[len("device-"):]
-    return (db.query(Device)
-            .filter(Device.name == name)
-            .order_by(Device.id.desc()).first())
+    device_certs.resolve_device: cert_cn → name → unclaimed IP/MAC fallback).
+    Returns None when the device is unknown."""
+    ips = _report_ips(request, {}) if request is not None else []
+    device, _adopted_in_place = resolve_device(db, cn, ips=ips, macs=[])
+    return device
 
 
 def _iso(dt: "datetime.datetime | None") -> "str | None":
@@ -108,7 +108,7 @@ async def jobs_pull(body: PullRequest, request: Request,
     (status pending→running inside one transaction, so a re-pull or a second
     poller never sees the same job)."""
     cn = _client_cn(request)
-    device = _device_for_cn(db, cn)
+    device = _device_for_cn(db, cn, request)
     if device is None:
         # A valid cert for an as-yet-unlinked CN has no jobs to claim.
         return {"ok": True, "jobs": [], "claimed": 0}
@@ -157,7 +157,7 @@ async def jobs_result(body: ResultRequest, request: Request,
     from audit import log_event
 
     cn = _client_cn(request)
-    device = _device_for_cn(db, cn)
+    device = _device_for_cn(db, cn, request)
     now = datetime.datetime.utcnow()
 
     job = None

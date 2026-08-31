@@ -774,6 +774,7 @@ async function fetchDevices(offset) {
       var uptime = pd.uptime_days ? pd.uptime_days + 'd' : '';
       var chBadges = channelBadges(d.channels);
       var controlReady = hasControlChannel(d.channels);
+      var isAgent = (d.channels || []).indexOf('agent') >= 0;
       var monitored = !!d.notify_state_changes;
       grid.innerHTML +=
         '<div id="card-' + d.id + '" class="bg-white shadow rounded-lg p-5 border-t-4 ' + cls.border + '">'
@@ -805,6 +806,10 @@ async function fetchDevices(offset) {
         + '</div>'
         + '<div class="mt-3 flex gap-2 text-xs flex-wrap">'
         + '<button onclick="toggleDetail(' + d.id + ')" class="text-barenoc-600 hover:text-barenoc-800">Details</button>'
+        + (isAgent
+            ? '<button onclick="checkAgentUpdates(' + d.id + ')" class="text-barenoc-600 hover:text-barenoc-800" title="Check for updates on this device (NOC_Agent)">Check for updates</button>'
+              + '<button onclick="applyAgentUpdates(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\')" class="text-green-600 hover:text-green-800" title="Apply available updates on this device (NOC_Agent) — asks for confirmation first">Apply updates</button>'
+            : '')
         + (controlReady ? '' : '<button onclick="openCreds(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\',\'' + d.ip_address + '\',\'' + ((d.fingerprint||{}).os||'') + '\')" class="text-gray-500 hover:text-barenoc-700" title="Connect a control channel — set SSH/SNMP credentials (agent/UniFi/vendor API connect through their own paths)">Connect channel</button>')
         + '<button onclick="verifyDevice(' + d.id + ')" class="text-green-600 hover:text-green-800" title="Ping / status check (channel-less — works for monitor-only devices)">Ping</button>'
         + '<button onclick="deleteDevice(' + d.id + ',\'' + d.name.replace(/'/g, '') + '\')" class="text-red-600 hover:text-red-800">Delete</button>'
@@ -872,6 +877,99 @@ async function deleteDevice(id, name) {
     fetchDevices(currentOffset);
     loadUnclaimed();
   } catch (err) { alert('Delete failed: ' + err.message); }
+}
+
+// ── NOC_Agent update actions (Part B) ────────────────────────────────────
+function parseAgentOutput(output) {
+  if (typeof output === 'object' && output !== null) return output;
+  if (typeof output === 'string') {
+    try { return JSON.parse(output); } catch (e) { return { raw: output }; }
+  }
+  return {};
+}
+
+function agentUpdateResultHtml(result) {
+  if (!result) return '';
+  var o = parseAgentOutput(result.output);
+  var html = '<div class="mt-1 rounded bg-gray-50 border border-gray-200 px-2 py-1 text-xs text-gray-700">';
+  if (o.success === false) {
+    html += '<span class="text-red-600">⚠️ ' + esc(o.error || 'update failed') + '</span>';
+  } else if (o.total_applied !== undefined) {
+    html += o.total_applied > 0
+      ? '✅ ' + o.total_applied + ' update(s) applied'
+      : '✅ Already up to date — nothing to apply';
+    if (o.reboot_needed) html += ' 🔁 reboot needed';
+  } else if (o.total !== undefined) {
+    html += o.total > 0
+      ? '🔎 ' + o.total + ' update(s) available'
+      : '✅ Up to date';
+  } else if (o.raw) {
+    html += esc(String(o.raw).slice(0, 300));
+  } else {
+    html += result.ok ? '✅ Done' : '⚠️ exit ' + (result.exit_code || '?');
+  }
+  html += '</div>';
+  return html;
+}
+
+async function pollAgentJobs(id, attempts) {
+  attempts = attempts || 0;
+  var resp = await fetch('/api/v1/devices/' + id + '/agent-jobs', { headers: { 'Authorization': 'Bearer ' + getToken() } });
+  var d = await resp.json();
+  if (!resp.ok) throw new Error(d.detail || 'failed to load agent jobs');
+  var latest = (d.jobs || [])[0] || null;
+  if (latest && latest.status !== 'done') {
+    if (attempts >= 20) return { latest: latest, timeout: true };
+    await new Promise(function(r) { setTimeout(r, 3000); });
+    return pollAgentJobs(id, attempts + 1);
+  }
+  return { latest: latest, timeout: false };
+}
+
+async function showAgentJobProgress(id, label) {
+  var card = document.getElementById('card-' + id);
+  var old = document.getElementById('agent-updates-' + id);
+  if (old) old.remove();
+  var box = document.createElement('div');
+  box.id = 'agent-updates-' + id;
+  box.className = 'col-span-full bg-gray-50 border rounded-lg p-4 text-sm';
+  box.innerHTML = '<div class="text-barenoc-700">' + label + ' <span class="text-gray-400 text-xs">(the agent checks in every ~30 s)</span></div>';
+  card.insertAdjacentHTML('afterend', box);
+  try {
+    var r = await pollAgentJobs(id);
+    var latest = r.latest;
+    if (!latest) { box.innerHTML = '<div class="text-gray-500">No agent job result yet.</div>'; return; }
+    box.innerHTML = '<div class="text-barenoc-700">' + (latest.action === 'apply_updates' ? '🔁 Apply updates' : '🔎 Update check')
+      + ' — ' + (latest.status === 'done' ? 'done' : 'pending') + '</div>'
+      + agentUpdateResultHtml(latest.result);
+  } catch (e) {
+    box.innerHTML = '<div class="text-red-600">⚠️ ' + esc(e.message) + '</div>';
+  }
+}
+
+async function checkAgentUpdates(id) {
+  try {
+    var resp = await fetch('/api/v1/devices/' + id + '/agent-job', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'check_updates' })
+    });
+    var data = await resp.json();
+    if (!resp.ok) { alert(data.detail || 'Could not queue the update check'); return; }
+    await showAgentJobProgress(id, '🔎 Checking for updates…');
+  } catch (e) { alert('Check failed: ' + e.message); }
+}
+
+async function applyAgentUpdates(id, name) {
+  if (!confirm('Apply updates on ' + (name || 'this device') + '? This updates the OS packages (and other update sources) on the device.')) return;
+  try {
+    var resp = await fetch('/api/v1/devices/' + id + '/agent-job', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'apply_updates', confirm: true })
+    });
+    var data = await resp.json();
+    if (!resp.ok) { alert(data.detail || 'Could not queue the update apply'); return; }
+    await showAgentJobProgress(id, '🔁 Applying updates…');
+  } catch (e) { alert('Apply failed: ' + e.message); }
 }
 
 async function discoverNetwork() {

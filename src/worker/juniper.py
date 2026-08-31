@@ -34,6 +34,7 @@ from schemas import generate_ticket_id
 from worknotes import add_note
 from audit import log_event
 from queue_status import derive_status, is_paused, list_notes, last_meaningful_note
+from device_resolver import resolve_device_from_text, referenced_devices
 
 logger = logging.getLogger("barenoc-worker.juniper")
 
@@ -73,6 +74,11 @@ _INTAKE_MARKERS = (
     "install", "set up", "setup", "configure", "config", "fix", "broken",
     "not working", "won't work", "wont work", "doesn't work", "down",
     "offline", "unreachable", "open a ticket", "create a ticket", "report a problem",
+    # Part A: "update/upgrade my plex server" must route to intake (the
+    # device-binding ticket) — update/upgrade are the whole point of this lane.
+    # Status intents win earlier (step 3 runs before intake), so "any updates
+    # on my ticket?" still answers read-only.
+    "update", "upgrade",
 )
 
 
@@ -658,8 +664,55 @@ def help_text() -> str:
 
 # ── intake ──────────────────────────────────────────────────────────────────
 
+def _heuristic_title(text: str, max_chars: int = 80) -> str:
+    """First-sentence fallback title (LLM down / timeout).
+
+    Takes the first sentence, trims to ~`max_chars` on a word boundary, and
+    title-cases the alphabetic words while preserving tokens that already
+    carry casing/meaning (URLs, IPs, acronyms, model names). Always returns a
+    non-empty string so the ticket is never created without a title.
+    """
+    text = " ".join((text or "").strip().split())
+    if not text:
+        return "Support request"
+    # First sentence = up to the first sentence-ending punctuation followed by
+    # whitespace. A lookahead (not a plain character class) so dots INSIDE
+    # URLs/IPs ("http://192.168.4.13/") are not treated as sentence breaks.
+    m = re.match(r"^(.*?)(?:[.!?]+(?=\s)|$)", text)
+    first = (m.group(1) if m else text).strip()
+    if not first:
+        first = text
+    if len(first) > max_chars:
+        cut = first[:max_chars]
+        boundary = max(cut.rfind(" "), cut.rfind("\n"))
+        if boundary > max_chars // 2:
+            cut = cut[:boundary]
+        first = cut.rstrip(" ,;:")
+    words = []
+    for w in first.split():
+        if w.isupper() or not w.isalpha():
+            words.append(w)
+        else:
+            words.append(w[:1].upper() + w[1:])
+    return " ".join(words) or "Support request"
+
+
 def _intake_title(text: str) -> str:
-    return " ".join((text or "").strip().split())[:200]
+    """Interpreted title for a chat-spawned ticket.
+
+    Preferred: a short LLM summary (cheap one-shot call through the provider
+    chain). Fallback: the first-sentence heuristic. Never blocks the ticket —
+    any LLM failure/timeout falls through to the heuristic, which always
+    returns a non-empty title.
+    """
+    title = None
+    try:
+        from llm_client import generate_title
+        title = generate_title(text)
+    except Exception:
+        logger.exception("Title generation failed (non-fatal)")
+        title = None
+    return title or _heuristic_title(text)
 
 
 def _alert_intake(ticket):
@@ -704,8 +757,28 @@ def _handle_intake(db, bot, msg, sender, text: str) -> ChatMessage:
     )
     db.add(ticket)
     db.flush()
+    # Part A: bind the referenced device (name / hostname / IP substring) so
+    # the ticket acts on the right box. Ambiguity -> target_device_id stays
+    # None (today's behavior) — never guess wrong. Agent devices are preferred.
+    try:
+        bound = resolve_device_from_text(db, text)
+    except Exception:
+        logger.exception("Device resolution failed (non-fatal)")
+        bound = None
+    if bound is not None:
+        ticket.target_device_id = bound.id
     add_note(ticket, "intake_priority",
              f"Deterministic priority {priority}: {note}", actor="juniper")
+    if bound is not None:
+        add_note(ticket, "intake_device",
+                 f"Bound to device: {bound.name} ({bound.ip_address})",
+                 actor="juniper")
+    else:
+        refs = referenced_devices(db, text)
+        if len(refs) > 1:
+            add_note(ticket, "intake_device",
+                     "Device reference is ambiguous (multiple devices matched) "
+                     "— not bound to a specific device", actor="juniper")
     db.commit()
     try:
         log_event(db, "ticket_created", "juniper", {

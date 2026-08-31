@@ -27,7 +27,7 @@ from models import Device
 from action_validator import (
     CHANNEL_AGENT, CHANNEL_SSH, CHANNEL_SNMP, CHANNEL_MONITOR, CHANNEL_VENDOR_API,
     effective_channels, validate_channels, suggest_from_fingerprint,
-    validate_job, MANAGED_DEVICES, canonical_device_type,
+    validate_job, validate_params, MANAGED_DEVICES, canonical_device_type,
 )
 
 
@@ -100,6 +100,28 @@ class ChannelValidatorTest(unittest.TestCase):
         # unifi_* / network_* are controller/appliance-side → no requirement
         self.assertTrue(validate_channels("unifi_restart", "switch", [])[0])
         self.assertTrue(validate_channels("network_discovery", "other", [])[0])
+
+    def test_apply_updates_agent_only(self):
+        # The update capability lives on the NOC_Agent channel only — SSH
+        # devices use apply_patch/check via scripts/apply_patch.sh instead.
+        self.assertTrue(validate_channels("apply_updates", "server", [CHANNEL_AGENT])[0])
+        self.assertFalse(validate_channels("apply_updates", "server",
+                                           [CHANNEL_SSH, CHANNEL_MONITOR])[0])
+
+    def test_check_updates_agent_only(self):
+        self.assertTrue(validate_channels("check_updates", "server", [CHANNEL_AGENT])[0])
+        self.assertFalse(validate_channels("check_updates", "server",
+                                           [CHANNEL_MONITOR])[0])
+
+
+class ApplyUpdatesParamsTest(unittest.TestCase):
+    def test_apply_updates_requires_confirm(self):
+        self.assertFalse(validate_params("apply_updates", {})[0])
+        self.assertFalse(validate_params("apply_updates", {"confirm": False})[0])
+        self.assertTrue(validate_params("apply_updates", {"confirm": True})[0])
+
+    def test_check_updates_needs_no_params(self):
+        self.assertTrue(validate_params("check_updates", {})[0])
 
 
 class FingerprintSuggestionTest(unittest.TestCase):

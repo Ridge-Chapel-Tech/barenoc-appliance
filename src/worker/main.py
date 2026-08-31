@@ -240,7 +240,7 @@ def process_ticket(db, ticket):
     if ticket.target_device_id:
         device = db.query(Device).filter(Device.id == ticket.target_device_id).first()
         if device:
-            device_context = f"Device: {device.name} ({device.ip_address}), type: {device.device_type}, status: {device.status}"
+            device_context = _bound_device_context(device)
 
     ticket_text = f"{ticket.title}\n{ticket.description or ''}"
 
@@ -1051,6 +1051,20 @@ def _prior_agent_context(ticket, limit: int = 3) -> str:
             + "\n".join(parts))
 
 
+def _bound_device_context(device) -> str:
+    """One-line context naming the ticket's bound target device (Part A).
+    Used in both the LLM/judge device_context and the pi sysctx so the agent
+    acts on the right box. Agent-managed devices are flagged (the update
+    capability lives on the agent channel)."""
+    agent = " (agent-managed)" if (
+        getattr(device, "adoption_method", None) == "agent"
+        or getattr(device, "agent_version", None)
+    ) else ""
+    hostname = f" ({device.hostname})" if getattr(device, "hostname", None) else ""
+    return (f"Device: {device.name}{hostname} ({device.ip_address}), "
+            f"type: {device.device_type}, status: {device.status}{agent}")
+
+
 def _pi_task_context(db, ticket, ticket_text) -> str:
     """Context for the Pi Coding Agent: operations guide + ticket thread + the
     managed-device inventory. The guide is first so truncation never drops it."""
@@ -1070,6 +1084,13 @@ def _pi_task_context(db, ticket, ticket_text) -> str:
         "device's OS; if no catalog action fits, say so honestly and offer alternatives — "
         "never report a fabricated blocker."
     )
+    if ticket.target_device_id:
+        device = db.query(Device).filter(Device.id == ticket.target_device_id).first()
+        if device:
+            parts.append(
+                "Target device for this ticket: " + _bound_device_context(device)
+                + ". Act on THIS device."
+            )
     user_ctx = _recent_user_context(ticket)
     if user_ctx:
         parts.append(user_ctx)

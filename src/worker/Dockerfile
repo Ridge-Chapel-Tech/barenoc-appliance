@@ -13,6 +13,7 @@ COPY judge.py .
 COPY executor.py .
 COPY policy.py .
 COPY restrictions.py .
+COPY device_resolver.py .
 COPY test_judge.py .
 COPY test_juniper.py .
 COPY test_integration.py .

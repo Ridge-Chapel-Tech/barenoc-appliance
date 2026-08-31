@@ -268,7 +268,7 @@ async function fetchTickets(offset) {
         + (t.llm_model ? '<p class="mt-1"><strong>LLM:</strong> ' + esc(t.llm_model) + ' (conf: ' + (t.llm_confidence || '-') + ', cost: ' + (t.llm_cost_usd == null ? 'unknown' : '$' + Number(t.llm_cost_usd).toFixed(6) + (t.llm_cost_estimate ? ' est.' : '')) + ')</p>' : '')
         + (t.status === 'closed' ? '<p class="mt-1"><strong>Closed by:</strong> ' + esc(t.assigned_to || 'system') + '</p>' : '')
         + (t.resolved_at ? '<p class="mt-1"><strong>Closed at:</strong> ' + esc(t.resolved_at) + '</p>' : '')
-        + (function(){ var b = ''; if (t.status === 'escalated') { b += '<button onclick="approveTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Approve</button><button onclick="retryTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Retry</button><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700">Reject/Close</button>'; } else if (t.status === 'customer_action') { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Confirm & Close</button>'; } else if (showClose) { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Close</button>'; } if (t.status !== 'closed' && t.status !== 'resolved') { b += '<button onclick="addComment(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Add Comment</button>'; } return b ? '<div class="mt-2 flex gap-2">' + b + '</div>' : ''; })()
+        + (function(){ var b = ''; var engageable = (t.status === 'open' || t.status === 'in_progress' || t.status === 'customer_action'); if (t.status === 'escalated') { b += '<button onclick="approveTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">Approve</button><button onclick="retryTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Retry</button><button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700">Reject/Close</button>'; } else if (t.status === 'customer_action') { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Confirm & Close</button>'; } else if (showClose) { b += '<button onclick="promptCloseTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700">Close</button>'; } if (engageable) { b += '<button onclick="actOnTicket(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-barenoc-600 text-white text-xs rounded hover:bg-barenoc-700">⚡ Act on this</button>'; } if (t.status !== 'closed' && t.status !== 'resolved') { b += '<button onclick="addComment(\'' + t.ticket_id + '\')" class="px-3 py-1 bg-amber-600 text-white text-xs rounded hover:bg-amber-700">Add Comment</button>'; } return b ? '<div class="mt-2 flex gap-2">' + b + '</div>' : ''; })()
         + '</div></td></tr>';
     }
     if (tickets.length === 0) {
@@ -320,6 +320,22 @@ async function addComment(id) {
     currentDetail = null;
     fetchTickets(currentOffset);
   } catch (e) { alert('Failed to add comment: ' + e.message); }
+}
+
+async function actOnTicket(id) {
+  var instruction = prompt('What should I do?');
+  if (!instruction || !instruction.trim()) return;
+  try {
+    var r = await fetch('/api/v1/tickets/' + id + '/engage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ instruction: instruction.trim() })
+    });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'API error');
+    currentDetail = null;
+    fetchTickets(currentOffset);
+  } catch (e) { alert('Failed to engage: ' + e.message); }
 }
 
 async function retryTicket(id) {

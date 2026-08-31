@@ -272,5 +272,101 @@ class DeviceAgentRouteBindingTest(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
 
 
+class DeviceAgentUpdateRouteTest(unittest.TestCase):
+    """Devices-page agent update actions (Part B): enqueue check/apply for an
+    agent-managed device + the result list. Reuses the device_jobs transport."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(DeviceJob).delete()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+
+    def _ctx(self, role="admin"):
+        from types import SimpleNamespace
+        return {"user": SimpleNamespace(role=role, username="tester", id=1),
+                "groups": []}
+
+    def _agent_device(self, name="plex", ip="192.0.2.20"):
+        db = SessionLocal()
+        d = Device(name=name, ip_address=ip, device_type="server",
+                   claimed=True, status="online", adoption_status="linked",
+                   adoption_method="agent", cert_cn=f"device-{name}",
+                   agent_version="0.2.0")
+        db.add(d)
+        db.commit()
+        did = d.id
+        db.close()
+        return did
+
+    def test_enqueue_check_updates(self):
+        from routes.devices import enqueue_agent_update_job
+        did = self._agent_device()
+        db = SessionLocal()
+        r = enqueue_agent_update_job(did, {"action": "check_updates"},
+                                     db=db, ctx=self._ctx())
+        self.assertEqual(r["job"]["action"], "check_updates")
+        self.assertEqual(r["job"]["status"], "pending")
+        db.close()
+
+    def test_enqueue_apply_updates_requires_confirm(self):
+        from fastapi import HTTPException
+        from routes.devices import enqueue_agent_update_job
+        did = self._agent_device()
+        db = SessionLocal()
+        with self.assertRaises(HTTPException):
+            enqueue_agent_update_job(did, {"action": "apply_updates"},
+                                     db=db, ctx=self._ctx())
+        with self.assertRaises(HTTPException):
+            enqueue_agent_update_job(did, {"action": "apply_updates",
+                                           "confirm": False},
+                                     db=db, ctx=self._ctx())
+        r = enqueue_agent_update_job(did, {"action": "apply_updates",
+                                           "confirm": True},
+                                     db=db, ctx=self._ctx())
+        self.assertEqual(r["job"]["action"], "apply_updates")
+        self.assertEqual(r["job"]["params"], {"confirm": True})
+        db.close()
+
+    def test_rejects_non_agent_device(self):
+        from fastapi import HTTPException
+        from routes.devices import enqueue_agent_update_job
+        db = SessionLocal()
+        d = Device(name="sshbox", ip_address="192.0.2.21", device_type="server",
+                   claimed=True, status="online", adoption_method="ssh",
+                   ssh_key_fingerprint="fp")
+        db.add(d)
+        db.commit()
+        did = d.id
+        with self.assertRaises(HTTPException):
+            enqueue_agent_update_job(did, {"action": "check_updates"},
+                                     db=db, ctx=self._ctx())
+        db.close()
+
+    def test_rejects_unknown_action(self):
+        from fastapi import HTTPException
+        from routes.devices import enqueue_agent_update_job
+        did = self._agent_device()
+        db = SessionLocal()
+        with self.assertRaises(HTTPException):
+            enqueue_agent_update_job(did, {"action": "reboot"}, db=db,
+                                     ctx=self._ctx())
+        db.close()
+
+    def test_list_agent_jobs(self):
+        from routes.devices import enqueue_agent_update_job, list_agent_jobs
+        did = self._agent_device()
+        db = SessionLocal()
+        enqueue_agent_update_job(did, {"action": "check_updates"}, db=db,
+                                 ctx=self._ctx())
+        r = list_agent_jobs(did, db=db, ctx=self._ctx())
+        self.assertTrue(r["agent_managed"])
+        self.assertEqual(len(r["jobs"]), 1)
+        self.assertEqual(r["jobs"][0]["action"], "check_updates")
+        db.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

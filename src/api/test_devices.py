@@ -17,7 +17,7 @@ _TMP = tempfile.mkdtemp(prefix="devices-list-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
 from database import SessionLocal, init_db
-from models import Device
+from models import AuditLog, Device, DeviceJob
 from routes.devices import list_devices, get_device_credentials
 
 ADMIN_CTX = {"user": SimpleNamespace(role="admin"), "groups": []}
@@ -273,6 +273,162 @@ class DeviceAdoptionTest(unittest.TestCase):
                                 db=db, user=NS(role="agent"))
         self.assertEqual(r2["updated"], 1)
         db.close()
+
+
+class MergeDuplicatesTest(unittest.TestCase):
+    """device-dedupe admin cleanup: merge_duplicates folds a duplicate record
+    back into its discovery record (adopt + delete + device_merged audit)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(AuditLog).delete()
+        db.query(DeviceJob).delete()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+
+    def _pair(self):
+        """Return (discovery_id, duplicate_id) for the canonical Plex-style
+        dupe: an unclaimed discovery record + an agent-adopted duplicate."""
+        db = SessionLocal()
+        disc = Device(name="PLEX Server", ip_address="192.168.1.13",
+                      mac_address="bc:24:11:bf:f4:69", device_type="server",
+                      claimed=False, status="unclaimed")
+        dup = Device(name="plex", ip_address="192.168.1.13",
+                     mac_address="bc:24:11:bf:f4:69", device_type="workstation",
+                     claimed=True, status="online", adoption_status="linked",
+                     adoption_method="agent", cert_cn="device-plex",
+                     agent_version="0.2.0", hostname="plex",
+                     facts_json='{"hostname": "plex"}')
+        db.add_all([disc, dup])
+        db.commit()
+        db.refresh(disc)
+        db.refresh(dup)
+        ids = (disc.id, dup.id)
+        db.close()
+        return ids
+
+    def _merge(self, keep_id, dup_id, actor="admin"):
+        from routes.devices import merge_duplicates
+        db = SessionLocal()
+        try:
+            return merge_duplicates(db, keep_id, dup_id, actor)
+        finally:
+            db.close()
+
+    def _get(self, did):
+        db = SessionLocal()
+        try:
+            return db.query(Device).get(did)
+        finally:
+            db.close()
+
+    def test_merge_adopts_discovery_and_deletes_duplicate(self):
+        keep_id, dup_id = self._pair()
+        r = self._merge(keep_id, dup_id)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["merged"], {"from_id": dup_id, "into_id": keep_id})
+        keep = self._get(keep_id)
+        self.assertIsNotNone(keep)
+        self.assertEqual(keep.cert_cn, "device-plex")
+        self.assertEqual(keep.adoption_status, "linked")
+        self.assertEqual(keep.adoption_method, "agent")
+        self.assertEqual(keep.agent_version, "0.2.0")
+        self.assertTrue(keep.claimed)
+        self.assertEqual(keep.hostname, "plex")
+        # discovery metadata preserved
+        self.assertEqual(keep.name, "PLEX Server")
+        self.assertEqual(keep.device_type, "server")
+        self.assertEqual(keep.mac_address, "bc:24:11:bf:f4:69")
+        # duplicate deleted
+        self.assertIsNone(self._get(dup_id))
+        # audited as device_merged (from_id, into_id)
+        db = SessionLocal()
+        try:
+            ev = (db.query(AuditLog)
+                  .filter(AuditLog.event_type == "device_merged").first())
+        finally:
+            db.close()
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.data["from_id"], dup_id)
+        self.assertEqual(ev.data["into_id"], keep_id)
+
+    def test_merge_repoints_jobs_to_survivor(self):
+        keep_id, dup_id = self._pair()
+        db = SessionLocal()
+        job = DeviceJob(device_id=dup_id, action="collect_logs", params={},
+                        nonce="n1", status="pending")
+        db.add(job)
+        db.commit()
+        db.close()
+        self._merge(keep_id, dup_id)
+        db = SessionLocal()
+        try:
+            jobs = db.query(DeviceJob).filter(DeviceJob.device_id == keep_id).all()
+        finally:
+            db.close()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].action, "collect_logs")
+        # duplicate gone, no dangling jobs
+        db = SessionLocal()
+        try:
+            self.assertEqual(
+                db.query(DeviceJob).filter(DeviceJob.device_id == dup_id).count(), 0)
+        finally:
+            db.close()
+
+    def test_merge_refuses_different_cert_identity(self):
+        db = SessionLocal()
+        keep = Device(name="A", ip_address="10.0.0.1", claimed=True,
+                      status="online", adoption_status="linked",
+                      cert_cn="device-A")
+        dup = Device(name="B", ip_address="10.0.0.2", claimed=True,
+                     status="online", adoption_status="linked",
+                     cert_cn="device-B")
+        db.add_all([keep, dup])
+        db.commit()
+        keep_id, dup_id = keep.id, dup.id
+        db.close()
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as cm:
+            self._merge(keep_id, dup_id)
+        self.assertEqual(cm.exception.status_code, 409)
+        self.assertIsNotNone(self._get(keep_id))
+        self.assertIsNotNone(self._get(dup_id))
+
+    def test_merge_refuses_self(self):
+        keep_id, _ = self._pair()
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._merge(keep_id, keep_id)
+
+    def test_merge_refuses_missing_device(self):
+        keep_id, _ = self._pair()
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self._merge(keep_id, 999999)
+
+    def test_merge_route_requires_admin(self):
+        keep_id, dup_id = self._pair()
+        from routes.devices import merge_duplicates_route
+        from fastapi import HTTPException
+        from types import SimpleNamespace as NS
+        db = SessionLocal()
+        try:
+            with self.assertRaises(HTTPException):
+                merge_duplicates_route(
+                    body={"keep_id": keep_id, "duplicate_id": dup_id},
+                    db=db, ctx={"user": NS(role="technician", username="tech"),
+                                "groups": []})
+            r = merge_duplicates_route(
+                body={"keep_id": keep_id, "duplicate_id": dup_id},
+                db=db, ctx={"user": NS(role="admin", username="admin"),
+                            "groups": []})
+            self.assertTrue(r["ok"])
+            self.assertIsNone(self._get(dup_id))
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":

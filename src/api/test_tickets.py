@@ -20,6 +20,8 @@ from routes.tickets import (
     PROGRESS_NOTE_MAX_CHARS,
     ProgressNote,
     add_progress_note,
+    EngageRequest,
+    engage_ticket,
 )
 
 
@@ -103,6 +105,100 @@ class ProgressNoteTest(unittest.TestCase):
                               db=db, user=SimpleNamespace(role="operator"))
         self.assertEqual(ctx.exception.status_code, 404)
         db.close()
+
+
+class EngageTicketTest(unittest.TestCase):
+    """The Engage/Act-on-this affordance: posting an instruction adds a
+    customer reply (user_message note) and re-queues the ticket — the worker's
+    existing chat-intake re-dispatch path consumes it (no parallel dispatch)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Ticket).delete()
+        db.query(User).delete()
+        self.owner = User(username="owner", hashed_password="x", role="tenant")
+        self.other = User(username="other", hashed_password="x", role="tenant")
+        self.tech = User(username="tech", hashed_password="x", role="technician")
+        db.add_all([self.owner, self.other, self.tech])
+        db.commit()
+        db.close()
+
+    def _mk(self, status):
+        db = SessionLocal()
+        owner = db.query(User).filter(User.username == "owner").first()
+        t = Ticket(ticket_id="TKT-ENG-1", title="plex server", description="",
+                   priority="P3", status=status, source="chat",
+                   submitter_id=owner.id, work_notes="[]",
+                   resolution="waiting on you" if status == "customer_action" else None)
+        db.add(t)
+        db.commit()
+        db.close()
+
+    def _engage(self, ticket_id, instruction, username="owner"):
+        db = SessionLocal()
+        u = db.query(User).filter(User.username == username).first()
+        engage_ticket(ticket_id, EngageRequest(instruction=instruction),
+                      db=db, user=u)
+        db.close()
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        notes = json.loads(t.work_notes) if t else []
+        db.close()
+        return t, notes
+
+    def test_customer_action_moves_to_open_and_adds_reply(self):
+        self._mk("customer_action")
+        t, notes = self._engage("TKT-ENG-1", "please update my plex server")
+        self.assertEqual(t.status, "open")
+        self.assertIsNone(t.resolution)
+        self.assertEqual(notes[-1]["event"], "user_message")
+        self.assertEqual(notes[-1]["detail"], "please update my plex server")
+        self.assertEqual(notes[-1]["actor"], "owner")
+
+    def test_open_keeps_status_and_adds_reply(self):
+        self._mk("open")
+        t, notes = self._engage("TKT-ENG-1", "do it now")
+        self.assertEqual(t.status, "open")
+        self.assertEqual(notes[-1]["event"], "user_message")
+        self.assertEqual(notes[-1]["detail"], "do it now")
+
+    def test_in_progress_keeps_status_and_adds_reply(self):
+        self._mk("in_progress")
+        t, notes = self._engage("TKT-ENG-1", "also check port 5")
+        self.assertEqual(t.status, "in_progress")
+        self.assertEqual(notes[-1]["event"], "user_message")
+
+    def test_escalated_rejected(self):
+        from fastapi import HTTPException
+        self._mk("escalated")
+        with self.assertRaises(HTTPException) as ctx:
+            self._engage("TKT-ENG-1", "try again")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_unknown_ticket_404(self):
+        from fastapi import HTTPException
+        db = SessionLocal()
+        u = db.query(User).filter(User.username == "owner").first()
+        with self.assertRaises(HTTPException) as ctx:
+            engage_ticket("TKT-NOPE", EngageRequest(instruction="hi"),
+                          db=db, user=u)
+        self.assertEqual(ctx.exception.status_code, 404)
+        db.close()
+
+    def test_empty_instruction_rejected(self):
+        from fastapi import HTTPException
+        self._mk("open")
+        with self.assertRaises(HTTPException) as ctx:
+            self._engage("TKT-ENG-1", "   ")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_customer_cannot_engage_others_ticket(self):
+        from fastapi import HTTPException
+        self._mk("open")
+        with self.assertRaises(HTTPException) as ctx:
+            self._engage("TKT-ENG-1", "do it", username="other")
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 if __name__ == "__main__":

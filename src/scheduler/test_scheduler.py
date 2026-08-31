@@ -355,5 +355,32 @@ class ServiceCheckPollTest(unittest.TestCase):
             self.assertEqual(mp.call_count, 1)
 
 
+class RevokeIntegrityPollTest(unittest.TestCase):
+    """check_revoke_integrity: the scheduler's poll pass for the integrity sweep."""
+
+    def test_poll_posts_once(self):
+        postj = patch.object(main, "_api_post_json",
+                             return_value={"status": "ok", "checked": 1, "flagged": 0})
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_revoke_integrity("tok")
+        mj.assert_called_once_with("/revoke-integrity/sweep", {}, "tok")
+
+    def test_poll_flags_logged(self):
+        postj = patch.object(main, "_api_post_json",
+                             return_value={"status": "ok", "checked": 2, "flagged": 1})
+        mj = postj.start(); self.addCleanup(postj.stop)
+        with patch.object(main.logger, "warning") as warn:
+            main.check_revoke_integrity("tok")
+        warn.assert_called_once()
+        self.assertIn("flagged 1", warn.call_args[0][0])
+
+    def test_poll_http_error_is_logged_not_raised(self):
+        postj = patch.object(main, "_api_post_json", side_effect=
+                             urllib.error.HTTPError("u", 500, "boom", None, None))
+        mj = postj.start(); self.addCleanup(postj.stop)
+        main.check_revoke_integrity("tok")   # must not raise
+        self.assertEqual(mj.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

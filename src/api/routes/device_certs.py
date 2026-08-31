@@ -13,11 +13,13 @@ import json
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Device
 from step_ca import device_cn
+import network_scope
 
 router = APIRouter(prefix="/api/v1/device", tags=["device"])
 
@@ -48,6 +50,109 @@ def _json_text(value):
         return None
 
 
+def _report_ips(request: Request, body: dict) -> list:
+    """IPs this report carries: the agent-reported facts.ips (and a bare
+    `ip`, if present) plus the request's real client IP. Deduped, in order."""
+    ips = []
+    raw_ips = body.get("ips") or []
+    if isinstance(raw_ips, str):
+        raw_ips = [raw_ips]
+    for v in raw_ips:
+        if isinstance(v, str) and v.strip():
+            ips.append(v.strip())
+    if isinstance(body.get("ip"), str) and body.get("ip").strip():
+        ips.append(body["ip"].strip())
+    rip = (request.headers.get("x-real-ip") or "").strip()
+    if rip and rip not in ips:
+        ips.append(rip)
+    return ips
+
+
+def _report_macs(body: dict) -> list:
+    """MACs this report carries (the agent-reported facts.macs)."""
+    macs = []
+    raw_macs = body.get("macs") or []
+    if isinstance(raw_macs, str):
+        raw_macs = [raw_macs]
+    for v in raw_macs:
+        if isinstance(v, str) and v.strip():
+            macs.append(v.strip())
+    return macs
+
+
+def _refresh_ip(device: Device, ips: list) -> None:
+    """Fill the device IP from the report when the record has none usable.
+
+    Never overwrites an existing discovery IP (that IP is what matched the box
+    in the first place); never writes a CGNAT/Tailscale overlay address into
+    inventory.
+    """
+    if device.ip_address and device.ip_address != "0.0.0.0":
+        return
+    for ip in ips:
+        if not ip or ip == "0.0.0.0":
+            continue
+        if network_scope.is_tunnel_or_cgnat(ip):
+            continue
+        device.ip_address = ip
+        return
+
+
+def _find_unclaimed_match(db: Session, ips: list, macs: list) -> "Device | None":
+    """Fallback adoption target for device-dedupe: an UNCLAIMED, not-yet-
+    linked/revoked discovery record sharing an IP or MAC with this report.
+
+    When multiple unclaimed records match, the most recently seen wins
+    (deterministic tie-break: highest id). Never returns a claimed/linked
+    record (a different identity) or a revoked one.
+    """
+    if not ips and not macs:
+        return None
+    conds = []
+    if ips:
+        conds.append(Device.ip_address.in_(ips))
+    if macs:
+        conds.append(func.lower(Device.mac_address).in_([m.lower() for m in macs]))
+    if not conds:
+        return None
+    status_ok = or_(Device.adoption_status.is_(None),
+                    Device.adoption_status.notin_(["linked", "revoked"]))
+    return (db.query(Device)
+            .filter(Device.claimed.is_(False), status_ok, or_(*conds))
+            .order_by(Device.last_seen.is_(None),
+                      Device.last_seen.desc(),
+                      Device.id.desc())
+            .first())
+
+
+def resolve_device(db: Session, cn: str, ips: "list | None" = None,
+                   macs: "list | None" = None):
+    """Resolve a cert CN to its device record (link order):
+
+      1. exact cert_cn match (the linked identity);
+      2. name match (the canonical CN of the record's name — pre-link);
+      3. IP/MAC fallback: an unclaimed discovery record for the same box
+         (device-dedupe — adopt-in-place instead of a duplicate).
+
+    Returns (device, adopted_in_place). `adopted_in_place` is True only when
+    the record came from the fallback (the caller must adopt it in place, not
+    self-register a duplicate).
+    """
+    device = db.query(Device).filter(Device.cert_cn == cn).first()
+    if device:
+        return device, False
+    name = cn[len("device-"):]
+    device = (db.query(Device)
+              .filter(Device.name == name)
+              .order_by(Device.id.desc()).first())
+    if device:
+        return device, False
+    candidate = _find_unclaimed_match(db, ips or [], macs or [])
+    if candidate is not None:
+        return candidate, True
+    return None, False
+
+
 @router.post("/report")
 async def device_report(request: Request, db: Session = Depends(get_db)):
     """The device's heartbeat/status report. First successful call LINKS the
@@ -74,19 +179,15 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
     adoption_method = str(body.get("adoption_method") or "").strip().lower()
     is_agent = bool(agent_version) or adoption_method == "agent"
     cn = _client_cn(request)
-    device = db.query(Device).filter(Device.cert_cn == cn).first()
-    if not device:
-        # Allow the CN->record mapping to be verified via the device name too
-        # (cert_cn is set on the link; before that the record may be found by
-        #  the canonical CN of its name).
-        name = cn[len("device-"):]
-        device = (db.query(Device)
-                  .filter(Device.name == name)
-                  .order_by(Device.id.desc()).first())
+    ips = _report_ips(request, body)
+    macs = _report_macs(body)
+    device, adopted_in_place = resolve_device(db, cn, ips=ips, macs=macs)
     if not device:
         # SELF-REGISTRATION: a valid cert from the BareNOC CA is proof of
         # identity — create the record (this is how the /onboard portal adopts
-        # a workstation: enroll a cert, and the first report links it).
+        # a workstation: enroll a cert, and the first report links it). Only
+        # reached when there is no cert_cn/name match AND no unclaimed IP/MAC
+        # discovery record to adopt in place (device-dedupe).
         name = cn[len("device-"):][:120]
         ip = (request.headers.get("x-real-ip") or "").strip()
         device = Device(name=name, ip_address=ip or "0.0.0.0",
@@ -97,7 +198,15 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
     if device.adoption_status == "revoked":
         raise HTTPException(status_code=403, detail="device adoption revoked")
     now = datetime.datetime.utcnow()
-    if hostname and not device.hostname:
+    if adopted_in_place:
+        # Dedupe adopt-in-place: refresh the discovery record's hostname + IP
+        # from the report while KEEPING its discovery metadata (name, MAC,
+        # device_type). The block below then links it exactly as it would a
+        # self-registered record.
+        if hostname:
+            device.hostname = hostname[:120]
+        _refresh_ip(device, ips)
+    elif hostname and not device.hostname:
         device.hostname = hostname[:120]
     if device.adoption_status != "linked":
         device.adoption_status = "linked"

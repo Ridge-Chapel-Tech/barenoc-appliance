@@ -74,5 +74,35 @@ class RepairRetryTokenAccountingTest(unittest.TestCase):
         self.assertEqual(resp.response_tokens, 50)
 
 
+class GenerateTitleTest(unittest.TestCase):
+    """generate_title: a cheap one-shot title call that never raises and
+    never blocks the caller — None signals the heuristic fallback."""
+
+    def test_returns_cleaned_title(self):
+        def fake_adapter(p, model, messages, temperature, max_tokens, timeout):
+            return '"  Title: Update the plex server  "', 10, 5
+
+        with patch.object(llm_client, "provider_chain", return_value=[_provider()]), \
+             patch.object(llm_client, "maybe_refresh"), \
+             patch.dict(llm_client.ADAPTERS, {"openai": fake_adapter}):
+            title = llm_client.generate_title(
+                "I see my plex server is on http://192.168.4.13/")
+        self.assertEqual(title, "Update the plex server")
+
+    def test_provider_failure_returns_none(self):
+        def boom(p, model, messages, temperature, max_tokens, timeout):
+            raise RuntimeError("down")
+
+        with patch.object(llm_client, "provider_chain", return_value=[_provider()]), \
+             patch.object(llm_client, "maybe_refresh"), \
+             patch.dict(llm_client.ADAPTERS, {"openai": boom}):
+            self.assertIsNone(llm_client.generate_title("anything"))
+
+    def test_no_provider_returns_none(self):
+        with patch.object(llm_client, "provider_chain", return_value=[]), \
+             patch.object(llm_client, "maybe_refresh"):
+            self.assertIsNone(llm_client.generate_title("anything"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -367,6 +367,56 @@ def add_ticket_note(
     return ticket
 
 
+class EngageRequest(BaseModel):
+    instruction: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.post("/{ticket_id}/engage", response_model=TicketResponse)
+def engage_ticket(
+    ticket_id: str,
+    data: EngageRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Engage / act on a ticket: post the user's instruction as a customer
+    reply and re-queue the ticket for the worker.
+
+    This is the SAME path the worker's chat intake already consumes (a new
+    user_message note bumps the comment count → the poll loop re-processes the
+    ticket). No parallel dispatch is created: the worker's one-active-pi guard
+    (`_pi_run_active`) still holds for in_progress tickets with a running
+    session. A customer_action ticket is moved back to `open` so the re-queue
+    is visible immediately; open/in_progress tickets keep their status (the
+    note itself is what the worker wakes on).
+
+    Escalated tickets are intentionally excluded — they keep their existing
+    Approve/Retry/Reject actions.
+    """
+    ticket = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if not _customer_owns(ticket, user):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.status not in ("open", "in_progress", "customer_action"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only open, in-progress, or customer-action tickets can be engaged",
+        )
+
+    instruction = data.instruction.strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="Instruction cannot be empty")
+
+    add_note(ticket, "user_message", instruction, actor=user.username)
+    if ticket.status == "customer_action":
+        ticket.status = "open"
+        ticket.resolution = None
+    ticket.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(ticket)
+    return ticket
+
+
 @router.post("/{ticket_id}/retry")
 def retry_ticket(ticket_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Reset a failed/escalated ticket back to open for reprocessing."""

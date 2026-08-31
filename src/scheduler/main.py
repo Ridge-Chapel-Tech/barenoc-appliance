@@ -511,6 +511,25 @@ def check_service_checks(token: str):
         logger.warning(f"Service checks poll failed: {e}")
 
 
+def check_revoke_integrity(token: str):
+    """Trigger one device-revoke integrity pass. The api container owns the
+    engine (DB query + device_revoke_integrity audit event + alert email) —
+    the scheduler only triggers it, like service checks. Runs every
+    POLL_INTERVAL: the sweep is cheap (revoked devices are rare and the two
+    audit-event lookups hit the event_type index), and a silent revoke should
+    be surfaced within minutes, not days."""
+    try:
+        r = _api_post_json("/revoke-integrity/sweep", {}, token)
+        if r.get("flagged"):
+            logger.warning(f"Revoke-integrity sweep flagged {r['flagged']} un-audited revoke(s)")
+        elif r.get("status") == "ok":
+            logger.info(f"Revoke-integrity sweep clean ({r.get('checked', 0)} revoked checked)")
+    except urllib.error.HTTPError as e:
+        logger.warning(f"Revoke-integrity sweep not run: {e}")
+    except Exception as e:
+        logger.warning(f"Revoke-integrity sweep failed: {e}")
+
+
 def _transient_done(marker_path: str, key: str, memory: dict, memory_key: str) -> bool:
     """True when this transition key has NOT been handled before (in-memory or
     on-disk marker) — the once-per-transition guard used by both the notify and
@@ -824,6 +843,7 @@ def run():
     last_upd_prog = 0
     last_netopt = 0
     last_service_checks = 0
+    last_revoke_integrity = 0
     last_prune = 0
     _last_triggered = {}
 
@@ -892,6 +912,12 @@ def run():
                 logger.info("Running service checks...")
                 check_service_checks(token)
                 last_service_checks = now
+
+            # Device-revoke integrity sweep — flag revoked devices with no
+            # matching device_adopt_revoke audit event (un-audited revokes).
+            if now - last_revoke_integrity >= POLL_INTERVAL:
+                check_revoke_integrity(token)
+                last_revoke_integrity = now
 
             # Telemetry retention prune — hourly, disk-aware (the collectors
             # run in the api container; the scheduler owns the prune).

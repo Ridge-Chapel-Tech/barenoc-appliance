@@ -11,6 +11,8 @@ class AllowedAction(str, enum.Enum):
     APPLY_PATCH = "apply_patch"
     REBOOT_DEVICE = "reboot_device"
     COLLECT_LOGS = "collect_logs"
+    CHECK_UPDATES = "check_updates"  # agent device: read-only multi-source update check
+    APPLY_UPDATES = "apply_updates"  # agent device: confirm-gated OS update apply
     NETWORK_DISCOVERY = "network_discovery"
     NETWORK_INFO = "network_info"  # logical: AI Tech answers network/VLAN queries from UniFi
     SYSTEM_TIME = "system_time"  # read-only: appliance current time + timezone
@@ -156,6 +158,11 @@ ACTION_REQUIRED_CHANNELS = {
     AllowedAction.INSTALL_CHAT_CLIENT: {CHANNEL_SSH, CHANNEL_AGENT},
     AllowedAction.ENROLL_DEVICE: {CHANNEL_SSH},
     AllowedAction.SNMP_POLL: {CHANNEL_SNMP},
+    # Agent-channel ONLY: check_updates/apply_updates run on the endpoint via
+    # the NOC_Agent device_jobs transport (not the SSH-script path). SSH
+    # devices use apply_patch/check via scripts/apply_patch.sh instead.
+    AllowedAction.CHECK_UPDATES: {CHANNEL_AGENT},
+    AllowedAction.APPLY_UPDATES: {CHANNEL_AGENT},
 }
 
 
@@ -380,6 +387,18 @@ def validate_params(action: str, params: dict) -> tuple[bool, str]:
     if action == AllowedAction.REBOOT_DEVICE.value:
         # reboot_device.sh reboots immediately over SSH (maintenance window is
         # enforced by the operator/AI judgement, not by a scheduled_at param).
+        return True, ""
+
+    if action == AllowedAction.APPLY_UPDATES.value:
+        # apply_updates writes to the endpoint OS — customer-requested only.
+        # The SAME confirm gate as reboot (and as the agent catalog + the
+        # device_agent enqueue path): never apply autonomously-unprompted.
+        if not params.get("confirm"):
+            return False, "apply_updates requires 'confirm' = true"
+        return True, ""
+
+    if action == AllowedAction.CHECK_UPDATES.value:
+        # Read-only multi-source check — no params required.
         return True, ""
 
     if action == AllowedAction.TICKET_STATUS.value:

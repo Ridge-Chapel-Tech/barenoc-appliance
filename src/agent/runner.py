@@ -1876,14 +1876,18 @@ def _handle_callback(callback: dict, result: dict):
             try:
                 token = _api_login()
 
-                add_data = json.dumps({"name": f"discovered-{ip.replace('.', '-')}", "ip_address": ip, "device_type": "unknown", "claimed": False}).encode()
+                # Match-before-insert + self-exclusion live on the API side
+                # (discover-results) so repeated scans UPDATE the same record
+                # instead of INSERTing duplicates, and the appliance's own IP
+                # is never recorded.
+                add_data = json.dumps({"found": [{"ip": ip}]}).encode()
                 add_req = urllib.request.Request(
-                    "https://localhost/api/v1/devices", data=add_data,
+                    "https://localhost/api/v1/devices/discover-results", data=add_data,
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
                     method="POST",
                 )
                 urllib.request.urlopen(add_req, timeout=5, context=SSL_CTX)
-                logger.info(f"Discovery added device {ip}")
+                logger.info(f"Discovery recorded device {ip}")
             except Exception as e:
                 logger.error(f"Discovery add failed for {ip}: {e}")
     elif ctype == "snmp_store":

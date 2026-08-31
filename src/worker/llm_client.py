@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from typing import Optional
 
@@ -366,6 +367,89 @@ def call_llm(
             print(f"[LLM] provider {name} failed ({e}) — trying next in chain")
 
     print(f"[LLM] ALL providers failed ({', '.join(tried)}) — {last_err}")
+    return None
+
+
+TITLE_SYSTEM_PROMPT = (
+    "You title support tickets for a network operations help desk. "
+    "Read the customer's request and reply with a concise title of at most "
+    "8 words that captures what they need. Reply with ONLY the title — no "
+    "quotes, no trailing period, no preamble."
+)
+
+
+def _clean_title(raw: str, max_chars: int = 80) -> "Optional[str]":
+    """Reduce a raw LLM title reply to a short single-line ticket title."""
+    if not raw:
+        return None
+    t = " ".join(str(raw).strip().split())
+    if not t:
+        return None
+    # Strip markdown fences / bullets / surrounding quotes and a leading
+    # "Title:" prefix so the model's formatting never leaks into the UI.
+    t = re.sub(r"^[\"'`\-*#>\s]+", "", t)
+    t = re.sub(r"[\"'`]+$", "", t)
+    t = re.sub(r"^(?:title\s*[:：-]\s*)", "", t, flags=re.I)
+    t = " ".join(t.split())
+    if not t:
+        return None
+    if len(t) > max_chars:
+        cut = t[:max_chars]
+        boundary = cut.rfind(" ")
+        if boundary > max_chars // 2:
+            cut = cut[:boundary]
+        t = cut.rstrip(" ,.;:")
+    return t or None
+
+
+def generate_title(text: str, timeout: "Optional[int]" = None,
+                   max_chars: int = 80) -> "Optional[str]":
+    """Best-effort short ticket title via a cheap one-shot LLM call.
+
+    Walks the provider chain once with a tiny prompt + short timeout and
+    returns a cleaned title, or None when the whole chain fails. Deliberately
+    side-effect-free: it never mutates provider health state (_PROVIDER_DOWN /
+    failure counters) and never raises — a title must never block ticket
+    creation (the caller falls back to a heuristic).
+    """
+    if timeout is None:
+        try:
+            timeout = int(os.getenv("LLM_TITLE_TIMEOUT_S", "8") or 8)
+        except ValueError:
+            timeout = 8
+    try:
+        maybe_refresh()
+        chain = provider_chain()
+    except Exception:
+        return None
+    if not chain:
+        return None
+
+    body = " ".join((text or "").strip().split())[:2000]
+    if not body:
+        return None
+    messages = [
+        {"role": "system", "content": TITLE_SYSTEM_PROMPT},
+        {"role": "user", "content": body},
+    ]
+    for provider in chain:
+        adapter = ADAPTERS.get((provider.get("type") or "").lower())
+        if not adapter or (not provider.get("api_key")
+                           and provider.get("deployment") != "on_prem"):
+            continue
+        model = provider.get("chat_model") or ""
+        if not model:
+            continue
+        try:
+            raw, _pt, _rt = adapter(provider, model, messages,
+                                    temperature=0.2, max_tokens=24,
+                                    timeout=timeout)
+            title = _clean_title(raw, max_chars)
+            if title:
+                return title
+        except Exception:
+            # Next provider in the chain (or None → heuristic fallback).
+            continue
     return None
 
 

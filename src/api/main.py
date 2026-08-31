@@ -15,7 +15,7 @@ from database import init_db, SessionLocal, get_db
 from models import User, Device, Ticket, AuditLog
 from schemas import generate_ticket_id, generate_event_id, compute_hash
 from auth import hash_password, decode_token, require_page_session, require_role
-from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics, report, firmware as firmware_routes, starlink as starlink_routes, uplink, compliance, audit_log, service_checks
+from routes import auth, tickets, devices, dashboard, jobs, admin, unifi_sync, system, settings, users, branding, chat, client, device_certs, device_agent, onboard, updates, setup, support, network_opt, metrics, report, firmware as firmware_routes, starlink as starlink_routes, uplink, compliance, audit_log, service_checks, revoke_integrity as revoke_integrity_routes
 from oidc import oidc_config, oauth_login_config
 from version import APP_VERSION
 from ratelimit import RateLimitMiddleware
@@ -376,6 +376,7 @@ app.include_router(uplink.router)
 app.include_router(compliance.router)
 app.include_router(audit_log.router)
 app.include_router(service_checks.router)
+app.include_router(revoke_integrity_routes.router)
 
 
 # ── Health Check ──

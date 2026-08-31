@@ -25,8 +25,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))  # api/
 
 from queue_status import is_paused, derive_status  # noqa: E402
 from database import SessionLocal, init_db  # noqa: E402
-from models import User, ChatMessage, Ticket, AuditLog, PendingAction  # noqa: E402
+from models import User, ChatMessage, Ticket, AuditLog, PendingAction, Device  # noqa: E402
 import juniper  # noqa: E402
+import device_resolver  # noqa: E402
 
 
 def _ticket(work_notes, status="open", ticket_id="TKT-20260816-0001", **kw):
@@ -107,6 +108,108 @@ class IntakePriorityTest(unittest.TestCase):
     def test_informational_is_p4(self):
         p, _ = juniper.judge_intake_priority("thanks for the help")
         self.assertEqual(p, "P4")
+
+
+class IntakeTitleTest(unittest.TestCase):
+    """Interpreted chat-ticket titles: LLM summary preferred, first-sentence
+    heuristic fallback — never blocks ticket creation."""
+
+    def test_heuristic_first_sentence_preserves_url(self):
+        # Dots INSIDE the URL are not sentence breaks; the period before
+        # "Can you…" is. The raw-message title from the 08-30 ticket.
+        title = juniper._heuristic_title(
+            "I see my plex server is on http://192.168.4.13/. Can you update it?")
+        self.assertEqual(title, "I See My Plex Server Is On http://192.168.4.13/")
+        self.assertLessEqual(len(title), 80)
+
+    def test_heuristic_trims_to_80(self):
+        long_text = (
+            "Please configure a recurring backup schedule for the network "
+            "attached storage device in the server closet and also the other "
+            "one under the stairs next to the router shelf"
+        ) * 3
+        title = juniper._heuristic_title(long_text)
+        self.assertLessEqual(len(title), 80)
+
+    def test_heuristic_empty_input(self):
+        self.assertEqual(juniper._heuristic_title(""), "Support request")
+        self.assertEqual(juniper._heuristic_title("   "), "Support request")
+
+    def test_llm_title_preferred(self):
+        with patch("llm_client.generate_title", return_value="Plex server check"):
+            title = juniper._intake_title(
+                "I see my plex server is on http://192.168.4.13/")
+        self.assertEqual(title, "Plex server check")
+
+    def test_llm_down_falls_back_to_heuristic(self):
+        with patch("llm_client.generate_title", return_value=None):
+            title = juniper._intake_title(
+                "I see my plex server is on http://192.168.4.13/")
+        self.assertEqual(title, "I See My Plex Server Is On http://192.168.4.13/")
+
+
+class IntakeTitleDbTest(unittest.TestCase):
+    """The intake path stores the interpreted (short) title, not the raw
+    message (chat message -> ticket title)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(Ticket).delete()
+        db.query(User).delete()
+        db.commit()
+        self.bot = User(username="juniper", display_name="Juniper",
+                        hashed_password="x", role="admin", is_active=True, is_bot=True)
+        self.sender = User(username="owner", display_name="Owner",
+                           hashed_password="x", role="tenant", is_active=True)
+        db.add_all([self.bot, self.sender])
+        db.commit()
+        db.close()
+
+    def _msg(self, body):
+        db = SessionLocal()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        sender = db.query(User).filter(User.username == "owner").first()
+        m = ChatMessage(from_user_id=sender.id, to_user_id=bot.id, body=body)
+        db.add(m)
+        db.commit()
+        db.refresh(m)
+        db.close()
+        return m
+
+    def _run_intake(self, body):
+        db = SessionLocal()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        sender = db.query(User).filter(User.username == "owner").first()
+        msg = self._msg(body)
+        with patch("llm_client.generate_title", return_value="Firmware update for switch"):
+            juniper._handle_intake(db, bot, msg, sender, msg.body)
+        db.close()
+
+    def test_intake_uses_llm_title(self):
+        self._run_intake("please update the firmware on the switch")
+        db = SessionLocal()
+        t = db.query(Ticket).order_by(Ticket.id.desc()).first()
+        db.close()
+        self.assertEqual(t.title, "Firmware update for switch")
+        self.assertEqual(t.source, "chat")
+
+    def test_intake_falls_back_to_heuristic_when_llm_down(self):
+        db = SessionLocal()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        sender = db.query(User).filter(User.username == "owner").first()
+        msg = self._msg("please update the firmware on the switch")
+        with patch("llm_client.generate_title", return_value=None):
+            juniper._handle_intake(db, bot, msg, sender, msg.body)
+        db.close()
+
+        db = SessionLocal()
+        t = db.query(Ticket).order_by(Ticket.id.desc()).first()
+        db.close()
+        self.assertEqual(t.title, "Please Update The Firmware On The Switch")
+        self.assertLessEqual(len(t.title), 80)
 
 
 class DeriveStatusTest(unittest.TestCase):
@@ -581,6 +684,168 @@ class PendingItemsContextTest(unittest.TestCase):
         db = SessionLocal()
         self.assertEqual(db.query(PendingAction).get(pa.id).status, "resolved")
         db.close()
+
+
+class DeviceBindingTest(unittest.TestCase):
+    """Part A: chat tickets bind to their target device (name/hostname/IP).
+
+    "update my plex" binds to the plex device; "hello" binds nothing;
+    ambiguous references bind nothing (never guess wrong); the bound ticket's
+    context names the device.
+    """
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        db.commit()
+        self.bot = User(username="juniper", display_name="Juniper",
+                        hashed_password="x", role="admin", is_active=True, is_bot=True)
+        self.owner = User(username="owner", display_name="Owner",
+                          hashed_password="x", role="tenant", is_active=True)
+        db.add_all([self.bot, self.owner])
+        db.commit()
+        # Capture ids BEFORE the session closes (a closed-session object's
+        # attribute access raises DetachedInstanceError on the runner).
+        self.bot_id = self.bot.id
+        self.owner_id = self.owner.id
+        db.close()
+
+    def _device(self, name, agent=False, hostname=None, ip=None):
+        db = SessionLocal()
+        d = Device(name=name, hostname=hostname or name,
+                   ip_address=ip or f"192.0.2.{len(name) % 250}",
+                   device_type="server", claimed=True, status="online",
+                   adoption_method="agent" if agent else "ssh",
+                   agent_version="0.2.0" if agent else None)
+        db.add(d)
+        db.commit()
+        db.refresh(d)
+        db.close()
+        return d
+
+    def _run(self, body, sender_username):
+        db = SessionLocal()
+        sender = db.query(User).filter(User.username == sender_username).first()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        msg = ChatMessage(from_user_id=sender.id, to_user_id=bot.id, body=body)
+        out = juniper.handle_message(db, bot, msg, sender)
+        body = out.body  # read BEFORE db.close() — mapped attrs expire on close
+        db.close()
+        return body
+
+    def _latest_ticket(self):
+        """Return the latest ticket's loaded fields (never a detached instance —
+        attribute access on a closed-session object raises DetachedInstanceError)."""
+        from types import SimpleNamespace
+        db = SessionLocal()
+        try:
+            t = db.query(Ticket).order_by(Ticket.id.desc()).first()
+            if t is None:
+                return None
+            return SimpleNamespace(
+                id=t.id, ticket_id=t.ticket_id, source=t.source,
+                target_device_id=t.target_device_id, status=t.status,
+                action=t.action, title=t.title)
+        finally:
+            db.close()
+
+    # ── resolver ─────────────────────────────────────────────────────────
+    def test_resolve_single_plex_binds(self):
+        plex = self._device("plex", agent=True)
+        db = SessionLocal()
+        got = device_resolver.resolve_device_from_text(db, "update my plex server")
+        db.close()
+        self.assertIsNotNone(got)
+        self.assertEqual(got.id, plex.id)
+
+    def test_resolve_hello_no_bind(self):
+        self._device("plex", agent=True)
+        db = SessionLocal()
+        got = device_resolver.resolve_device_from_text(db, "hello")
+        db.close()
+        self.assertIsNone(got)
+
+    def test_resolve_ambiguous_no_bind(self):
+        # Two distinct records both matching the text, neither clearly the
+        # target -> None (never guess wrong).
+        self._device("plex", agent=True)
+        self._device("plex", agent=True)
+        db = SessionLocal()
+        got = device_resolver.resolve_device_from_text(db, "update plex")
+        db.close()
+        self.assertIsNone(got)
+
+    def test_resolve_prefers_agent_on_tie(self):
+        # The Plex 2-record case: same name, one agent-managed, one SSH.
+        ssh = self._device("plex", agent=False)
+        agent = self._device("plex", agent=True)
+        db = SessionLocal()
+        got = device_resolver.resolve_device_from_text(db, "update my plex server")
+        db.close()
+        self.assertIsNotNone(got)
+        self.assertEqual(got.id, agent.id)
+        self.assertNotEqual(got.id, ssh.id)
+
+    def test_resolve_by_ip(self):
+        d = self._device("nas", agent=True, ip="192.168.4.50")
+        db = SessionLocal()
+        got = device_resolver.resolve_device_from_text(db, "update 192.168.4.50")
+        db.close()
+        self.assertIsNotNone(got)
+        self.assertEqual(got.id, d.id)
+
+    # ── intake binding ───────────────────────────────────────────────────
+    def test_intake_update_plex_binds(self):
+        plex = self._device("plex", agent=True)
+        self._run("update my plex server", "owner")
+        t = self._latest_ticket()
+        self.assertIsNotNone(t)
+        self.assertEqual(t.source, "chat")
+        self.assertEqual(t.target_device_id, plex.id)
+
+    def test_intake_hello_no_bind(self):
+        self._device("plex", agent=True)
+        before = self._latest_ticket()
+        self._run("hello", "owner")
+        after = self._latest_ticket()
+        # A greeting is answered conversationally — no new ticket is created.
+        self.assertEqual(before, after)
+
+    def test_intake_ambiguous_no_bind(self):
+        self._device("plex", agent=True)
+        self._device("plex", agent=True)
+        self._run("update plex", "owner")
+        t = self._latest_ticket()
+        self.assertIsNotNone(t)
+        self.assertIsNone(t.target_device_id)  # never guess wrong
+
+    # ── context names the device ─────────────────────────────────────────
+    def test_bound_device_context_names_device(self):
+        plex = self._device("plex", agent=True)
+        import main as worker
+        ctx = worker._bound_device_context(plex)
+        self.assertIn("plex", ctx)
+        self.assertIn("agent-managed", ctx)
+
+    def test_pi_task_context_names_bound_device(self):
+        plex = self._device("plex", agent=True)
+        db = SessionLocal()
+        t = Ticket(ticket_id="TKT-20260830-0001", title="update my plex server",
+                   description="update my plex server", priority="P3",
+                   status="open", source="chat", submitter_id=self.owner_id,
+                   target_device_id=plex.id, work_notes="[]")
+        db.add(t)
+        db.commit()
+        import main as worker
+        ctx = worker._pi_task_context(db, t, "update my plex server")
+        db.close()
+        self.assertIn("Target device for this ticket", ctx)
+        self.assertIn("plex", ctx)
 
 
 if __name__ == "__main__":

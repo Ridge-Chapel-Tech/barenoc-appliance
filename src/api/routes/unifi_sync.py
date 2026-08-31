@@ -14,6 +14,7 @@ from auth import get_current_user, require_role, require_any_role
 from unifi import UniFiClient
 from audit import log_event
 import network_scope
+import discovery
 
 router = APIRouter(prefix="/api/v1/unifi", tags=["unifi"])
 
@@ -690,6 +691,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
     updated = 0
     skipped = 0
     adopted = 0
+    excl = discovery.self_exclusion()
 
     # Auto-adopt: UniFi-managed network gear is claimed automatically once the
     # controller connection works (UNIFI_AUTO_ADOPT, default true). Passive
@@ -702,12 +704,12 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
         if ud["ip"] and network_scope.is_tunnel_or_cgnat(ud["ip"]):
             skipped += 1
             continue
-        # Match existing device by MAC or IP
-        existing = None
-        if ud["mac"]:
-            existing = db.query(Device).filter(Device.mac_address == ud["mac"]).first()
-        if not existing and ud["ip"]:
-            existing = db.query(Device).filter(Device.ip_address == ud["ip"]).first()
+        # SELF-EXCLUSION: the appliance's own IP/MAC never enters inventory.
+        if discovery.is_self_ip(ud["ip"], excl) or discovery.is_self_mac(ud["mac"], excl):
+            skipped += 1
+            continue
+        # Match existing device by MAC (case-insensitive) or IP
+        existing = discovery.find_existing(db, ud["mac"], ud["ip"])
 
         if existing:
             # Update status and metadata from UniFi
@@ -798,6 +800,10 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             # 100.64.0.0/10 = CGNAT/Tailscale overlay — never a client record.
             c_skipped += 1
             continue
+        # SELF-EXCLUSION: never inventory the appliance's own IP/MAC.
+        if discovery.is_self_ip(uc["ip"], excl) or discovery.is_self_mac(uc["mac"], excl):
+            c_skipped += 1
+            continue
         # Skip noisy anonymous clients — but keep ONLINE anonymous ones
         # (randomized MACs are real live devices worth identifying, e.g. a Pi)
         if not uc["hostname"] and (not uc["vendor"] or uc["vendor"] == "?") and not uc["online"]:
@@ -811,11 +817,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             continue
         real_last_seen = now if uc["online"] else (seen or now)
 
-        existing = None
-        if uc["mac"]:
-            existing = db.query(Device).filter(Device.mac_address == uc["mac"]).first()
-        if not existing and uc["ip"]:
-            existing = db.query(Device).filter(Device.ip_address == uc["ip"]).first()
+        existing = discovery.find_existing(db, uc["mac"], uc["ip"])
 
         if existing and not existing.mac_address and not existing.claimed and uc["mac"]:
             # Merge a ping-scan find (no MAC, generic 'discovered-*' name) with

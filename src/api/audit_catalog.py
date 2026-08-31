@@ -210,6 +210,13 @@ EVENT_CATALOG = {
         "frameworks": [SOC2],
         "description": "Device control channel revoked.",
     },
+    "device_revoke_integrity": {
+        "required": ["device_id", "device"],
+        "retention": "security",
+        "frameworks": [SOC2, PCI],
+        "description": "A revoked device had no matching device_adopt_revoke audit "
+                       "event (un-audited state change) — flagged by the integrity sweep.",
+    },
 
     # ── ticket lifecycle (operational) ──
     "ticket_created": {
