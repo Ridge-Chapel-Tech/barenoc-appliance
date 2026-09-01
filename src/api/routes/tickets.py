@@ -11,6 +11,7 @@ from schemas import TicketCreate, TicketUpdate, TicketResponse, generate_ticket_
 from auth import get_current_user, get_access_context, require_any_role
 from worknotes import add_note
 from queue_status import derive_status
+from change_log import record, capture_finding_resolutions
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 
@@ -312,6 +313,13 @@ def update_ticket(
 
     ticket.updated_at = datetime.datetime.utcnow()
     db.commit()
+    if update.status == "closed":
+        record(db, event_type="ticket_closed", actor=ctx["user"].username,
+               asset=ticket.ticket_id,
+               summary=f"Closed {ticket.ticket_id}: {ticket.title}",
+               detail=(ticket.resolution or "").strip()[:400] or None,
+               links={"ticket_id": ticket.ticket_id, "priority": ticket.priority})
+        capture_finding_resolutions(db, ticket.ticket_id, ctx["user"].username)
     db.refresh(ticket)
     return ticket
 

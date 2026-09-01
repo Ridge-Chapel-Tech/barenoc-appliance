@@ -534,3 +534,37 @@ def init_db():
             ))
     except OperationalError:
         pass  # Indexes already exist
+    # Migration: change_log (L2 managed-environment intelligence) — the
+    # append-only operational/business history (customer + agent views). A NEW
+    # table — create_all above already creates it; the guarded CREATEs are
+    # idempotent belt-and-suspenders no-ops. KEEP IN SYNC with
+    # models.ChangeLogEntry.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS change_log ("
+                " id INTEGER PRIMARY KEY,"
+                " timestamp DATETIME,"
+                " actor VARCHAR(64) NOT NULL,"
+                " event_type VARCHAR(32) NOT NULL,"
+                " asset VARCHAR(256),"
+                " summary VARCHAR(512) NOT NULL,"
+                " detail TEXT,"
+                " links JSON,"
+                " customer_visible BOOLEAN DEFAULT 1"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_change_log_event_type "
+                "ON change_log(event_type)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_change_log_timestamp "
+                "ON change_log(timestamp)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_change_log_customer_visible "
+                "ON change_log(customer_visible)"
+            ))
+    except OperationalError:
+        pass  # Table/indexes already exist

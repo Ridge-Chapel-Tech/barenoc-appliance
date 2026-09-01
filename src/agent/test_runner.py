@@ -250,6 +250,16 @@ class SysCtxTest(unittest.TestCase):
         self.assertIn("CHECKPOINT DIRECTORY", sysctx)
         self.assertIn("/tmp/cp/TKT-1", sysctx)
 
+    def test_sysctx_env_digest_appended_when_provided(self):
+        # L1 knowledge-layer: the environment digest is appended when the
+        # caller supplies it, and never when it doesn't (default stays pure).
+        sysctx = runner._build_sysctx("")
+        self.assertNotIn("ENVIRONMENT DIGEST", sysctx)
+        sysctx = runner._build_sysctx("", env_digest="ENVIRONMENT DIGEST:\nENVIRONMENT: 3 managed devices")
+        self.assertIn("ENVIRONMENT DIGEST", sysctx)
+        self.assertIn("ENVIRONMENT: 3 managed devices", sysctx)
+        self.assertIn("HARD SELF-PROTECTION RULE", sysctx)  # base ctx intact
+
 
 class IdentityRedactionTest(unittest.TestCase):
     """Known personal identifiers must be redacted before the agent sees them

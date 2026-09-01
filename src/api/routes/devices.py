@@ -12,6 +12,7 @@ from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
 from audit import log_event
+from change_log import record
 from action_validator import (
     effective_channels, suggest_from_fingerprint,
     CHANNELS,
@@ -425,6 +426,11 @@ def claim_device(
         device.ssh_key_fingerprint = _store_ssh_key(device.name, config.ssh_key)
 
     db.commit()
+    record(db, event_type="device_config_changed", actor=_actor_name(ctx["user"]),
+           asset=device.name,
+           summary=f"Claimed device {device.name}",
+           detail=f"Ownership/control configured (type {device.device_type or 'unknown'})",
+           links={"device_id": device.id})
 
     # Queue connectivity verification
     import json as _json
@@ -782,6 +788,11 @@ def update_device(
 
     device.updated_at = datetime.utcnow()
     db.commit()
+    record(db, event_type="device_config_changed", actor=_actor_name(ctx["user"]),
+           asset=device.name,
+           summary=f"Updated device {device.name}",
+           detail=f"Changed fields: {', '.join(sorted(data.keys()))}",
+           links={"device_id": device.id})
     db.refresh(device)
     resp = DeviceResponse.model_validate(device).model_dump()
     resp["snmp_configured"] = bool(device.snmp_community)
@@ -863,6 +874,11 @@ def adopt_with_cert(device_id: int, body: dict = None, db: Session = Depends(get
     db.commit()
     log_event(db, "device_adopt_start", ctx["user"].username, {
         "device_id": device.id, "device": device.name, "cn": cn, "ttl": ttl})
+    record(db, event_type="device_adopted", actor=_actor_name(ctx["user"]),
+           asset=device.name,
+           summary=f"Certificate adoption started for {device.name}",
+           detail=f"Cert CN {cn} (enrollment token minted, ttl {ttl}s)",
+           links={"device_id": device.id, "cn": cn})
     return {
         "status": "enrolling",
         "cn": cn,
@@ -888,6 +904,11 @@ def revoke_adoption(device_id: int, db: Session = Depends(get_db),
     db.commit()
     log_event(db, "device_adopt_revoke", ctx["user"].username, {
         "device_id": device.id, "device": device.name, "cn": device.cert_cn})
+    record(db, event_type="device_revoked", actor=_actor_name(ctx["user"]),
+           asset=device.name,
+           summary=f"Revoked adoption for {device.name}",
+           detail=f"Cert CN {device.cert_cn or 'n/a'}",
+           links={"device_id": device.id, "cn": device.cert_cn})
     return _adoption_brief(device)
 
 

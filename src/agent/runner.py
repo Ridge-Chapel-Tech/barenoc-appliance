@@ -1266,11 +1266,34 @@ def _checkpoint_block(checkpoint_dir: str) -> str:
             "checkpoint here if you time out and reports the rollback state.")
 
 
-def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
+def _environment_digest() -> str:
+    """The knowledge-layer environment digest (L1) for the sysctx. Fetches the
+    compact summary text from the API; returns "" on ANY failure so a digest
+    outage never blocks a pi run. No secrets are ever included in the digest."""
+    try:
+        token = _api_login()
+        if not token:
+            return ""
+        req = urllib.request.Request(
+            "https://localhost/api/v1/environment/summary",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp = urllib.request.urlopen(req, timeout=5, context=SSL_CTX)
+        data = json.loads(resp.read().decode())
+        text = str(data.get("text") or "").strip()
+        return f"ENVIRONMENT DIGEST:\n{text}" if text else ""
+    except Exception as e:
+        logger.warning(f"environment digest fetch failed: {e}")
+        return ""
+
+
+def _build_sysctx(context: str = "", checkpoint_dir: str = "",
+                  env_digest: str = "") -> str:
     """The pi system context: operations guide + hard rules + ticket context.
     One function so tests can assert the script guidance and the 'not yours'
     creds line stay intact. The INFRA-CHANGE CONTRACT (agent-foresight) rides
-    here so every port/VLAN/network action is plan-first + checkpointed."""
+    here so every port/VLAN/network action is plan-first + checkpointed. The
+    knowledge-layer environment digest (L1) is appended when provided."""
     sysctx = (
         "You are Lily, the BareNOC network operations assistant, working an autonomous "
         "ticket session with FULL tool access (bash, file reads, the UniFi controller "
@@ -1364,6 +1387,8 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "") -> str:
     cp_block = _checkpoint_block(checkpoint_dir)
     if cp_block:
         sysctx += "\n\n" + cp_block
+    if env_digest:
+        sysctx += "\n\n" + env_digest
     if context:
         # Sanitize the injected ticket context BEFORE the agent sees it: known
         # personal identifiers are redacted so the agent cannot read them.
@@ -1502,7 +1527,8 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
                                 "api_key": cfg.get("api_key") or "ollama"})
     cdir = _checkpoint_dir(ticket_id)
     os.makedirs(cdir, exist_ok=True)
-    sysctx = _build_sysctx(context, checkpoint_dir=cdir)
+    sysctx = _build_sysctx(context, checkpoint_dir=cdir,
+                           env_digest=_environment_digest())
 
     def run_once(provider, model, api_key, session_subdir, label):
         sdir = os.path.join(workdir, "sessions", session_subdir)

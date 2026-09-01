@@ -45,6 +45,7 @@ yields fewer findings and the collector error is recorded in ``meta``.
 """
 
 import re
+import ipaddress
 
 SCHEMA_VERSION = 1
 
@@ -330,6 +331,14 @@ SUGGESTED_ACTIONS = {
     "sec.firmware_outdated": "Run the firmware upgrade.",
     "sec.mgmt_vlan_on_uplink": "Move the management VLAN off the uplink port onto a "
                               "dedicated, restricted VLAN.",
+    "sec.trunk_native_used": "Set the trunk's native (untagged) VLAN to a dedicated "
+                             "UNUSED VLAN and prune the trunk to only the required VLANs "
+                             "(VLAN-hopping prevention).",
+    "sec.mgmt_vlan_not_isolated": "Restrict the management VLAN to admin sources and keep "
+                                  "user traffic off it (tag it on trunks, never as the "
+                                  "native, and remove access ports from it).",
+    "sec.mgmt_ip_missing": "Assign the device a management IP on the isolated management "
+                           "VLAN (firmware permitting).",
     "rel.dhcp_no_reservation": "Add a DHCP reservation/static lease for the device so "
                                "its address can't drift.",
     "rel.link_down_count": "Investigate the link stability — check whether recent "
@@ -382,6 +391,8 @@ HIGH_RISK_KEYS = frozenset({
     "hyg.dead_end_port",         # disabling a port drops whatever is (or isn't) behind it
     "hyg.default_vlan1",         # moving traffic off VLAN 1 (port re-assignment)
     "hyg.disabled_network",      # deleting a network (VLAN) definition
+    "sec.trunk_native_used",     # re-homing the trunk native (untagged) VLAN
+    "sec.mgmt_vlan_not_isolated",  # moving user traffic off the management VLAN
 })
 
 RISK_META = {
@@ -404,6 +415,26 @@ RISK_META = {
         "plan_note": ("PLAN FIRST: confirm which VLANs are management, capture the uplink's "
                       "full before state, move the management VLAN in one step, then verify "
                       "management reachability before anything else."),
+    },
+    "sec.trunk_native_used": {
+        "high_risk": True,
+        "blast_radius": ("Changing a trunk's native (untagged) VLAN re-homes every "
+                         "untagged device riding that trunk — get it wrong and the "
+                         "downstream gear (and possibly the management path) loses "
+                         "connectivity."),
+        "plan_note": ("PLAN FIRST: capture the trunk's full before state (native + tagged), "
+                      "provision the dedicated unused VLAN, set it as native, prune the "
+                      "tagged set to only the required VLANs, then verify the trunk still "
+                      "forwards."),
+    },
+    "sec.mgmt_vlan_not_isolated": {
+        "high_risk": True,
+        "blast_radius": ("Moving user traffic off the management VLAN changes VLAN "
+                         "membership on trunks and access ports — a wrong move can strand "
+                         "the management plane (including the appliance's path to the gear)."),
+        "plan_note": ("PLAN FIRST: identify every port carrying the management VLAN, "
+                      "capture the full before state, move it to tagged-only on trunks and "
+                      "off access ports in one step, then verify management reachability."),
     },
     "perf.uplink_congestion": {
         "high_risk": True,
@@ -845,6 +876,74 @@ def _sec_mgmt_vlan_on_uplink(snap, dev):
                                    "dedicated, restricted VLAN.", {"port_label": label})}
 
 
+@rule("sec.trunk_native_used", "security", "critical",
+      "{port_label}: trunk native VLAN in use")
+def _sec_trunk_native_used(snap, dev):
+    vlan_map = snapshot_vlan_map(snap)
+    for p in (dev.get("unifi") or {}).get("ports") or []:
+        if not _is_trunk_port(p):
+            continue
+        native = p.get("native_vlan")
+        if not _trunk_native_used(snap, native):
+            continue
+        label = port_label(dev, p)
+        native_name = p.get("native_network") or _vlan_name(native, vlan_map)
+        native_label = native_name if native is None else f"{native_name} (VLAN {native})"
+        tagged = [v for v in (p.get("tagged_vlans") or []) if v is not None]
+        return {
+            "port": p.get("port_idx"),
+            "name": p.get("name"),
+            "port_label": label,
+            "native_vlan": native,
+            "native_network": native_name,
+            "native_label": native_label,
+            "tagged_vlans": tagged,
+            "tagged_networks": [_vlan_name(v, vlan_map) for v in tagged],
+            "detail": _fmt("Trunk port {port_label} has native VLAN = {native} (used) — "
+                           "set the native to a dedicated UNUSED VLAN and prune the trunk "
+                           "to only the required VLANs (VLAN-hopping prevention).",
+                           {"port_label": label, "native": native_label}),
+        }
+
+
+@rule("sec.mgmt_ip_missing", "security", "info",
+      "No management IP on the management VLAN: {name}")
+def _sec_mgmt_ip_missing(snap, dev):
+    if dev.get("device_type") not in GEAR_TYPES:
+        return None
+    ip = (dev.get("ip") or "").strip()
+    subnets = _mgmt_subnets(snap)
+    if not subnets:
+        # No management VLAN/subnet is defined — every gear device sits on a
+        # data network by construction (the dogfood case: devices on .4.x).
+        if not ip:
+            return {"ip": None,
+                    "detail": _fmt("{name} has no management IP at all — assign one on a "
+                                   "dedicated management VLAN for isolated management "
+                                   "(firmware permitting).", {"name": dev.get("name")})}
+        return {"ip": ip,
+                "detail": _fmt("{name}'s management IP {ip} is on a data network and no "
+                               "dedicated management VLAN is defined — create an isolated "
+                               "management VLAN and assign the device an IP on it.",
+                               {"name": dev.get("name"), "ip": ip})}
+    if not ip:
+        return {"ip": None,
+                "detail": _fmt("{name} has no management IP — assign one on the management "
+                               "VLAN for isolated management (firmware permitting).",
+                               {"name": dev.get("name")})}
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None   # non-IP management address — cannot determine VLAN membership
+    if any(addr in sn for sn in subnets):
+        return None   # already on the management VLAN
+    return {"ip": ip,
+            "detail": _fmt("{name}'s management IP {ip} is on a data network, not the "
+                           "management VLAN — assign an IP on the management VLAN for "
+                           "isolated management (firmware permitting).",
+                           {"name": dev.get("name"), "ip": ip})}
+
+
 # ── SSID security (snapshot-level — one finding per offending SSID) ───────
 
 @snapshot_rule("sec.open_ssid", "security", "critical",
@@ -893,6 +992,40 @@ def _sec_wpa2_tkip(snap):
                         "detail": _fmt("SSID '{ssid}' uses TKIP encryption (a known "
                                        "weakness) — switch to AES/CCMP.",
                                        {"ssid": w.get("name")})})
+    return out
+
+
+@snapshot_rule("sec.mgmt_vlan_not_isolated", "security", "critical",
+               "Management VLAN not isolated: {network}")
+def _sec_mgmt_vlan_not_isolated(snap):
+    out = []
+    mgmt = _mgmt_vlans(snap)
+    vlan_map = snapshot_vlan_map(snap)
+    for vlan in sorted(mgmt):
+        trunk_native = []
+        access_native = []
+        for d in snap.get("devices") or []:
+            for p in (d.get("unifi") or {}).get("ports") or []:
+                if p.get("native_vlan") != vlan:
+                    continue
+                label = port_label(d, p)
+                if _is_trunk_port(p):
+                    trunk_native.append(label)
+                else:
+                    access_native.append(label)
+        if not trunk_native and not access_native:
+            continue
+        network = _vlan_name(vlan, vlan_map)
+        out.append({
+            "network": network,
+            "vlan": vlan,
+            "trunk_native_ports": trunk_native,
+            "access_ports": access_native,
+            "detail": _fmt("Management VLAN {network} is not isolated — it is the native "
+                           "(untagged) VLAN on a trunk or has devices on access ports. "
+                           "Restrict it to admin sources and keep user traffic off it.",
+                           {"network": network}),
+        })
     return out
 
 
@@ -1273,6 +1406,74 @@ def _mgmt_vlans(snap) -> set:
         if any(k in nm for k in MGMT_VLAN_KEYWORDS) and n.get("vlan") is not None:
             out.add(n["vlan"])
     return out
+
+
+def _is_trunk_port(p) -> bool:
+    """True when a port carries multiple VLANs (a trunk/uplink): the
+    uplink/trunk role, or a non-empty tagged VLAN set."""
+    p = p or {}
+    if p.get("is_uplink"):
+        return True
+    return bool([v for v in (p.get("tagged_vlans") or []) if v is not None])
+
+
+def _used_vlans(snap) -> set:
+    """VLAN ids in ACTUAL use (carrying devices/traffic): the native of any
+    ACCESS (non-trunk) port, or any enabled SSID's VLAN. The untagged Default
+    network (native None) is handled separately as always-in-use."""
+    used = set()
+    for d in snap.get("devices") or []:
+        for p in (d.get("unifi") or {}).get("ports") or []:
+            if _is_trunk_port(p):
+                continue
+            nv = p.get("native_vlan")
+            if nv is not None:
+                used.add(nv)
+    for w in snap.get("wlans") or []:
+        if w.get("enabled") and w.get("vlan") is not None:
+            used.add(w["vlan"])
+    return used
+
+
+def _trunk_native_used(snap, native_vlan) -> bool:
+    """A trunk's native VLAN is 'used' (the VLAN-hopping vector) when it is the
+    untagged Default (native None), carries devices/SSIDs, or is the management
+    plane. A truly dedicated unused (black-hole) VLAN is clean."""
+    if native_vlan is None:
+        return True
+    return native_vlan in _used_vlans(snap) or native_vlan in _mgmt_vlans(snap)
+
+
+def _parse_subnet(subnet):
+    """'10.0.8.1/24' -> ip_network (strict=False); None when unparseable."""
+    s = str(subnet or "").strip()
+    if not s:
+        return None
+    try:
+        return ipaddress.ip_network(s, strict=False)
+    except ValueError:
+        return None
+
+
+def _mgmt_subnets(snap) -> list:
+    """ip_network objects for the management VLANs' subnets (empty when no
+    management VLAN/subnet is defined)."""
+    mgmt = _mgmt_vlans(snap)
+    out = []
+    for n in snap.get("networks") or []:
+        if n.get("vlan") in mgmt:
+            sn = _parse_subnet(n.get("subnet"))
+            if sn is not None:
+                out.append(sn)
+    return out
+
+
+def _vlan_name(vlan, vlan_map) -> str:
+    """The network NAME for a VLAN id (or the untagged Default)."""
+    entry = _find_map_entry(vlan_map, vlan=vlan)
+    if entry and entry.get("name"):
+        return entry["name"]
+    return "Default" if vlan is None else f"VLAN {vlan}"
 
 
 def _is_ubiquiti(dev) -> bool:

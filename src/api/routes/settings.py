@@ -12,6 +12,7 @@ from models import User
 from auth import get_current_user, require_role, require_any_role
 from llm_providers import load_providers, probe_provider
 from audit import log_event
+from change_log import record
 from database import get_db
 import report_gate
 
@@ -720,6 +721,12 @@ def _update_support(config: dict, db: Session, user: User) -> dict:
     log_event(db, "settings_change", user.username, {
         "section": "support", "fields": fields,
     })
+    record(db, event_type="settings_changed", actor=user.username,
+           asset="support",
+           summary="Support settings changed",
+           detail=", ".join(fields),
+           links={"section": "support"},
+           customer_visible=False)
     return {"status": "ok", "updated": 1}
 
 
@@ -870,6 +877,12 @@ def update_remote_support(config: dict, db: Session = Depends(get_db),
         # the auth key value is NEVER logged (only the toggle bool)
         "values": {"remote_support": enabled},
     })
+    record(db, event_type="settings_changed", actor=user.username,
+           asset="remote_support",
+           summary=f"Remote support {'enabled' if enabled else 'disabled'}",
+           detail=", ".join(fields),
+           links={"section": "support"},
+           customer_visible=True)
 
     _trigger_remote_support_reconcile()
 
@@ -1135,6 +1148,12 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
         log_event(db, "settings_change", user.username, {
             "section": "tickets", "fields": sorted(set(changed)), "values": values,
         })
+        record(db, event_type="settings_changed", actor=user.username,
+               asset="tickets",
+               summary="Ticket lifecycle settings changed",
+               detail=", ".join(sorted(set(changed))),
+               links={"section": "tickets"},
+               customer_visible=False)
         return {"status": "ok", "updated": updated}
     # Timezone must be a valid IANA zone (reject typos before writing .env)
     if section == "general" and config.get("timezone"):
@@ -1400,6 +1419,12 @@ def update_section(section: str, config: dict, db: Session = Depends(get_db),
         "fields": sorted(set(changed)),
         "values": values,
     })
+    record(db, event_type="settings_changed", actor=user.username,
+           asset=section,
+           summary=f"Settings changed: {section}",
+           detail=", ".join(sorted(set(changed))),
+           links={"section": section},
+           customer_visible=False)
     return {"status": "ok", "updated": updated}
 
 
@@ -1568,6 +1593,12 @@ def _update_backups(config: dict, db: Session, user: User) -> dict:
     log_event(db, "settings_change", user.username, {
         "section": "backups", "fields": sorted(set(changed)), "values": values,
     })
+    record(db, event_type="settings_changed", actor=user.username,
+           asset="backups",
+           summary="Backup settings changed",
+           detail=", ".join(sorted(set(changed))),
+           links={"section": "backups"},
+           customer_visible=False)
     return {"status": "ok", "updated": len(set(changed))}
 
 
@@ -1977,6 +2008,12 @@ def _update_llm(config: dict, db: Session, user: User) -> dict:
         "section": "llm",
         "fields": sorted(set(changed)),
     })
+    record(db, event_type="settings_changed", actor=user.username,
+           asset="llm",
+           summary="LLM provider settings changed",
+           detail=", ".join(sorted(set(changed))),
+           links={"section": "llm"},
+           customer_visible=False)
     _write_provider_secret()  # keep the pi-agent key in sync with Settings
     return {"status": "ok", "updated": updated}
 

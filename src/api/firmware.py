@@ -56,6 +56,7 @@ from models import (Device, DeviceFirmware, FirmwareUpgrade,
 from emailer import send_email, get_recipients, alert_html
 from schemas import generate_ticket_id
 from audit import log_event
+from change_log import record
 
 # Reuse the updates-schedule-v2 local-time machinery (zoneinfo + .env TZ).
 from routes.updates import _local_now, _parse_local_dt
@@ -626,6 +627,12 @@ def advance_inflight(db, client, u: FirmwareUpgrade, now) -> None:
                 "device": u.device_name, "mac": u.mac_address,
                 "from": u.from_version, "to": u.to_version,
             })
+            record(db, event_type="firmware_updated", actor="system",
+                   asset=u.device_name,
+                   summary=f"Firmware updated on {u.device_name}",
+                   detail=f"{u.from_version} → {u.to_version}",
+                   links={"mac": u.mac_address, "device_id": u.device_id,
+                          "from": u.from_version, "to": u.to_version})
             return
         u.verify_attempts = (u.verify_attempts or 0) + 1
         if now_utc < u.stage_deadline:

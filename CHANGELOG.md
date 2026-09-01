@@ -42,8 +42,36 @@ Categories per release:
   guard). The scheduler POSTs `/api/v1/revoke-integrity/sweep` every 5 minutes
   (same trigger pattern as service checks); the engine runs in the API
   container so it shares the emailer + audit hash chain.
-## [Unreleased]
-- **Chat tickets bind to their target device (agent updates, Part A):** a chat
+## [2026.08.31.a] — 2026-08-31
+- **Knowledge-layer L1 — managed-environment live state:** a new
+  `src/api/environment_state.py` models every managed asset as a normalized
+  record (identity/inventory, channels, capabilities, controls -> action
+  channel, best-effort config snapshot) and exposes `summarize_environment(db)`
+  (compact digest) + `device_state(db, id)` (full record). Capabilities resolve
+  via `catalog -> probe -> conservative floor` with a per-capability confidence
+  basis (`catalog-verified` / `probed` / `unknown-floor`); action channels are
+  computed channel × permission (`bareNOC_fix` / `tech_action` /
+  `manual_review`). Unknown devices are first-class — flagged in the digest and
+  carrying a `catalog_contribution` hint (MAC OUI / fingerprint / agent facts)
+  for the L3/L4 + shared-catalog lanes. A read-only query surface
+  (`GET /api/v1/environment/summary` + `/devices/{id}`) feeds the agent
+  runner's sysctx digest hook (minimal append in `runner.py`) and the
+  optimizer's thin capability/control accessor. No secrets leave the module;
+  `network_opt_rules.py` is untouched (netopt-netsec-rules lane owns it).
+- **Change log (L2 managed-environment intelligence):** append-only operational
+  history (`src/api/change_log.py` + `ChangeLogEntry` table) of what changed and
+  why — device adopt/revoke/config, firmware updates, findings (resolved/
+  actioned, `finding_declined` reserved for a future decline UI), ticket
+  closures, endpoint provisioning, and high-value settings — each with `actor` +
+  one-line `summary` + technical `detail` + `links` (ticket/finding/device ids) +
+  `customer_visible`. Capture hooks are lazy-import and best-effort (a change-log
+  failure never breaks the main operation) at the existing write points: the
+  device report/adopt/revoke/config paths, ticket close (which also records
+  `finding_resolved` for the finding's fix ticket), NetOpt optimize (finding →
+  fix ticket), firmware upgrade success, and settings saves. Two views at
+  `GET /api/v1/environment/changes?view=customer|agent` (customer = one-line
+  readable, agent = full detail + links) plus a downloadable Markdown/JSON
+  artifact (`GET /api/v1/environment/changes/download`).- **Chat tickets bind to their target device (agent updates, Part A):** a chat
   message that references a device (name / hostname / IP, case-insensitive)
   now sets the spawned ticket's `target_device_id` and puts the device into the
   agent's context, so "update my plex server" acts on the right box. Agent-

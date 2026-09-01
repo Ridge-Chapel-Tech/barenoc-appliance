@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Device
+from change_log import record
 from step_ca import device_cn
 import network_scope
 
@@ -182,6 +183,7 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
     ips = _report_ips(request, body)
     macs = _report_macs(body)
     device, adopted_in_place = resolve_device(db, cn, ips=ips, macs=macs)
+    self_registered = False
     if not device:
         # SELF-REGISTRATION: a valid cert from the BareNOC CA is proof of
         # identity — create the record (this is how the /onboard portal adopts
@@ -195,6 +197,7 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
                         status="online", tags=["self-onboarded"],
                         hostname=hostname[:120] or None)
         db.add(device)
+        self_registered = True
     if device.adoption_status == "revoked":
         raise HTTPException(status_code=403, detail="device adoption revoked")
     now = datetime.datetime.utcnow()
@@ -208,7 +211,9 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
         _refresh_ip(device, ips)
     elif hostname and not device.hostname:
         device.hostname = hostname[:120]
+    became_linked = False
     if device.adoption_status != "linked":
+        became_linked = True
         device.adoption_status = "linked"
         device.adoption_method = "agent" if is_agent else "cert"
         device.cert_cn = cn
@@ -251,5 +256,22 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
     device.last_seen = now
     device.status = "online"
     db.commit()
+    if self_registered:
+        record(db, event_type="provisioned",
+               actor="agent" if is_agent else "system",
+               asset=device.name,
+               summary=f"Provisioned endpoint {device.name}",
+               detail=(f"Self-onboarded via {'NOC_Agent' if is_agent else 'certificate'} "
+                       f"report (cn={cn})"),
+               links={"device_id": device.id, "cn": cn})
+    elif became_linked:
+        record(db, event_type="device_adopted",
+               actor="agent" if is_agent else "system",
+               asset=device.name,
+               summary=f"Device {device.name} adopted ({'agent' if is_agent else 'cert'})",
+               detail=(f"First successful report linked {cn}" +
+                       (" (adopted-in-place onto a discovery record)" if adopted_in_place else "")),
+               links={"device_id": device.id, "cn": cn,
+                      "method": "agent" if is_agent else "cert"})
     return {"ok": True, "device": device.name, "cn": cn,
             "adopted": device.adoption_status, "method": device.adoption_method}

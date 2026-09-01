@@ -32,6 +32,7 @@ from routes.updates import _local_now, _parse_local_dt, _appliance_tz
 import network_opt
 from network_opt_rules import SCHEMA_VERSION, CATEGORIES, SEVERITIES, fixability, suggested_action_for
 from netopt_tickets import spawn_optimize_tickets, PER_ITEM_CAP
+from change_log import record
 
 router = APIRouter(prefix="/api/v1/netopt", tags=["network-optimization"])
 
@@ -351,6 +352,17 @@ def optimize_run(run_id: int, body: OptimizeBody, db: Session = Depends(get_db),
         db, run_id, ordered, mode=mode, comments=body.comments or {},
         submitter_id=user.id)
     db.commit()
+    for item in (result.get("created") or []):
+        record(db, event_type="finding_actioned", actor=user.username,
+               asset=item.get("ticket_id"),
+               summary=(f"Network Optimization findings actioned via "
+                        f"{item.get('ticket_id')}"),
+               detail=(f"NetOpt run #{run_id} — "
+                       f"{item.get('priority', 'P3')} fix ticket created"),
+               links={"ticket_id": item.get("ticket_id"),
+                      "finding_ids": item.get("finding_ids") or [],
+                      "run_id": run_id},
+               customer_visible=False)
     return {"status": "ok", "run_id": run_id, "mode": result["mode"],
             "tickets": result["created"], "count": result["count"]}
 

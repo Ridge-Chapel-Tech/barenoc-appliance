@@ -495,7 +495,9 @@ class ScoringTest(unittest.TestCase):
 
     def test_healthy_home_scores_ge_88(self):
         # U6 up (no critical), SSH/single-WAN/single-uplink/unnamed-port all
-        # cosmetic infos -> a healthy home must score 90+ (pinned).
+        # cosmetic infos -> a healthy home must score 90+ (pinned). The switch
+        # uplink uses a dedicated UNUSED native VLAN (the now-required config —
+        # a trunk native on a used VLAN like Default is a critical finding).
         gw = dev_snap(name="Gateway-01", device_type="gateway", ip="192.0.2.1",
                       mac="aa:bb:cc:00:00:01",
                       unifi={"version": "8", "upgradable": False, "uplink_mac": "",
@@ -512,11 +514,12 @@ class ScoringTest(unittest.TestCase):
                       unifi={"version": "7", "upgradable": False, "uplink_mac": "aa:bb:cc:00:00:01",
                              "fixed_ip": None, "wan": None, "ports": [
                           {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
-                           "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+                           "max_speed_mbps": 1000, "native_vlan": 99, "tagged_vlans": [],
                            "link_down_count": 1, "tx_errors": 0, "rx_errors": 0, "is_uplink": True}]})
         findings = rules.evaluate(snap([gw, ap, sw]))
         self.assertNotIn("rel.offline_gear", keys(findings))
         self.assertNotIn("rel.link_down_count", keys(findings))   # single old flap ignored
+        self.assertNotIn("sec.trunk_native_used", keys(findings))   # unused native VLAN
         self.assertGreaterEqual(rules.score(findings)["overall"], 88)
 
     def test_score_floor_zero(self):
@@ -1683,6 +1686,148 @@ class VlanAwarenessTest(unittest.TestCase):
         self.assertEqual(port["port_idx"], 7)
         self.assertEqual(port["story"],
                          "native Default (.1.1/24), tagged IoT(9)/Video(10)")
+
+
+class NetSecRulesTest(unittest.TestCase):
+    """The three network-security rule families (brief netopt-netsec-rules):
+    trunk-native-unused, management-VLAN isolation, and management-IP presence."""
+
+    def _port(self, **kw):
+        p = {"port_idx": 1, "name": "Port 1", "up": True, "speed_mbps": 1000,
+             "max_speed_mbps": 1000, "native_vlan": None, "tagged_vlans": [],
+             "link_down_count": 0, "tx_errors": 0, "rx_errors": 0,
+             "is_uplink": False}
+        p.update(kw)
+        return p
+
+    def _dev(self, name="Switch-01", device_type="switch", ip="10.0.4.2", **kw):
+        return dev_snap(name=name, device_type=device_type, ip=ip, **kw)
+
+    def _uni(self, ports):
+        return {"version": "x", "upgradable": False, "uplink_mac": "",
+                "fixed_ip": None, "wan": None, "ports": ports}
+
+    def test_new_rule_keys_registered_with_severities(self):
+        reg = {r["key"]: r for r in rules.RULES + rules.SNAPSHOT_RULES}
+        self.assertEqual(reg["sec.trunk_native_used"]["severity"], "critical")
+        self.assertEqual(reg["sec.trunk_native_used"]["category"], "security")
+        self.assertEqual(reg["sec.mgmt_vlan_not_isolated"]["severity"], "critical")
+        self.assertEqual(reg["sec.mgmt_vlan_not_isolated"]["category"], "security")
+        self.assertEqual(reg["sec.mgmt_ip_missing"]["severity"], "info")
+        self.assertEqual(reg["sec.mgmt_ip_missing"]["category"], "security")
+
+    # ── TRUNK_NATIVE_UNUSED ──────────────────────────────────────────────
+    def test_trunk_used_native_flagged(self):
+        # trunk native = Production (4), which an access port also uses -> used
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=4, tagged_vlans=[5, 9]),
+            self._port(port_idx=2, native_vlan=4)]))
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.trunk_native_used")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "critical")
+        self.assertEqual(f[0]["evidence"]["native_vlan"], 4)
+        self.assertEqual(f[0]["evidence"]["native_network"], "Production")
+        self.assertEqual(f[0]["evidence"]["tagged_vlans"], [5, 9])
+        self.assertEqual(f[0]["evidence"]["tagged_networks"], ["WiFi", "IoT"])
+
+    def test_trunk_default_native_flagged(self):
+        # the dogfood case: trunk native = Default (untagged, vlan None) -> used
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=None,
+                       native_network="Default", tagged_vlans=[5])]))
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.trunk_native_used")
+        self.assertEqual(len(f), 1)
+        self.assertIsNone(f[0]["evidence"]["native_vlan"])
+        self.assertEqual(f[0]["evidence"]["native_network"], "Default")
+
+    def test_trunk_unused_native_clean(self):
+        # native = a VLAN referenced only as this trunk's native (black-hole)
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=99, tagged_vlans=[5, 9])]))
+        self.assertNotIn("sec.trunk_native_used",
+                         keys(rules.evaluate(snap([d], networks=VLAN_FIXTURE))))
+
+    def test_pruned_trunk_clean(self):
+        # a pruned trunk with only the required VLAN tagged + an unused native
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=99, tagged_vlans=[5])]))
+        self.assertNotIn("sec.trunk_native_used",
+                         keys(rules.evaluate(snap([d], networks=VLAN_FIXTURE))))
+
+    def test_trunk_native_fixability_high_risk(self):
+        fx = rules.fixability("sec.trunk_native_used")
+        self.assertTrue(fx["fixable"])
+        self.assertTrue(fx["high_risk"])
+        self.assertIn("UNUSED", fx["suggested_action"])
+        self.assertIn("PLAN FIRST", fx["suggested_action"])
+
+    # ── MGMT_VLAN_ISOLATED ───────────────────────────────────────────────
+    def test_mgmt_vlan_native_on_trunk_flagged(self):
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=8, tagged_vlans=[5])]))
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.mgmt_vlan_not_isolated")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "critical")
+        self.assertEqual(f[0]["evidence"]["vlan"], 8)
+        self.assertIn("Switch-01 Port 1", f[0]["evidence"]["trunk_native_ports"])
+
+    def test_mgmt_vlan_on_access_port_flagged(self):
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=2, native_vlan=8)]))   # access port on Management
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.mgmt_vlan_not_isolated")
+        self.assertEqual(len(f), 1)
+        self.assertIn("Switch-01 Port 2", f[0]["evidence"]["access_ports"])
+
+    def test_mgmt_vlan_tagged_only_clean(self):
+        # mgmt VLAN 8 tagged on the trunk (native = unused VLAN 99) -> isolated
+        d = self._dev(unifi=self._uni([
+            self._port(port_idx=1, is_uplink=True, native_vlan=99, tagged_vlans=[8])]))
+        self.assertNotIn("sec.mgmt_vlan_not_isolated",
+                         keys(rules.evaluate(snap([d], networks=VLAN_FIXTURE))))
+
+    def test_mgmt_vlan_not_isolated_fixability_high_risk(self):
+        fx = rules.fixability("sec.mgmt_vlan_not_isolated")
+        self.assertTrue(fx["fixable"])
+        self.assertTrue(fx["high_risk"])
+        self.assertIn("PLAN FIRST", fx["suggested_action"])
+
+    # ── MGMT_IP_MISSING ──────────────────────────────────────────────────
+    def test_mgmt_ip_on_mgmt_vlan_clean(self):
+        d = self._dev(device_type="switch", ip="10.0.8.10")
+        self.assertNotIn("sec.mgmt_ip_missing",
+                         keys(rules.evaluate(snap([d], networks=VLAN_FIXTURE))))
+
+    def test_mgmt_ip_on_data_vlan_flagged(self):
+        d = self._dev(device_type="switch", ip="10.0.4.10")
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.mgmt_ip_missing")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "info")
+        self.assertEqual(f[0]["evidence"]["ip"], "10.0.4.10")
+
+    def test_no_mgmt_ip_flagged(self):
+        d = self._dev(device_type="switch", ip="")
+        f = by_key(rules.evaluate(snap([d], networks=VLAN_FIXTURE)),
+                   "sec.mgmt_ip_missing")
+        self.assertEqual(len(f), 1)
+        self.assertIsNone(f[0]["evidence"]["ip"])
+
+    def test_no_mgmt_vlan_defined_all_gear_flagged(self):
+        # the dogfood case: no management VLAN -> every gear device flags info
+        d = self._dev(device_type="ap", ip="192.168.4.41")
+        f = by_key(rules.evaluate(snap([d], networks=[])),
+                   "sec.mgmt_ip_missing")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "info")
+
+    def test_mgmt_ip_missing_fixable_not_high_risk(self):
+        fx = rules.fixability("sec.mgmt_ip_missing")
+        self.assertTrue(fx["fixable"])
+        self.assertFalse(fx["high_risk"])
 
 
 if __name__ == "__main__":

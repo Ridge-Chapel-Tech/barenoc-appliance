@@ -181,6 +181,34 @@ class AuditLog(Base):
     sha256_hash = Column(String(64), nullable=False)
 
 
+class ChangeLogEntry(Base):
+    """One append-only operational/business history event (L2 change-log).
+
+    Complements the hash-chained ``AuditLog`` (tamper-evident security record)
+    with a READABLE "what changed and why" history for the customer and the
+    agent. Append-only by convention (no update/delete surface in the API);
+    NOT chained; every write is best-effort (a failure must never break the
+    operation that triggered it). ``links`` carries ticket/finding/device ids.
+    """
+
+    __tablename__ = "change_log"
+    __table_args__ = (
+        Index("ix_change_log_event_type", "event_type"),
+        Index("ix_change_log_timestamp", "timestamp"),
+        Index("ix_change_log_customer_visible", "customer_visible"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    actor = Column(String(64), nullable=False)         # user | agent | system
+    event_type = Column(String(32), nullable=False)    # see change_log.EVENT_TYPES
+    asset = Column(String(256), nullable=True)         # device / node / service / ticket id
+    summary = Column(String(512), nullable=False)      # one-line, customer-readable
+    detail = Column(Text, nullable=True)               # technical detail (agent view)
+    links = Column(JSON, default=dict)                 # {ticket_id, finding_key, device_id, ...}
+    customer_visible = Column(Boolean, default=True)
+
+
 class DeviceJob(Base):
     """A job the appliance enqueues for an endpoint agent to pull + execute
     (design §5). RLS-equivalent scoping by CN: a device can only see/complete
