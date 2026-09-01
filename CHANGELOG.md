@@ -15,6 +15,18 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.09.01.a] — 2026-09-01
+
+### Fixed
+- **Login front door 500 (hotfix v2026.09.01.a):** `GET /` and `GET /login`
+  crashed with `NameError: name 'oidc_config' is not defined` on every box on
+  v2026.08.31.a — the knowledge-layer #132 keep-both merge dropped the
+  `from oidc import oidc_config, oauth_login_config` import from main.py.
+  Health/API endpoints stayed 200 so the deploy looked green; the failure
+  only surfaced for logged-out sessions hitting the login page. Import
+  restored + `test_front_door` added (anonymous front-door requests must
+  render or redirect, never 500 — it FAILS on the pre-fix tree).
+
 ## [2026.08.30.e] — 2026-08-30
 
 ### Added
