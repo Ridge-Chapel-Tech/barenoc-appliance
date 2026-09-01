@@ -488,7 +488,7 @@ def restart_unifi_device(mac: str, user: User = Depends(require_role("operator")
 
 
 @router.get("/client/{ip}/port")
-def client_port(ip: str, user: User = Depends(require_role("operator"))):
+def client_port(ip: str, user: User = Depends(require_any_role("operator", "admin", "agent"))):
     """Which switch port a wired client is connected to (read-only)."""
     cfg = _get_unifi_config()
     if not _auth_ready(cfg):
@@ -505,7 +505,7 @@ def client_port(ip: str, user: User = Depends(require_role("operator"))):
 
 
 @router.get("/ports/{switch_mac}")
-def switch_ports(switch_mac: str, user: User = Depends(require_role("operator"))):
+def switch_ports(switch_mac: str, user: User = Depends(require_any_role("operator", "admin", "agent"))):
     """Port table (native/tagged VLANs) for one switch (read-only)."""
     cfg = _get_unifi_config()
     if not _auth_ready(cfg):

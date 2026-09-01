@@ -15,6 +15,17 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.09.01.b] — 2026-09-01
+
+### Fixed
+- **UniFi port reads permission-denied for the pi agent:** the sanctioned port
+  tooling's two read routes (`/api/v1/unifi/client/{ip}/port` and
+  `/api/v1/unifi/ports/{switch_mac}`) were operator-only while every other
+  UniFi action route allows admin+agent — a pi session's Phase-1 port lookup
+  (locate + dry-run) 403'd. Reads are read-only topology; aligned the gates
+  with the rest of the UniFi action set (`operator/admin/agent`). Unblocks the
+  sanctioned `unifi_port.sh` dry-run/verify flow for agent tasks.
+
 ## [2026.09.01.a] — 2026-09-01
 
 ### Fixed
