@@ -15,6 +15,30 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.09.01.d] — 2026-09-01
+
+### Fixed
+- **Close directive ignored when the user explains their fix first:** the
+  close-intent purity check required every word to be close-related, so
+  "I moved the link to port 2. close" (a past-tense narration + close) was
+  dispatched instead of closed. Lenient branch: an explicit trailing close
+  with no new-work imperative is honored ("close and run updates" still
+  refuses). 6 new CloseIntentTest cases.
+
+## [2026.09.01.c] — 2026-09-01
+
+### Fixed
+- **Monitor/auto ticket close-directives ignored:** the worker poll loop skipped
+  `source=auto` tickets entirely (link flap/outage tickets), so a human reply on
+  one (e.g. "moved the link, close") was never processed. Auto tickets now
+  re-engage when a user_message exists, and a never-agent-worked auto ticket
+  with a user close directive is closed (requester-owned resolution).
+- **UniFi port writes were not audited:** `set_port_vlans` / bounce / rename /
+  disable had zero audit events (only `unifi_network_create` audited). The four
+  port routes now emit `unifi_port_change` / `unifi_port_bounce` /
+  `unifi_port_rename` / `unifi_port_disable` (+ `_failed` variants) with
+  before/after + actor, and the change-log records network-config changes.
+
 ## [2026.09.01.b] — 2026-09-01
 
 ### Fixed

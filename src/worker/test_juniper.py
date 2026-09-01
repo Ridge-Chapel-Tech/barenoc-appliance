@@ -359,6 +359,18 @@ class CloseIntentTest(unittest.TestCase):
     def test_close_port_5_is_not_a_ticket_close(self):
         self.assertFalse(juniper.close_intent("please close port 5"))
 
+    def test_close_after_past_tense_narration(self):
+        # 09-01 monitor tickets: the user resolved it themselves, then closed.
+        self.assertTrue(juniper.close_intent("I moved the link to port 2. close"))
+        self.assertTrue(juniper.close_intent("moved the link from 3 to 2, close"))
+        self.assertTrue(juniper.close_intent("I fixed it, please close"))
+
+    def test_close_with_trailing_work_is_not_a_close(self):
+        # A close directive followed by a new-work request must dispatch.
+        self.assertFalse(juniper.close_intent("close and run all updates"))
+        self.assertFalse(juniper.close_intent("please close and check the devices"))
+        self.assertFalse(juniper.close_intent("close the ticket and reboot the gateway"))
+
     def test_close_mixed_request_is_not_a_pure_close(self):
         # A new work request that also mentions closing must still dispatch.
         self.assertFalse(juniper.close_intent("please install the update and close the ticket"))

@@ -262,6 +262,16 @@ _ACK_FILLER = frozenset({
 })
 
 
+# New-work imperatives that must NOT coexist with a lenient close directive
+# (a past-tense narration of the user's own fix is fine; an instruction to the
+# agent to do more work is not).
+_NEW_WORK_IMPERATIVE_RE = re.compile(
+    r"\b(?:please\s+)?(?:run|check|install|update|upgrade|change|set|reboot|"
+    r"restart|fix|configure|scan|verify|apply|remove|uninstall|test|create|"
+    r"add|delete|do|make|enable|disable|replace|investigate|look|find|monitor|"
+    r"watch|setup|set\s+up)\b")
+
+
 def _normalize_intent_text(text: str) -> str:
     """Lowercase, collapse whitespace, drop apostrophes/em-dashes for matching."""
     return re.sub(r"['’]", "", " ".join((text or "").lower().split()))
@@ -280,7 +290,17 @@ def close_intent(text: str) -> bool:
     if m and m.group(1) in _CLOSE_NEGATIVE_OBJECTS:
         return False
     # A pure close request has only close-related words (no new-work verbs).
-    return all(w in _CLOSE_FILLER for w in re.findall(r"[a-z]+", t))
+    if all(w in _CLOSE_FILLER for w in re.findall(r"[a-z]+", t)):
+        return True
+    # Lenient: the close directive is the FINAL clause and the message is a
+    # past-tense statement of the user's OWN resolution, not a new-work
+    # request — "I moved the link to port 2. close". A trailing new-work
+    # request ("close and run updates") or any new-work imperative still
+    # refuses the auto-close.
+    if re.search(r"\bclose\b\s*(?:it|this\s+ticket|the\s+ticket|this|that)?\s*[.!]?\s*$", t) \
+            and not re.search(_NEW_WORK_IMPERATIVE_RE, t):
+        return True
+    return False
 
 
 def ack_intent(text: str) -> bool:

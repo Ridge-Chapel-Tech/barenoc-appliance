@@ -13,6 +13,7 @@ from schemas import DeviceResponse
 from auth import get_current_user, require_role, require_any_role
 from unifi import UniFiClient
 from audit import log_event
+from change_log import record
 import network_scope
 import discovery
 
@@ -562,7 +563,8 @@ def _resolve_networks(client, tagged: list, native: str = None) -> tuple:
 
 @router.post("/ports/{switch_mac}/{port_idx}/bounce")
 def bounce_port(switch_mac: str, port_idx: int,
-               user: User = Depends(require_any_role("admin", "agent"))):
+                db: Session = Depends(get_db),
+                user: User = Depends(require_any_role("admin", "agent"))):
     """Cycle a switch port (disable -> 2s -> enable). Write action."""
     cfg = _get_unifi_config()
     if not _auth_ready(cfg):
@@ -572,12 +574,25 @@ def bounce_port(switch_mac: str, port_idx: int,
         raise HTTPException(status_code=502, detail=f"Could not log in to UniFi controller: {client.last_error or 'unknown'}")
     result = client.bounce_port(switch_mac, port_idx)
     if not result.get("applied"):
+        log_event(db, "unifi_port_bounce_failed", user.username,
+                  {"switch_mac": switch_mac, "port_idx": port_idx,
+                   "error": result.get("error", "bounce failed")})
         raise HTTPException(status_code=502, detail=result.get("error", "bounce failed"))
+    log_event(db, "unifi_port_bounce", user.username,
+              {"switch_mac": switch_mac, "port_idx": port_idx, "applied": True})
+    record(db, event_type="network_config_changed",
+           actor=user.username,
+           asset=f"UCG {switch_mac} port {port_idx}",
+           summary=f"UniFi port {port_idx} bounced",
+           detail="port disabled -> ~2s -> enabled (link cycle)",
+           links={"switch_mac": switch_mac, "port_idx": port_idx,
+                  "event_type": "unifi_port_bounce"})
     return result
 
 
 @router.post("/ports/{switch_mac}/{port_idx}/rename")
 def rename_port(switch_mac: str, port_idx: int, body: dict,
+                db: Session = Depends(get_db),
                 user: User = Depends(require_any_role("admin", "agent"))):
     """Rename a switch port. Body: {"name": "..."}. Write action."""
     name = str((body or {}).get("name", "")).strip()
@@ -593,12 +608,18 @@ def rename_port(switch_mac: str, port_idx: int, body: dict,
         raise HTTPException(status_code=502, detail=f"Could not log in to UniFi controller: {client.last_error or 'unknown'}")
     result = client.set_port_name(switch_mac, port_idx, name)
     if not result.get("applied"):
+        log_event(db, "unifi_port_rename_failed", user.username,
+                  {"switch_mac": switch_mac, "port_idx": port_idx, "name": name,
+                   "error": result.get("error", "rename failed")})
         raise HTTPException(status_code=502, detail=result.get("error", "rename failed"))
+    log_event(db, "unifi_port_rename", user.username,
+              {"switch_mac": switch_mac, "port_idx": port_idx, "name": name})
     return result
 
 
 @router.post("/ports/{switch_mac}/{port_idx}/vlans")
 def set_port_vlans(switch_mac: str, port_idx: int, body: dict,
+                   db: Session = Depends(get_db),
                    user: User = Depends(require_any_role("admin", "agent"))):
     """Apply native/tagged VLAN networks to a switch port (admin).
 
@@ -632,21 +653,38 @@ def set_port_vlans(switch_mac: str, port_idx: int, body: dict,
         "after": {"native": nets.get(native_id, {}).get("name", "") if native_id else "(unchanged)",
                    "tagged": [nets.get(i, {}).get("name", i) for i in tagged_ids]},
     }
+    _audit = {"switch_mac": switch_mac, "port_idx": port_idx,
+              "port_name": port["name"], "before": preview["before"],
+              "after": preview["after"]}
     if body.get("dry_run"):
         preview["dry_run"] = True
+        log_event(db, "unifi_port_change", user.username,
+                  {**_audit, "dry_run": True})
         return preview
 
     result = client.set_port_vlans(switch_mac, port_idx, tagged_ids,
                                    native_network_id=native_id or port["native_network_id"])
     if not result.get("applied"):
+        log_event(db, "unifi_port_change_failed", user.username,
+                  {**_audit, "error": result.get("error", "apply failed")})
         raise HTTPException(status_code=502, detail=result.get("error", "apply failed"))
     preview["applied"] = True
     preview["profile_id"] = result.get("profile_id")
+    log_event(db, "unifi_port_change", user.username,
+              {**_audit, "dry_run": False, "applied": True})
+    record(db, event_type="network_config_changed",
+           actor=user.username,
+           asset=f"UCG {switch_mac} port {port_idx}",
+           summary=f"UniFi port {port_idx} network change",
+           detail=f"native/tagged {preview['before']} -> {preview['after']}",
+           links={"switch_mac": switch_mac, "port_idx": port_idx,
+                  "event_type": "unifi_port_change"})
     return preview
 
 
 @router.post("/ports/{switch_mac}/{port_idx}/disabled")
 def set_port_disabled(switch_mac: str, port_idx: int, body: dict,
+                      db: Session = Depends(get_db),
                       user: User = Depends(require_any_role("admin", "agent"))):
     """Enable/disable a switch port (the dead-end/loop fix path).
 
@@ -663,7 +701,13 @@ def set_port_disabled(switch_mac: str, port_idx: int, body: dict,
         raise HTTPException(status_code=502, detail=f"Could not log in to UniFi controller: {client.last_error or 'unknown'}")
     result = client.set_port_disabled(switch_mac, port_idx, disabled)
     if not result.get("applied"):
+        log_event(db, "unifi_port_disable_failed", user.username,
+                  {"switch_mac": switch_mac, "port_idx": port_idx, "disabled": disabled,
+                   "error": result.get("error", "disable failed")})
         raise HTTPException(status_code=502, detail=result.get("error", "disable failed"))
+    log_event(db, "unifi_port_disable", user.username,
+              {"switch_mac": switch_mac, "port_idx": port_idx,
+               "disabled": disabled, "applied": True})
     return result
 
 

@@ -856,6 +856,17 @@ def _handle_close_intent(db, ticket) -> bool:
         # normally.
         return False
 
+    # Never-worked open ticket + a user close directive: the requester owns
+    # the resolution (they fixed it themselves — e.g. a monitor/auto ticket
+    # like a link flap/outage where the owner moved the cable and says
+    # "close"). Honor it instead of the generic mid-work note.
+    if close and state == "":
+        username, user = _close_actor(db, ticket)
+        add_note(ticket, "ai_tech_feedback",
+                 "Closed at your request — thanks for confirming the resolution.")
+        _close_ticket_inline(db, ticket, username, user)
+        return True
+
     # Mid-work ticket + close: don't close (the work isn't done) and don't
     # re-dispatch — a polite note instead.
     if close:
@@ -1407,23 +1418,29 @@ def poll_for_tickets():
                 db.query(Ticket)
                 .filter(
                     Ticket.status == "open",
-                    Ticket.source != "auto",  # Let scheduler handle auto tickets
                 )
                 .order_by(Ticket.priority.asc())
                 .limit(20)
                 .all()
             )
-            tickets = [t for t in tickets if not is_paused(t)][:5]
+            # Auto/monitor tickets (link flap/outage etc.) are normally owned by
+            # the scheduler's lifecycle, but a HUMAN reply on one (e.g. the
+            # owner resolves the issue and says "close") must be honored — treat
+            # it like any customer ticket.
+            tickets = [t for t in tickets if not is_paused(t)
+                       and (t.source != "auto" or _count_user_notes(t) > 0)][:5]
 
             # Tickets with new customer replies (feedback loop)
             re_process = (
                 db.query(Ticket)
                 .filter(
                     Ticket.status.in_(("in_progress", "escalated", "customer_action")),
-                    Ticket.source != "auto",
                 )
                 .all()
             )
+            # Auto tickets with no human comments never reprocess (the count
+            # logic below seeds 0 and stays idle); only a real user reply on an
+            # auto ticket re-engages it (e.g. "moved the link, close").
             for ticket in re_process:
                 if is_paused(ticket):
                     logger.info(f"Ticket {ticket.ticket_id}: paused — skipping reprocess")
