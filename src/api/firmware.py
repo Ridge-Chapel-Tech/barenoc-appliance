@@ -776,6 +776,168 @@ def _client_from_env():
     return _unifi_client(cfg)
 
 
+_STATE_LABELS = {
+    "not_configured": "Not configured",
+    "off": "Opted out",
+    "escalated": "Needs attention",
+    "awaiting_approval": "Awaiting approval",
+    "active": "Active",
+    "needs_window": "Needs a window",
+    "healthy": "Up to date",
+}
+
+
+def _service_summary_line(state, total, upgradeable, pending,
+                          active_window, nxt):
+    """One human-readable line describing the firmware service's current state."""
+    if state == "not_configured":
+        return "Firmware service not configured — add UniFi credentials in Settings."
+    if state == "off":
+        return "Firmware service is opted out (autonomy = off)."
+    if state == "escalated":
+        return (f"Needs attention — {pending['escalations_pending']} escalation(s) "
+                f"require a human.")
+    if state == "awaiting_approval":
+        n = pending["approvals_pending"] + pending["approvals_deferred"]
+        return f"Awaiting approval — {n} upgrade(s) waiting for a decision."
+    if state == "needs_window":
+        return (f"{upgradeable} device(s) upgradable — add a maintenance window "
+                f"to schedule them.")
+    if state == "active":
+        if active_window is not None:
+            return (f"Active — upgrading inside '{active_window.name}' "
+                    f"({upgradeable} device(s) upgradeable).")
+        if nxt is not None:
+            return (f"Active — {upgradeable} upgrade(s) scheduled for "
+                    f"{nxt['name']} ({nxt['start_local']}).")
+        return f"Active — {upgradeable} upgrade(s) pending."
+    # healthy
+    return f"Up to date — {total} device(s) covered, no firmware available."
+
+
+def service_summary(db, now: datetime.datetime = None, env: dict = None,
+                    unifi_configured: bool = None) -> dict:
+    """One-call snapshot of firmware management AS A MANAGED SERVICE.
+
+    This is the "the agent delivers firmware upkeep as a service, not a button"
+    surface — the System → Firmware header panel reads it, and Juniper can
+    surface the same rollup in chat. Read-only: it rolls up the tables the
+    engine drives and never mutates state or contacts the controller.
+
+    ``state`` is a single machine-readable answer to "is my firmware upkeep
+    running?" (priority order):
+        not_configured → off → escalated → awaiting_approval →
+        active → needs_window → healthy
+    """
+    now = now or _local_now()
+    env = env if env is not None else _read_env()
+    if unifi_configured is None:
+        unifi_configured = _client_from_env() is not None
+
+    devices = db.query(DeviceFirmware).order_by(
+        DeviceFirmware.device_type, DeviceFirmware.name).all()
+    total = len(devices)
+    online = sum(1 for d in devices if d.online)
+    upgradeable = sum(1 for d in devices
+                      if d.upgradeable and d.available_version
+                      and d.current_version != d.available_version)
+    by_type = {}
+    for d in devices:
+        t = (d.device_type or "unknown").lower()
+        by_type[t] = by_type.get(t, 0) + 1
+
+    windows = db.query(MaintenanceWindow).filter(
+        MaintenanceWindow.enabled.is_(True)).all()
+    active_window = next((w for w in windows if window_active(w, now)), None)
+    next_window = None
+    for w in windows:
+        start = _window_start(w, now)
+        if start is not None and (next_window is None or start < next_window[1]):
+            next_window = (w, start)
+    nxt = None
+    if next_window is not None:
+        nxt = {
+            "name": next_window[0].name,
+            "start_local": next_window[1].strftime("%Y-%m-%dT%H:%M"),
+            "active_now": bool(active_window and active_window.id == next_window[0].id),
+        }
+
+    pending = {
+        "approvals_pending": db.query(PendingAction).filter(
+            PendingAction.kind == "approval",
+            PendingAction.status == "pending").count(),
+        "approvals_deferred": db.query(PendingAction).filter(
+            PendingAction.kind == "approval",
+            PendingAction.status == "deferred").count(),
+        "escalations_pending": db.query(PendingAction).filter(
+            PendingAction.kind == "escalation",
+            PendingAction.status == "pending").count(),
+    }
+
+    inflight = db.query(FirmwareUpgrade).filter(
+        FirmwareUpgrade.status.in_(INFLIGHT_STATUSES)).first()
+    last = db.query(FirmwareUpgrade).order_by(FirmwareUpgrade.id.desc()).first()
+    last_activity = None
+    if last is not None:
+        last_activity = {
+            "device_name": last.device_name,
+            "from_version": last.from_version,
+            "to_version": last.to_version,
+            "result": last.status,
+            "at": last.finished_at.isoformat() if last.finished_at else None,
+        }
+
+    effective = effective_autonomy(env)
+    if not unifi_configured:
+        state = "not_configured"
+    elif effective == "off":
+        state = "off"
+    elif pending["escalations_pending"] > 0:
+        state = "escalated"
+    elif pending["approvals_pending"] + pending["approvals_deferred"] > 0:
+        state = "awaiting_approval"
+    elif inflight is not None:
+        state = "active"
+    elif upgradeable > 0:
+        state = "active" if windows else "needs_window"
+    else:
+        state = "healthy"
+
+    summary = _service_summary_line(state, total, upgradeable, pending,
+                                    active_window, nxt)
+    return {
+        "plan": {
+            "name": "Managed network service",
+            "tier": "managed",
+            "pricing": "$99/mo early access → $199/mo GA",
+            "beta": True,
+            "beta_note": ("Free during beta — no plan key required yet "
+                          "(entitlement enforcement lands at GA)."),
+        },
+        "state": state,
+        "state_label": _STATE_LABELS.get(state, state),
+        "summary": summary,
+        "autonomy": effective,
+        "unifi_configured": unifi_configured,
+        "coverage": {
+            "total": total,
+            "online": online,
+            "upgradeable": upgradeable,
+            "up_to_date": total - upgradeable,
+            "by_type": by_type,
+        },
+        "windows": {
+            "enabled": len(windows),
+            "active_now": bool(active_window),
+            "active_name": active_window.name if active_window else None,
+            "next": nxt,
+        },
+        "pending": pending,
+        "in_flight": bool(inflight),
+        "last_activity": last_activity,
+    }
+
+
 class FirmwareEngine(threading.Thread):
     def __init__(self, poll_seconds: int = ENGINE_POLL_S):
         super().__init__(daemon=True, name="firmware-engine")

@@ -39,6 +39,7 @@ EVENT_TYPES = (
     "ticket_closed",
     "provisioned",
     "settings_changed",
+    "device_sighting_folded",
 )
 
 # Default customer visibility per event type. The customer view is the one-line
@@ -55,6 +56,7 @@ CUSTOMER_VISIBLE = {
     "ticket_closed": True,
     "provisioned": True,
     "settings_changed": False,   # appliance-level, technical (override at the call site when it matters)
+    "device_sighting_folded": False,  # technical: housekeeping dedupe of a randomized-MAC sighting
 }
 
 MAX_SUMMARY = 512

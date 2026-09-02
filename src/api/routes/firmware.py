@@ -131,6 +131,19 @@ def _upgrade_dict(u: FirmwareUpgrade) -> dict:
     }
 
 
+# ── managed-service snapshot ───────────────────────────────────────────────
+
+@router.get("/service")
+def service_status(db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Managed-service snapshot: what the agent is doing for firmware right now.
+    Read-only rollup of the engine's tables (inventory, windows, pending,
+    history) — the "firmware as a service, not a button" surface the
+    System → Firmware header panel (and later Juniper) present."""
+    return firmware.service_summary(
+        db, unifi_configured=firmware._client_from_env() is not None)
+
+
 # ── inventory ───────────────────────────────────────────────────────────────
 
 @router.get("/inventory")

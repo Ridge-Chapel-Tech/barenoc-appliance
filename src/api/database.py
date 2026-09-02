@@ -70,6 +70,15 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: add device_groups (Pocket ID group claims persisted at OIDC
+    # login — the worker reads these for technician device-group scope)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN device_groups JSON"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: add fingerprint (nmap results) to devices
     try:
         with engine.begin() as conn:
@@ -217,6 +226,18 @@ def init_db():
         with engine.begin() as conn:
             conn.execute(text(
                 "ALTER TABLE devices ADD COLUMN channels JSON"
+            ))
+    except OperationalError:
+        pass  # Column already exists
+    # Migration: mac_history (randomized-MAC sightings fold, phone-mac-fold
+    # 2026-09-01). JSON list of {mac, ip, source, seen} for sightings folded
+    # into the canonical record instead of INSERTing a duplicate row.
+    # Idempotent like the rest: create_all won't add a column to an existing
+    # devices table.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN mac_history JSON"
             ))
     except OperationalError:
         pass  # Column already exists

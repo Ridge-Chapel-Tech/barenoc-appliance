@@ -34,6 +34,28 @@ def is_customer(user) -> bool:
     return getattr(user, "role", "") in CUSTOMER_ROLES
 
 
+def tech_in_scope(db, ticket, user) -> bool:
+    """Technician-tier device-group scope for a ticket (worker + shared).
+
+    Mirrors ``routes/tickets._tech_in_scope`` for the worker, which has no JWT
+    claims — only the User row. Ungrouped ('default') devices are open to all;
+    a grouped device requires the matching Pocket ID group persisted on the
+    user row at OIDC login (``User.device_groups``). Admin always passes; the
+    requester-ownership leg is checked separately by callers.
+    """
+    if getattr(user, "role", "") == "admin":
+        return True
+    if getattr(ticket, "target_device_id", None) is None:
+        return True
+    device = db.query(Device).filter(Device.id == ticket.target_device_id).first()
+    if device is None:
+        return True
+    g = device.device_group or "default"
+    if g == "default":
+        return True
+    return g in (getattr(user, "device_groups", None) or [])
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -49,6 +71,7 @@ class User(Base):
     default_ticket_status = Column(String(24), nullable=True)   # tickets page default status filter
     default_ticket_priority = Column(String(4), nullable=True)  # tickets page default priority filter
     oidc_sub = Column(String(128), nullable=True, index=True)  # Pocket ID subject
+    device_groups = Column(JSON, default=list)  # Pocket ID group claims (device-group scope for the technician tier)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
     # Compliance controls (2026-08-25): TOTP second factor + login lockout.
@@ -102,6 +125,11 @@ class Device(Base):
     vendor = Column(String(64), nullable=True)
     model = Column(String(64), nullable=True)
     mac_address = Column(String(17), nullable=True)
+    # Randomized-MAC sightings folded into this record (phone-mac-fold, 2026-09-01).
+    # A phone/tablet presents a fresh private MAC per network join; each extra
+    # MAC is appended here ({"mac", "ip", "source", "seen"}) instead of INSERTing
+    # a duplicate row. The canonical identity stays in ``mac_address``.
+    mac_history = Column(JSON, default=list)
     status = Column(String(16), default="pending")  # online | offline | warning | pending | unreachable | unclaimed
     claimed = Column(Boolean, default=True)  # False = discovered but not configured
     unifi_managed = Column(Boolean, default=False)  # True = status synced from UniFi controller

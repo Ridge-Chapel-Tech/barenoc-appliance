@@ -58,12 +58,15 @@
     </div>
   </div>
 
-  <!-- Firmware (UniFi) — inventory, maintenance windows, approvals, history -->
+  <!-- Firmware (UniFi) — managed service: inventory, maintenance windows, approvals, history -->
   <div id="firmware" class="mt-6 bg-white shadow rounded-lg p-6">
     <div class="flex items-center justify-between flex-wrap gap-3">
-      <h2 class="text-lg font-medium text-gray-900">Firmware <span class="text-xs text-gray-400">(UniFi · APs → switches → gateway last)</span></h2>
+      <h2 class="text-lg font-medium text-gray-900">Firmware Management <span class="text-xs align-middle rounded-full bg-barenoc-50 text-barenoc-700 px-2 py-0.5 font-medium">Managed service</span></h2>
       <button onclick="fwRefresh()" class="rounded-md bg-barenoc-50 text-barenoc-700 px-3 py-1.5 text-xs hover:bg-barenoc-100">Refresh</button>
     </div>
+    <p class="mt-1 text-xs text-gray-500">BareNOC runs your device firmware as a managed service: it pre-stages updates, upgrades one device at a time inside a maintenance window (APs → switches → gateway last), verifies each, and escalates anything that needs a human. Included in the <strong>Managed</strong> plan at GA; free during beta.</p>
+
+    <div id="fw-service" class="mt-3"></div>
 
     <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
       <div>
@@ -476,8 +479,46 @@ async function fwFetch(path, opts) {
   return r.json();
 }
 function fwType(t) { return t === 'gateway' ? '🌐 gateway' : t === 'switch' ? '🔀 switch' : t === 'ap' ? '📶 AP' : esc(t || ''); }
+function fwServiceState(s) {
+  switch (s) {
+    case 'not_configured': return { label: 'Not configured', cls: 'bg-gray-100 text-gray-600' };
+    case 'off': return { label: 'Opted out', cls: 'bg-gray-100 text-gray-600' };
+    case 'escalated': return { label: 'Needs attention', cls: 'bg-red-50 text-red-700' };
+    case 'awaiting_approval': return { label: 'Awaiting approval', cls: 'bg-amber-50 text-amber-700' };
+    case 'active': return { label: 'Active', cls: 'bg-green-50 text-green-700' };
+    case 'needs_window': return { label: 'Needs a window', cls: 'bg-amber-50 text-amber-700' };
+    case 'healthy': return { label: 'Up to date', cls: 'bg-green-50 text-green-700' };
+    default: return { label: s || '—', cls: 'bg-gray-100 text-gray-600' };
+  }
+}
+function renderFwService(svc) {
+  var el = document.getElementById('fw-service');
+  if (!el || !svc) return;
+  var st = fwServiceState(svc.state);
+  var cov = svc.coverage || {};
+  var win = svc.windows || {};
+  var nxt = win.next ? esc(win.next.name) + ' · ' + esc(String(win.next.start_local || '').replace('T', ' ')) + (win.next.active_now ? ' (now)' : '') : 'none';
+  var last = svc.last_activity ? esc(svc.last_activity.device_name) + ' ' + esc(svc.last_activity.result || '') : '—';
+  el.innerHTML =
+    '<div class="border rounded p-3 bg-gray-50">'
+    + '<div class="flex items-center justify-between flex-wrap gap-2">'
+    +   '<div class="flex items-center gap-2 flex-wrap min-w-0">'
+    +     '<span class="px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ' + st.cls + '">' + st.label + '</span>'
+    +     '<span class="text-xs text-gray-600">' + esc(svc.summary || '') + '</span>'
+    +   '</div>'
+    + '</div>'
+    + '<div class="mt-2 text-xs text-gray-400 flex flex-wrap gap-x-4 gap-y-1">'
+    +   '<span>' + esc(cov.total) + ' covered · ' + esc(cov.online) + ' online · ' + esc(cov.upgradeable) + ' upgradable</span>'
+    +   '<span>autonomy: ' + esc(svc.autonomy || '') + '</span>'
+    +   '<span>next window: ' + nxt + '</span>'
+    +   '<span>last activity: ' + last + '</span>'
+    + '</div>'
+    + (svc.plan && svc.plan.beta_note ? '<div class="mt-1 text-xs text-gray-400">' + esc(svc.plan.beta_note) + '</div>' : '')
+    + '</div>';
+}
 async function fwLoad() {
   try {
+    try { renderFwService(await fwFetch('/service')); } catch (e) { /* service summary unavailable */ }
     const inv = await fwFetch('/inventory');
     try {
       const s = await fetch('/api/v1/settings/firmware', { headers: { 'Authorization': 'Bearer ' + getToken() } });

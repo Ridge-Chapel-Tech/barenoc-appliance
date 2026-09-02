@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import SessionLocal, init_db
-from models import Ticket, Device, User, AuditLog, is_tech
+from models import Ticket, Device, User, AuditLog, is_tech, tech_in_scope
 from schemas import generate_ticket_id, generate_event_id
 from sanitizer import sanitize_ticket
 from action_validator import (
@@ -779,21 +779,22 @@ def _requester_name(db, ticket) -> str:
     return (sub.username or "the requester") if sub else "the requester"
 
 
-def _can_close(ticket, user) -> bool:
-    """Requester or the technician tier/admin may close. A non-requester
-    (e.g. another customer or a readonly user) gets routed to
+def _can_close(db, ticket, user) -> bool:
+    """Requester or the technician tier/admin within device-group scope may
+    close. A non-requester (e.g. another customer or a readonly user, or a
+    technician outside the device's group) gets routed to
     'waiting on <requester> to verify'."""
     if user is None:
         return False
     if is_tech(user):
-        return True
+        return tech_in_scope(db, ticket, user)
     return ticket.submitter_id == user.id
 
 
 def _close_ticket_inline(db, ticket, username, user) -> None:
     """Close a completed ticket inline (no pi session) at the customer's
     explicit request. Mirrors the API PATCH close + Juniper's close."""
-    if not _can_close(ticket, user):
+    if not _can_close(db, ticket, user):
         req = _requester_name(db, ticket)
         add_note(ticket, "customer_input",
                  f"Waiting on {req} to verify before this ticket can be closed.")

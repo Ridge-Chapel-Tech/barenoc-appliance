@@ -21,6 +21,7 @@ from models import Device
 from change_log import record
 from step_ca import device_cn
 import network_scope
+import discovery
 
 router = APIRouter(prefix="/api/v1/device", tags=["device"])
 
@@ -99,31 +100,42 @@ def _refresh_ip(device: Device, ips: list) -> None:
         return
 
 
-def _find_unclaimed_match(db: Session, ips: list, macs: list) -> "Device | None":
+def _find_unclaimed_match(db: Session, ips: list, macs: list,
+                          name: "str | None" = None,
+                          hostname: "str | None" = None) -> "Device | None":
     """Fallback adoption target for device-dedupe: an UNCLAIMED, not-yet-
     linked/revoked discovery record sharing an IP or MAC with this report.
 
-    When multiple unclaimed records match, the most recently seen wins
-    (deterministic tie-break: highest id). Never returns a claimed/linked
-    record (a different identity) or a revoked one.
+    Also considers the randomized-MAC fold (phone-mac-fold): when no IP/MAC
+    matches and the report carries a private/randomized MAC, an unclaimed
+    record with the SAME identity (name/hostname) is folded into instead of
+    self-registering a duplicate. When multiple unclaimed records match, the
+    most recently seen wins (deterministic tie-break: highest id). Never
+    returns a claimed/linked record (a different identity) or a revoked one.
     """
-    if not ips and not macs:
-        return None
-    conds = []
-    if ips:
-        conds.append(Device.ip_address.in_(ips))
-    if macs:
-        conds.append(func.lower(Device.mac_address).in_([m.lower() for m in macs]))
-    if not conds:
-        return None
-    status_ok = or_(Device.adoption_status.is_(None),
-                    Device.adoption_status.notin_(["linked", "revoked"]))
-    return (db.query(Device)
-            .filter(Device.claimed.is_(False), status_ok, or_(*conds))
-            .order_by(Device.last_seen.is_(None),
-                      Device.last_seen.desc(),
-                      Device.id.desc())
-            .first())
+    if ips or macs:
+        conds = []
+        if ips:
+            conds.append(Device.ip_address.in_(ips))
+        if macs:
+            conds.append(func.lower(Device.mac_address).in_([m.lower() for m in macs]))
+        status_ok = or_(Device.adoption_status.is_(None),
+                        Device.adoption_status.notin_(["linked", "revoked"]))
+        row = (db.query(Device)
+               .filter(Device.claimed.is_(False), status_ok, or_(*conds))
+               .order_by(Device.last_seen.is_(None),
+                         Device.last_seen.desc(),
+                         Device.id.desc())
+               .first())
+        if row is not None:
+            return row
+    # Randomized-MAC fold fallback (no IP/MAC overlap): match by identity.
+    if name or hostname:
+        candidate = discovery.find_fold_target(
+            db, mac=(macs[0] if macs else None), name=name, hostname=hostname)
+        if candidate is not None:
+            return candidate
+    return None
 
 
 def resolve_device(db: Session, cn: str, ips: "list | None" = None,
@@ -148,7 +160,7 @@ def resolve_device(db: Session, cn: str, ips: "list | None" = None,
               .order_by(Device.id.desc()).first())
     if device:
         return device, False
-    candidate = _find_unclaimed_match(db, ips or [], macs or [])
+    candidate = _find_unclaimed_match(db, ips or [], macs or [], name=name)
     if candidate is not None:
         return candidate, True
     return None, False
@@ -209,6 +221,13 @@ async def device_report(request: Request, db: Session = Depends(get_db)):
         if hostname:
             device.hostname = hostname[:120]
         _refresh_ip(device, ips)
+        # Randomized-MAC fold: retain every reported MAC sighting on the
+        # canonical record (first fills mac_address; the rest append to
+        # mac_history) instead of leaving them unrecorded.
+        for m in macs:
+            discovery.record_mac_sighting(
+                device, m, ip=(ips[0] if ips else None),
+                source="agent" if is_agent else "cert")
     elif hostname and not device.hostname:
         device.hostname = hostname[:120]
     became_linked = False

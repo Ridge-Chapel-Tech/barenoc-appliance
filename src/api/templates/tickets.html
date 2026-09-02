@@ -92,18 +92,19 @@
 </div>
 
 <script>
-function renderNotes(notesJson) {
+function renderNotes(notesJson, ticketId) {
   try {
     var notes = JSON.parse(notesJson);
     if (!notes.length) return '';
-    return notes.map(function(n) {
+    return notes.map(function(n, idx) {
       var ev = n.event || '';
+      var key = (ticketId || 'ticket') + ':' + idx;
       var time = esc(fmtTz(n.timestamp));
       var actor = n.actor ? ' <span class="text-gray-400">by ' + esc(n.actor) + '</span>' : '';
       if (ev === 'agent_completed') {
         return '<div class="text-sm bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-1">'
           + '<div class="text-[10px] font-semibold uppercase tracking-wide text-blue-600 mb-0.5">Final answer</div>'
-          + '<div class="text-gray-800 note-content">' + noteBody(ev, n.detail) + '</div>'
+          + '<div class="text-gray-800 note-content">' + noteBody(ev, n.detail, key) + '</div>'
           + '<div class="text-[10px] text-gray-400 mt-1">' + time + actor + '</div></div>';
       }
       if (ev === 'checkin_request') {
@@ -119,7 +120,7 @@ function renderNotes(notesJson) {
         +   '<span class="font-medium text-gray-700' + prog + '">[' + esc(ev) + ']</span>'
         +   actor
         + '</div>'
-        + '<div class="text-gray-600 note-content' + prog + '">' + noteBody(ev, n.detail) + '</div>'
+        + '<div class="text-gray-600 note-content' + prog + '">' + noteBody(ev, n.detail, key) + '</div>'
         + '</div>';
     }).join('');
   } catch(e) { return ''; }
@@ -179,16 +180,33 @@ function markdownLite(text) {
   return out.join('');
 }
 
-function noteBody(ev, text) {
+// ── expander state survives re-renders ────────────────────────────────────
+// pollTickets re-renders the ticket/note list every 15 s whenever the data
+// changed, which would otherwise collapse any note the user has expanded
+// mid-read. Keys are stable per note (ticket_id + note index). The delegated
+// `toggle` listener (capture phase — the toggle event does not bubble)
+// records opens/closes in a Set; noteBody re-applies `open` on every render.
+var expandedNotes = new Set();
+document.addEventListener('toggle', function (e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'DETAILS' || !el.classList.contains('note-more')) return;
+  var key = el.getAttribute('data-note-key');
+  if (!key) return;
+  if (el.open) expandedNotes.add(key); else expandedNotes.delete(key);
+}, true);
+
+function noteBody(ev, text, key) {
   var s = String(text == null ? '' : text);
   var lines = s.split('\n');
   if (lines.length <= NOTE_COLLAPSE_LINES) return markdownLite(s);
   var hiddenCount = lines.length - NOTE_COLLAPSE_LINES;
   var preview = markdownLite(lines.slice(0, NOTE_COLLAPSE_LINES).join('\n'));
   var hidden = markdownLite(lines.slice(NOTE_COLLAPSE_LINES).join('\n'));
+  var openAttr = (key && expandedNotes.has(key)) ? ' open' : '';
+  var keyAttr = key ? ' data-note-key="' + key + '"' : '';
   return '<div class="note-collapsible">'
     + '<div class="note-preview">' + preview + '</div>'
-    + '<details class="note-more"><summary>Show more (' + hiddenCount + ' more lines)</summary>'
+    + '<details class="note-more"' + openAttr + keyAttr + '><summary>Show more (' + hiddenCount + ' more lines)</summary>'
     + '<div class="note-full">' + hidden + '</div></details></div>';
 }
 
@@ -264,7 +282,7 @@ async function fetchTickets(offset) {
         + '<p><strong>Description:</strong> ' + esc(t.description || 'No description') + '</p>'
         + (t.resolution ? '<p class="mt-1"><strong>Resolution:</strong> ' + esc(t.resolution) + '</p>' : '')
         + '<p class="mt-1"><strong>Source:</strong> ' + esc(t.source) + '</p>'
-        + (t.work_notes ? '<div class="mt-2"><details><summary class="cursor-pointer text-barenoc-600 text-xs font-medium">Work Notes</summary><div class="mt-1 space-y-1 max-h-40 overflow-y-auto">' + renderNotes(t.work_notes) + '</div></details></div>' : '')
+        + (t.work_notes ? '<div class="mt-2"><details><summary class="cursor-pointer text-barenoc-600 text-xs font-medium">Work Notes</summary><div class="mt-1 space-y-1 max-h-40 overflow-y-auto">' + renderNotes(t.work_notes, t.ticket_id) + '</div></details></div>' : '')
         + (t.llm_model ? '<p class="mt-1"><strong>LLM:</strong> ' + esc(t.llm_model) + ' (conf: ' + (t.llm_confidence || '-') + ', cost: ' + (t.llm_cost_usd == null ? 'unknown' : '$' + Number(t.llm_cost_usd).toFixed(6) + (t.llm_cost_estimate ? ' est.' : '')) + ')</p>' : '')
         + (t.status === 'closed' ? '<p class="mt-1"><strong>Closed by:</strong> ' + esc(t.assigned_to || 'system') + '</p>' : '')
         + (t.resolved_at ? '<p class="mt-1"><strong>Closed at:</strong> ' + esc(t.resolved_at) + '</p>' : '')
@@ -273,6 +291,13 @@ async function fetchTickets(offset) {
     }
     if (tickets.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-12 text-center text-gray-500">No tickets found.</td></tr>';
+    }
+
+    // Keep the user's open ticket detail row open across poll re-renders
+    // (otherwise the rebuilt table closes it and hides the notes being read).
+    if (currentDetail) {
+      var detailRow = document.getElementById('d-' + currentDetail);
+      if (detailRow) detailRow.style.display = 'table-row';
     }
 
     // Pagination

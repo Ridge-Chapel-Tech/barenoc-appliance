@@ -18,7 +18,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
 from database import SessionLocal, init_db
 from models import AuditLog, Device, DeviceJob
-from routes.devices import list_devices, get_device_credentials
+from routes.devices import list_devices, get_device_credentials, device_readiness
 
 ADMIN_CTX = {"user": SimpleNamespace(role="admin"), "groups": []}
 
@@ -100,6 +100,102 @@ class ControlledFilterTest(unittest.TestCase):
         db.close()
         self.assertEqual(r.total_devices, 2)   # ssh-dev + unifi-gw
         self.assertNotEqual(r.total_devices, 5)  # never the whole table
+
+
+class ReadinessTest(unittest.TestCase):
+    """Post-adoption readiness: a cert-linked device is only READY once the
+    NOC_Agent has reported in (agent_version + facts) and is still alive."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+
+    def tearDown(self):
+        db = SessionLocal()
+        db.query(Device).delete()
+        db.commit()
+        db.close()
+
+    def _agent_device(self, **kw):
+        from datetime import datetime
+        now = datetime.utcnow()
+        db = SessionLocal()
+        d = Device(
+            name=kw.get("name", "agent-host"),
+            ip_address=kw.get("ip", "10.9.9.9"),
+            device_type="workstation", status=kw.get("status", "online"),
+            claimed=True,
+            adoption_status=kw.get("adoption_status", "linked"),
+            adoption_method=kw.get("adoption_method", "agent"),
+            agent_version=kw.get("agent_version", "0.1.0"),
+            facts_json=kw.get("facts_json", '{"hostname":"agent-host"}'),
+            last_seen=kw.get("last_seen", now),
+            cert_last_seen=kw.get("cert_last_seen", now),
+        )
+        db.add(d)
+        db.commit()
+        did = d.id
+        db.close()
+        return did, now
+
+    def _readiness(self, did, now, **kw):
+        db = SessionLocal()
+        try:
+            return device_readiness(db.get(Device, did), now=now, **kw)
+        finally:
+            db.close()
+
+    def test_ready_agent_device(self):
+        did, now = self._agent_device()
+        r = self._readiness(did, now)
+        self.assertTrue(r["ready"], r)
+        self.assertEqual(r["missing"], [])
+
+    def test_not_ready_without_agent_report(self):
+        did, now = self._agent_device(agent_version=None, facts_json=None,
+                                      cert_last_seen=None)
+        r = self._readiness(did, now)
+        self.assertFalse(r["ready"])
+        self.assertIn("agent_reported", r["missing"])
+        self.assertIn("facts_reported", r["missing"])
+        self.assertIn("recent_cert_seen", r["missing"])
+
+    def test_stale_agent_is_not_ready(self):
+        from datetime import datetime, timedelta
+        old = datetime.utcnow() - timedelta(minutes=30)
+        did, now = self._agent_device(last_seen=old, cert_last_seen=old)
+        r = self._readiness(did, now, max_age_minutes=10)
+        self.assertFalse(r["ready"])
+        self.assertIn("recent_last_seen", r["missing"])
+        self.assertIn("recent_cert_seen", r["missing"])
+
+    def test_non_agent_adoption_not_ready(self):
+        from datetime import datetime
+        now = datetime.utcnow()
+        db = SessionLocal()
+        d = Device(name="cert-host", ip_address="10.9.9.10", device_type="workstation",
+                   status="online", claimed=True, adoption_status="linked",
+                   adoption_method="cert", last_seen=now)
+        db.add(d)
+        db.commit()
+        did = d.id
+        db.close()
+        r = self._readiness(did, now)
+        self.assertFalse(r["ready"])
+        self.assertIn("agent_channel", r["missing"])
+
+    def test_readiness_route_binds(self):
+        from main import app
+        methods = {}
+        for r in app.routes:
+            p = getattr(r, "path", "")
+            methods.setdefault(p, set())
+            methods[p].update(getattr(r, "methods", set()) or set())
+        self.assertIn("/api/v1/devices/{device_id}/readiness", methods)
+        self.assertIn("GET", methods["/api/v1/devices/{device_id}/readiness"])
 
 
 class CredentialsAccessTest(unittest.TestCase):

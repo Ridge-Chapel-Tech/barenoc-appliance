@@ -19,6 +19,7 @@ set -euo pipefail
 PUBLIC_REPO="${PUBLIC_REPO:-Ridge-Chapel-Tech/barenoc-appliance}"
 TAG=""
 SIGN=0
+STAGE=0
 # NOTE: iterate with a while+shift, NOT for-in-$@ — a for loop snapshots the
 # arg list at start, so shifting inside it mis-parses the NEXT arg (the old
 # version wiped the tag: `--tag vX` -> second iteration cleared TAG).
@@ -26,6 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --tag) TAG="${2:-}"; shift 2 ;;
     --sign) SIGN=1; shift ;;
+    --stage) STAGE=1; shift ;;
     *) TAG="$1"; shift ;;
   esac
 done
@@ -53,6 +55,10 @@ log() { echo "[publish] $*"; }
 # See docs/security/release-signing.md.
 if [ "$SIGN" = "1" ]; then
   [ -n "$TAG" ] || { log "sign: pass the version — publish_release.sh --sign vX"; exit 1; }
+  if [ "$STAGE" = "1" ]; then
+    log "STAGED release mode — the tarball + .sig go live but versions.json is NOT"
+    log "flipped (appliances stay fail-closed on the previous stable until rollout)."
+  fi
   VER="${TAG#v}"
   log "release signing v$VER — signing the published tarball (key: release@barenoc.com)"
   if ! gpg --batch --list-secret-keys release@barenoc.com >/dev/null 2>&1; then
@@ -72,8 +78,12 @@ if [ "$SIGN" = "1" ]; then
     || { log "ABORT: gpg --detach-sign failed"; exit 1; }
   log "detached signature written: $DL/bareNOC-$VER.tar.gz.sig"
 
-  # (2) versions.json gains the signature reference (every other field kept)
-  if [ -s "$DL/versions.json" ]; then
+  # (2) versions.json gains the signature reference (every other field kept) —
+  #     SKIPPED in --stage mode (the staged release must not flip what the
+  #     appliances see as available; versions.json flips only at rollout).
+  if [ "$STAGE" = "1" ]; then
+    log "staged: versions.json left at the previous stable"
+  elif [ -s "$DL/versions.json" ]; then
     python3 - "$DL/versions.json" "$VER" <<'PY'
 import json, sys
 p, ver = sys.argv[1], sys.argv[2]
@@ -135,7 +145,9 @@ PY
   if [ -d "$TMP/site/.git" ]; then
     mkdir -p "$TMP/site/downloads"
     cp "$DL/bareNOC-$VER.tar.gz.sig" "$TMP/site/downloads/"
-    [ -s "$DL/versions.json" ] && cp "$DL/versions.json" "$TMP/site/downloads/"
+    if [ "$STAGE" != "1" ] && [ -s "$DL/versions.json" ]; then
+      cp "$DL/versions.json" "$TMP/site/downloads/"
+    fi
     git -C "$TMP/site" config user.email "release@barenoc.com"
     git -C "$TMP/site" config user.name "bareNOC release bot"
     git -C "$TMP/site" add downloads/
@@ -150,13 +162,18 @@ PY
            && grep -q -- "-----BEGIN PGP SIGNATURE-----" "$DL/mirror.sig" \
            && cmp -s "$DL/mirror.sig" "$DL/bareNOC-$VER.tar.gz.sig" \
            && curl -fsSL "https://barenoc.com/downloads/versions.json" -o "$DL/mirror.json" 2>/dev/null \
-           && grep -q "\"signature\": \"https://barenoc.com/downloads/bareNOC-$VER.tar.gz.sig\"" "$DL/mirror.json"; then
+           && { [ "$STAGE" = "1" ] \
+                || grep -q "\"signature\": \"https://barenoc.com/downloads/bareNOC-$VER.tar.gz.sig\"" "$DL/mirror.json"; }; then
           ok=1; break
         fi
         sleep 10
       done
       if [ "$ok" = "1" ]; then
-        log "mirrored + verified .sig + signed versions.json on barenoc.com/downloads"
+        if [ "$STAGE" = "1" ]; then
+          log "mirrored + verified the .sig on barenoc.com/downloads (versions.json NOT flipped — staged)"
+        else
+          log "mirrored + verified .sig + signed versions.json on barenoc.com/downloads"
+        fi
       else
         log "WARNING: website push landed but barenoc.com is not serving the .sig yet (Hostinger flake) —"
         log "         rerun the website deploy (gh run rerun) then re-run: publish_release.sh --sign v$VER"
@@ -169,7 +186,13 @@ PY
     log "note: BareNOC-Website not clonable here — push $DL/bareNOC-$VER.tar.gz.sig to downloads/ manually"
   fi
 
-  log "release signing complete (v$VER) — releases >= 2026.08.25.a must be signed (fail-closed)"
+  if [ "$STAGE" = "1" ]; then
+    log "STAGED release complete (v$VER): artifact + .sig live, versions.json at the previous"
+    log "stable — VM B's upgrade-path SAT can now self-update against v$VER fail-closed."
+    log "At rollout: publish_release.sh --sign v$VER (flips versions.json)."
+  else
+    log "release signing complete (v$VER) — releases >= 2026.08.25.a must be signed (fail-closed)"
+  fi
   exit 0
 fi
 

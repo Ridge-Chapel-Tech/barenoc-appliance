@@ -78,7 +78,7 @@ def ensure_dek() -> bytes:
     os.makedirs(os.path.dirname(DEK_FILE), exist_ok=True)
     if os.path.exists(DEK_FILE):
         with open(DEK_FILE, "rb") as f:
-            raw = f.read().strip()
+            raw = f.read()
         if len(raw) == DEK_BYTES:
             return raw
     raw = os.urandom(DEK_BYTES)
@@ -333,12 +333,18 @@ def _canonical_headers(headers: dict) -> tuple:
 
 def sign_request(method: str, url: str, region: str, access_key: str, secret_key: str,
                  payload: bytes = b"", headers: dict | None = None,
-                 query: dict | None = None) -> dict:
-    """Return signed request headers for an S3-compatible (path-style) call."""
+                 query: dict | None = None,
+                 now: datetime.datetime | None = None) -> dict:
+    """Return signed request headers for an S3-compatible (path-style) call.
+
+    ``now`` is injectable so signing is deterministic in tests (a fixed clock
+    can't straddle a second/day boundary between two otherwise-identical
+    calls).
+    """
     parts = urllib.parse.urlsplit(url)
     host = parts.netloc
     path = parts.path or "/"
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
     amz_date = now.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = now.strftime("%Y%m%d")
     payload_hash = _sha256_hex(payload)

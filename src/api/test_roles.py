@@ -23,12 +23,12 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
 from fastapi import HTTPException, Response  # noqa: E402
 from database import SessionLocal, init_db  # noqa: E402
-from models import User, Ticket, Device  # noqa: E402
+from models import User, Ticket, Device, tech_in_scope  # noqa: E402
 from auth import require_role  # noqa: E402
 from schemas import RegisterRequest, TicketUpdate  # noqa: E402
 from routes.tickets import update_ticket  # noqa: E402
 from routes.users import create_user, update_user, UserCreate, UserUpdate  # noqa: E402
-from routes.auth import register  # noqa: E402
+from routes.auth import register, upsert_oidc_user  # noqa: E402
 
 
 def _checker(factory, role):
@@ -258,6 +258,100 @@ class CloseGateTest(unittest.TestCase):
                           ctx=self._ctx("req"))
         self.assertEqual(ctx.exception.status_code, 403)
         db.close()
+
+
+class OidcPersistenceTest(unittest.TestCase):
+    """OIDC login persists Pocket ID groups on the user row (worker scope)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        db.commit()
+        db.close()
+
+    def test_upsert_persists_device_groups_and_role(self):
+        db = SessionLocal()
+        cfg = {"group_admin": "barenoc-admins", "group_operator": "barenoc-operators"}
+        u = upsert_oidc_user(db, cfg, {
+            "sub": "pocket-sub-1", "email": "tech@x.test", "name": "Tech",
+            "groups": ["barenoc-operators", "device-core"],
+        })
+        self.assertEqual(u.role, "technician")
+        self.assertEqual(sorted(u.device_groups), ["barenoc-operators", "device-core"])
+        db.close()
+
+    def test_upsert_updates_groups_on_relogin(self):
+        db = SessionLocal()
+        cfg = {"group_admin": "barenoc-admins", "group_operator": "barenoc-operators"}
+        upsert_oidc_user(db, cfg, {"sub": "pocket-sub-2", "groups": ["device-core"]})
+        u = upsert_oidc_user(db, cfg, {"sub": "pocket-sub-2", "groups": ["device-edge"]})
+        self.assertEqual(u.device_groups, ["device-edge"])
+        db.close()
+
+
+class TechScopeModelTest(unittest.TestCase):
+    """models.tech_in_scope — the worker's device-group scope helper."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        self.tech_id = _add(db, User(username="tech", hashed_password="x", role="technician",
+                                     is_active=True, device_groups=["family-a"])).id
+        self.admin_id = _add(db, User(username="boss", hashed_password="x", role="admin",
+                                      is_active=True)).id
+        _add(db, Device(name="Home GW", ip_address="10.0.0.1", device_group="default"))
+        _add(db, Device(name="Family NAS", ip_address="10.0.0.2", device_group="family-a"))
+        _add(db, Device(name="Office SW", ip_address="10.0.0.3", device_group="office"))
+        db.close()
+
+    def _mk(self, target_device_id):
+        db = SessionLocal()
+        _add(db, Ticket(ticket_id="TKT-SCOPE-0001", title="t", description="d",
+                        priority="P3", status="open", source="manual",
+                        submitter_id=self.tech_id, target_device_id=target_device_id,
+                        work_notes="[]"))
+        db.close()
+
+    def _in_scope(self, username):
+        db = SessionLocal()
+        u = db.query(User).filter(User.username == username).first()
+        t = db.query(Ticket).filter(Ticket.ticket_id == "TKT-SCOPE-0001").first()
+        result = tech_in_scope(db, t, u)
+        db.close()
+        return result
+
+    def _dev_id(self, group):
+        db = SessionLocal()
+        d = db.query(Device).filter(Device.device_group == group).first()
+        i = d.id
+        db.close()
+        return i
+
+    def test_tech_in_scope_group(self):
+        self._mk(self._dev_id("family-a"))
+        self.assertTrue(self._in_scope("tech"))
+
+    def test_tech_out_of_scope_group(self):
+        self._mk(self._dev_id("office"))
+        self.assertFalse(self._in_scope("tech"))
+
+    def test_tech_default_group_always_in_scope(self):
+        self._mk(self._dev_id("default"))
+        self.assertTrue(self._in_scope("tech"))
+
+    def test_admin_always_in_scope(self):
+        self._mk(self._dev_id("office"))
+        self.assertTrue(self._in_scope("boss"))
+
+    def test_no_target_device_in_scope(self):
+        self._mk(None)
+        self.assertTrue(self._in_scope("tech"))
 
 
 if __name__ == "__main__":

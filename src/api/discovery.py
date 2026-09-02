@@ -211,6 +211,165 @@ def _is_generic_name(value) -> bool:
         or low.startswith("unifi-")
 
 
+def _is_hex_mac(m) -> bool:
+    """A normalized MAC is a hex string of at least 12 chars (EUI-48)."""
+    return bool(m) and len(m) >= 12 and all(c in "0123456789abcdef" for c in m)
+
+
+def is_randomized_mac(mac) -> bool:
+    """True when a MAC has the locally-administered bit set in its first octet
+    (02/06/0A/0E/12/16/… patterns — the signature of a private/randomized
+    address). Real, globally-assigned MACs (e.g. bc:24:11:… Proxmox VMs share a
+    prefix but are distinct boxes) never carry this bit, so matching by prefix
+    alone is never a fold."""
+    m = normalize_mac(mac)
+    if not _is_hex_mac(m):
+        return False
+    try:
+        first_octet = int(m[:2], 16)
+    except ValueError:
+        return False
+    return bool(first_octet & 0x02)
+
+
+def _fold_eligible(device) -> bool:
+    """A record may be folded INTO only when it is a plain unclaimed discovery
+    row: not claimed, not linked/revoked, and holding no control channel.
+    A claimed/linked identity or an SSH/SNMP/UniFi/agent channel must never be
+    silently folded into (channels/control never auto-fold)."""
+    if device is None:
+        return False
+    if device.claimed:
+        return False
+    if (device.adoption_status or "none") in ("linked", "revoked"):
+        return False
+    if device.adoption_method and device.adoption_method != "none":
+        return False
+    if device.ssh_key_fingerprint or device.snmp_community:
+        return False
+    if device.unifi_managed:
+        return False
+    for ch in (device.channels or []):
+        if ch != "monitor":
+            return False
+    return True
+
+
+def _identity_match(device, *, name=None, hostname=None, vendor=None) -> bool:
+    """Strict identity match for a fold: the sighting and the record describe
+    the SAME device (same name case-insensitively, or same hostname). Different
+    names NEVER fold (even when a hostname happens to match), and vendor/OUI
+    fields must agree or be absent."""
+    def _n(v):
+        return (v or "").strip().lower()
+    name = _n(name)
+    hostname = _n(hostname)
+    vendor = _n(vendor)
+    dev_name = _n(device.name)
+    dev_host = _n(device.hostname)
+    dev_vendor = _n(device.vendor)
+
+    name_match = (not _is_generic_name(name) and not _is_generic_name(dev_name)
+                  and name == dev_name)
+    host_match = (not _is_generic_name(hostname) and not _is_generic_name(dev_host)
+                  and hostname == dev_host)
+    # "different names never fold" — a conflicting non-generic name wins even
+    # when a hostname happens to match.
+    names_conflict = (not _is_generic_name(name) and not _is_generic_name(dev_name)
+                      and name != dev_name)
+    if names_conflict:
+        return False
+    if not (name_match or host_match):
+        return False
+    if vendor and dev_vendor and vendor != dev_vendor:
+        return False
+    return True
+
+
+def find_fold_target(db, *, mac=None, name=None, hostname=None, vendor=None):
+    """Find an existing UNCLAIMED discovery record to fold a randomized-MAC
+    sighting into, by strict identity (name/hostname) — never by prefix alone.
+    Returns None when the sighting is not a randomized MAC or nothing matches."""
+    if not is_randomized_mac(mac):
+        return None
+    candidates = db.query(Device).filter(Device.claimed.is_(False)).all()
+    matches = [d for d in candidates
+               if _fold_eligible(d)
+               and _identity_match(d, name=name, hostname=hostname, vendor=vendor)]
+    if not matches:
+        return None
+    # Deterministic winner: most recently seen first, then highest id.
+    matches.sort(key=lambda d: (d.last_seen is not None,
+                                d.last_seen or datetime.min, d.id), reverse=True)
+    return matches[0]
+
+
+def record_mac_sighting(device, mac, *, ip=None, source="discovery", when=None):
+    """Record a MAC sighting on the canonical record. The FIRST sighting fills
+    ``mac_address``; subsequent distinct MACs append to ``mac_history`` (a
+    randomized device presents a fresh MAC per network — each is retained, but
+    only one row exists). Returns the normalized MAC when something changed,
+    else None (duplicate or empty)."""
+    m = normalize_mac(mac)
+    if not _is_hex_mac(m):
+        return None
+    if not normalize_mac(device.mac_address):
+        device.mac_address = mac
+        return m
+    if m == normalize_mac(device.mac_address):
+        return None
+    history = list(device.mac_history or [])
+    for entry in history:
+        if isinstance(entry, dict) and normalize_mac(entry.get("mac")) == m:
+            return None
+    history.append({
+        "mac": mac,
+        "ip": normalize_ip(ip) or "",
+        "source": source or "discovery",
+        "seen": (when or datetime.utcnow()).isoformat(),
+    })
+    device.mac_history = history
+    return m
+
+
+def fold_sighting(db, target, *, mac=None, ip=None, name=None, hostname=None,
+                  vendor=None, status=None, source="discovery"):
+    """Fold a randomized-MAC sighting into an existing unclaimed record.
+
+    The canonical record is kept (name/MAC identity intact); the sighting
+    refreshes last_seen/status/IP and its MAC is appended to ``mac_history``
+    (no data loss) instead of INSERTing a duplicate row. Audited via the audit
+    + change-log paths (event_type ``device_sighting_folded``, actor = the
+    discovery source).
+    """
+    now = datetime.utcnow()
+    target.last_seen = now
+    if ip:
+        target.ip_address = normalize_ip(ip)
+    if status and (status != "unknown" or not target.status):
+        target.status = status
+    if name and (not target.name or _is_generic_name(target.name)):
+        target.name = name
+    if hostname and (not target.hostname or _is_generic_name(target.hostname)):
+        target.hostname = hostname
+    target.vendor = target.vendor or vendor
+    record_mac_sighting(target, mac, ip=ip, source=source, when=now)
+    db.flush()
+    from audit import log_event
+    from change_log import record
+    record(db, event_type="device_sighting_folded", actor=source or "discovery",
+           asset=target.name,
+           summary=f"Folded a randomized-MAC sighting into {target.name}",
+           detail=(f"New MAC {mac} (ip {ip or '-'}) folded into device "
+                   f"#{target.id} '{target.name}'; "
+                   f"{len(target.mac_history or [])} sighting(s) retained"),
+           links={"device_id": target.id, "mac": mac, "ip": ip or ""},
+           customer_visible=False)
+    log_event(db, "device_sighting_folded", source or "discovery", {
+        "device_id": target.id, "mac": mac, "ip": ip or ""})
+    return target
+
+
 def upsert_discovered(db, *, mac=None, ip=None, name=None, hostname=None,
                       device_type=None, vendor=None, model=None,
                       status=None, claimed=False, unifi_managed=False,
@@ -220,6 +379,8 @@ def upsert_discovered(db, *, mac=None, ip=None, name=None, hostname=None,
     Returns ``(outcome, device)`` where outcome is one of:
       ``"added"``            — new record created
       ``"updated"``          — existing record refreshed in place
+      ``"folded"``           — randomized-MAC same-identity sighting folded
+                               into an existing unclaimed record
       ``"skipped_self"``     — identity is the appliance itself (never recorded)
       ``"skipped_claimed"``  — existing record is claimed and the discovery
                                conflicts with its identity (logged + skipped)
@@ -233,6 +394,19 @@ def upsert_discovered(db, *, mac=None, ip=None, name=None, hostname=None,
     now = datetime.utcnow()
 
     if existing is None:
+        # Randomized-MAC fold (phone-mac-fold): a private/randomized address is
+        # a NEW MAC every network join, so MAC/IP matching can never collapse
+        # it. When the sighting matches an existing unclaimed record by strict
+        # identity (name/hostname), fold it in instead of inserting a row.
+        # find_existing stays MAC/IP-first for real devices.
+        if is_randomized_mac(mac):
+            target = find_fold_target(db, mac=mac, name=name, hostname=hostname,
+                                      vendor=vendor)
+            if target is not None:
+                fold_sighting(db, target, mac=mac, ip=ip, name=name,
+                              hostname=hostname, vendor=vendor, status=status,
+                              source=source)
+                return "folded", target
         if not ip and not mac:
             return "skipped_self", None   # nothing to key a record on
         fallback = f"discovered-{normalize_ip(ip).replace('.', '-')}" if ip \

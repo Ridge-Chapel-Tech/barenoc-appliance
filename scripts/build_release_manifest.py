@@ -157,6 +157,14 @@ def main():
     manifest = {
         "schema": 1,
         "version": ver,
+        "stable": "v2026.09",   # the MONTHLY stable label (1st-of-month baseline).
+        # Policy: the stable stays vYYYY.MM all month — intermediate patches flow
+        # through the update channel but never move the download/stable. The ONLY
+        # exception: a serious post-release bug that breaks a fresh install or the
+        # upgrade path re-cuts the stable to vYYYY.MM.a (new download target)
+        # until the next 1st-of-month stable is verified.
+        "stable_cut": "v2026.09.01.e",  # the concrete release carrying the stable label
+        "stable_rule": "bump only on a fresh-install/upgrade-breaking bug after prod release",
         "previous": prev or None,
         "kind": kind,
         "published": datetime.datetime.utcnow().isoformat() + "Z",

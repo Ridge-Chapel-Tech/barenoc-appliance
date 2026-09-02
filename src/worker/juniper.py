@@ -29,7 +29,7 @@ import logging
 import datetime
 import threading
 
-from models import User, ChatMessage, Ticket, PendingAction, is_tech, is_customer
+from models import User, ChatMessage, Ticket, PendingAction, is_tech, is_customer, tech_in_scope
 from schemas import generate_ticket_id
 from worknotes import add_note
 from audit import log_event
@@ -314,11 +314,11 @@ def ack_intent(text: str) -> bool:
 
 # ── authorization ───────────────────────────────────────────────────────────
 
-def can_direct(ticket, user) -> bool:
-    """Only the ticket owner (requester) or the technician tier/admin may
-    direct a ticket."""
+def can_direct(db, ticket, user) -> bool:
+    """Only the ticket owner (requester) or the technician tier/admin within
+    their device-group scope may direct a ticket."""
     if is_tech(user):
-        return True
+        return tech_in_scope(db, ticket, user)
     return ticket.submitter_id == user.id
 
 
@@ -826,7 +826,10 @@ def _handle_directive(db, bot, msg, sender, directive: dict) -> ChatMessage:
     ticket = db.query(Ticket).filter(Ticket.ticket_id == tkt_id).first()
     if not ticket:
         return reply(db, bot, msg, f"I can't find {tkt_id}.")
-    if not can_direct(ticket, sender):
+    if not can_direct(db, ticket, sender):
+        if is_tech(sender):
+            return reply(db, bot, msg,
+                         f"I can't change {tkt_id} — it's bound to a device group outside your scope.")
         return reply(db, bot, msg,
                      f"I can't change {tkt_id} — only the ticket owner or a technician can direct that ticket.")
 
@@ -853,7 +856,10 @@ def _handle_note(db, bot, msg, sender, directive: dict) -> ChatMessage:
         ticket = db.query(Ticket).filter(Ticket.ticket_id == tkt_id).first()
         if not ticket:
             return reply(db, bot, msg, f"I can't find {tkt_id}.")
-        if not can_direct(ticket, sender):
+        if not can_direct(db, ticket, sender):
+            if is_tech(sender):
+                return reply(db, bot, msg,
+                             f"I can't pass a note on {tkt_id} — it's bound to a device group outside your scope.")
             return reply(db, bot, msg,
                          f"I can't pass a note on {tkt_id} — only the ticket owner or a technician can direct that ticket.")
     else:
@@ -886,7 +892,7 @@ def _handle_close(db, bot, msg, sender, directive: dict) -> ChatMessage:
                          "(e.g. \"close TKT-…\").")
         tkt_id = ticket.ticket_id
 
-    if not can_direct(ticket, sender):
+    if not can_direct(db, ticket, sender):
         # A non-requester customer confirm is routed to "waiting on <requester>"
         # — it NEVER closes the ticket (requester-owned close-loop).
         if is_customer(sender):
@@ -894,6 +900,9 @@ def _handle_close(db, bot, msg, sender, directive: dict) -> ChatMessage:
             return reply(db, bot, msg,
                          f"I can't close {tkt_id} — that ticket belongs to {req}. "
                          f"Waiting on {req} to verify.")
+        if is_tech(sender):
+            return reply(db, bot, msg,
+                         f"I can't close {tkt_id} — it's bound to a device group outside your scope.")
         return reply(db, bot, msg,
                      f"I can't close {tkt_id} — only the ticket owner or a technician can close that ticket.")
     if ticket.status == "closed":

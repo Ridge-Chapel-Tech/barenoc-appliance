@@ -47,6 +47,38 @@ usage() {
   exit 2
 }
 
+# curl is required by every fetch below. Minimal endpoints ship without it
+# (wget-only or nothing), which used to fail with a bare "command not found"
+# mid-install. Auto-install it from the detected package manager.
+ensure_curl() {
+  if command -v curl >/dev/null 2>&1; then return 0; fi
+  echo "==> curl not found — installing it"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq curl
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf -y install curl
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y install curl
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install curl
+  else
+    fail "curl is required but not installed, and no supported package manager (apt/dnf/yum/apk/zypper) was found — install curl first"
+  fi
+  command -v curl >/dev/null 2>&1 || fail "curl install failed"
+}
+
+# appliance_host — the hostname/IP out of $APP (the front door we already
+# reached), with any :port and path stripped. Used as the CA-bootstrap DNS
+# fallback when stepca.barenoc.local does not resolve.
+app_host() {
+  local h="${APP#https://}"
+  h="${h%%/*}"
+  h="${h%%:*}"
+  printf '%s' "$h"
+}
+
 # Browser trust opt-in — default OFF. Trusting this private root makes the
 # appliance's HTTPS trusted; it only affects certs signed by the BareNOC CA.
 # Never install silently.
@@ -80,10 +112,17 @@ HOST="$(hostname | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-._' | cut -c1-60)
 CN="device-${HOST:-node}"
 
 echo "==> Fetching trust + appliance DNS mapping from $APP"
+ensure_curl
 INFO="$(curl -sk "$APP/onboard/info")"
 APP_IP="$(echo "$INFO" | grep -o '"appliance_ip": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
 CA_FP="$(echo "$INFO" | grep -o '"ca_fingerprint": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
 [ -n "$CA_FP" ] || fail "could not read ca_fingerprint from $APP/onboard/info"
+# DNS fallback: when the appliance doesn't publish appliance_ip, derive it from
+# the URL the operator already reached the appliance at (so the stepca hosts
+# entry still gets written and enrollment does not depend on split-horizon DNS).
+if [ -z "$APP_IP" ]; then
+  APP_IP="$(app_host)"
+fi
 if [ -n "$APP_IP" ] && echo "$APP_IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
   # REPLACE any stale entry — a re-onboarded box can carry an old appliance IP
   # that silently breaks enrollment.
@@ -372,8 +411,22 @@ echo "==> Bootstrapping the CA by fingerprint + enrolling $CN"
 export STEPPATH=/root/.step
 # --force: a stale /root/.step (e.g. from a previous CA) made bootstrap open an
 # interactive overwrite prompt and hang forever (08-17, twice). Idempotent re-enroll.
-step ca bootstrap --ca-url "$CA_URL" --fingerprint "$CA_FP" --force </dev/null >/dev/null 2>&1 \
-  || fail "CA bootstrap failed (ca-url $CA_URL)"
+# DNS fallback: stepca.barenoc.local only resolves via the /etc/hosts entry we
+# wrote above (or the appliance's split-horizon DNS). If bootstrap still fails,
+# retry against the appliance host itself on :8443 — the step-ca listener — so
+# a box whose /etc/hosts entry could not be written still enrolls.
+bootstrap_ca() {
+  step ca bootstrap --ca-url "$1" --fingerprint "$CA_FP" --force </dev/null >/dev/null 2>&1
+}
+if ! bootstrap_ca "$CA_URL"; then
+  CA_FALLBACK_URL="https://$(app_host):8443"
+  if [ "$CA_FALLBACK_URL" = "$CA_URL" ]; then
+    fail "CA bootstrap failed (ca-url $CA_URL)"
+  fi
+  echo "  CA bootstrap failed via $CA_URL — retrying via $CA_FALLBACK_URL"
+  bootstrap_ca "$CA_FALLBACK_URL" \
+    || fail "CA bootstrap failed (tried $CA_URL and $CA_FALLBACK_URL)"
+fi
 step ca certificate "$CN" "$CERTS/noc-agent.crt" "$CERTS/noc-agent.key" \
   --token "$TOKEN" --root "$CA_CERT_PATH" \
   || fail "certificate enrollment failed"

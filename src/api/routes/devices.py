@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import get_db
 from models import Device, User, DeviceJob, is_customer
 from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
@@ -60,6 +60,48 @@ def _device_channels(device: Device) -> list:
         agent_connected=agent_connected,
         explicit=device.channels,
     )
+
+
+def device_readiness(device: Device, now: "datetime | None" = None,
+                     max_age_minutes: int = 10) -> dict:
+    """Post-adoption readiness report for an agent-adopted endpoint.
+
+    A cert-linked device is NOT ready until the NOC_Agent has actually
+    reported in (agent_version + host facts) and is still alive (recent
+    last_seen + cert_last_seen — the agent polls jobs over mTLS). The
+    endpoint installer (agent_install.sh) enrolls a cert; this is the
+    appliance-side check that the agent came up and is talking back.
+    """
+    now = now or datetime.utcnow()
+    max_age = timedelta(minutes=int(max_age_minutes))
+    checks = {}
+
+    def _chk(key, ok, detail=""):
+        checks[key] = {"ok": bool(ok), "detail": str(detail)}
+
+    _chk("adopted", device.adoption_status == "linked",
+         device.adoption_status or "none")
+    _chk("agent_channel", device.adoption_method == "agent",
+         device.adoption_method or "none")
+    _chk("agent_reported", bool(device.agent_version), device.agent_version or "")
+    _chk("facts_reported", bool(device.facts_json),
+         "present" if device.facts_json else "")
+
+    def _age(dt):
+        return (now - dt) if dt is not None else None
+
+    ls = _age(device.last_seen)
+    cs = _age(device.cert_last_seen)
+    _chk("online", device.status == "online", device.status or "")
+    _chk("recent_last_seen", ls is not None and ls <= max_age,
+         f"{int(ls.total_seconds())}s ago" if ls is not None else "never")
+    _chk("recent_cert_seen", cs is not None and cs <= max_age,
+         f"{int(cs.total_seconds())}s ago" if cs is not None else "never")
+
+    missing = [k for k, v in checks.items() if not v["ok"]]
+    return {"ready": not missing, "device_id": device.id, "name": device.name,
+            "max_age_minutes": int(max_age_minutes), "checks": checks,
+            "missing": missing}
 
 
 def _normalize_channels(value) -> list:
@@ -128,7 +170,7 @@ def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
     the same record (by MAC then IP) instead of INSERTing duplicates, and the
     appliance's own identity is never recorded."""
     found = (body or {}).get("found") or []
-    added = updated = skipped_self = skipped_claimed = 0
+    added = updated = folded = skipped_self = skipped_claimed = 0
     for hit in found:
         ip = (hit or {}).get("ip") or ""
         if not ip:
@@ -147,12 +189,15 @@ def snmp_sweep_results(body: dict, db: Session = Depends(get_db),
             added += 1
         elif outcome == "updated":
             updated += 1
+        elif outcome == "folded":
+            folded += 1
         elif outcome == "skipped_self":
             skipped_self += 1
         else:
             skipped_claimed += 1
     db.commit()
     return {"status": "ok", "added": added, "updated": updated,
+            "folded": folded,
             "skipped_self": skipped_self, "skipped_claimed": skipped_claimed,
             "count": len(found)}
 
@@ -164,7 +209,7 @@ def discover_results(body: dict, db: Session = Depends(get_db),
     self-exclusion via discovery.upsert_discovered — repeated scans of the same
     host yield ONE record (by MAC then IP), and the appliance is never added."""
     found = (body or {}).get("found") or []
-    added = updated = skipped_self = skipped_claimed = 0
+    added = updated = folded = skipped_self = skipped_claimed = 0
     for hit in found:
         ip = (hit or {}).get("ip") or ""
         mac = (hit or {}).get("mac") or None
@@ -181,12 +226,15 @@ def discover_results(body: dict, db: Session = Depends(get_db),
             added += 1
         elif outcome == "updated":
             updated += 1
+        elif outcome == "folded":
+            folded += 1
         elif outcome == "skipped_self":
             skipped_self += 1
         else:
             skipped_claimed += 1
     db.commit()
     return {"status": "ok", "added": added, "updated": updated,
+            "folded": folded,
             "skipped_self": skipped_self, "skipped_claimed": skipped_claimed,
             "count": len(found)}
 
@@ -305,6 +353,22 @@ def get_device(device_id: int, db: Session = Depends(get_db), ctx: dict = Depend
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
     resp["channels"] = _device_channels(device)
     return resp
+
+
+@router.get("/{device_id}/readiness")
+def get_device_readiness(device_id: int,
+                         max_age_minutes: int = Query(10, ge=1, le=1440),
+                         db: Session = Depends(get_db),
+                         ctx: dict = Depends(get_access_context)):
+    """Appliance-side post-adoption readiness report for a device.
+
+    Verifies a just-adopted NOC_Agent endpoint actually came up: adopted via
+    the agent channel, reported agent_version + host facts, and is alive
+    (recent last_seen + cert_last_seen). ``max_age_minutes`` tunes the liveness
+    window (default 10).
+    """
+    device = _get_checked(db, device_id, ctx)
+    return device_readiness(device, max_age_minutes=max_age_minutes)
 
 
 def _get_checked(db: Session, device_id: int, ctx: dict) -> Device:

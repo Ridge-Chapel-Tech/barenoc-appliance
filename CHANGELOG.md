@@ -15,6 +15,74 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [2026.09.02.a] — 2026-09-02
+
+### Fixed
+- **Offsite backup DEK round-trip flake (CI `errors=1`):** `ensure_dek()` used
+  `.strip()` on the raw 32-byte data-encryption key, so a key whose first/last
+  byte happened to be whitespace (`0x09`–`0x0D`, `0x20`) was silently
+  regenerated on the next read — the encrypt pass then used a different key
+  than the caller held and the round-trip decrypt raised
+  `cryptography.exceptions.InvalidTag` (~4.5% of runs; the recurring
+  `test_remote_backup` `errors=1` flake). It now reads the exact bytes.
+  `sign_request()` also accepts an injectable `now` so the deterministic-sign
+  test can't straddle a second/day boundary.
+
+### Changed
+- **CI gates surface the whole api-suite failure:** the two legacy api-suite
+  invocations in `scripts/run_tests.sh` still piped to `tail -3`, which hid the
+  actual ERROR/FAIL blocks (the `errors=1` flake failed CI with only a 3-line
+  tail and no traceback). They now run through `_run_unittest`, which prints
+  the failing test names + tracebacks.
+
+### Added
+- **Post-adoption agent readiness check (BareNOC-side):** new
+  `GET /api/v1/devices/{id}/readiness` endpoint +
+  `src/scripts/verify_agent_adoption.sh` verify that a just-adopted NOC_Agent
+  endpoint actually came up — adopted via the agent channel, reported
+  `agent_version` + host facts, and alive (recent `last_seen` +
+  `cert_last_seen`). `max_age_minutes` tunes the liveness window (default 10).
+
+### Security
+- **`agent_install.sh` hardening:** auto-installs `curl` from the detected
+  package manager when missing, and adds a CA-bootstrap DNS fallback — the
+  appliance IP is derived from the reached URL when `/onboard/info` omits it,
+  and bootstrap retries against `https://<appliance>:8443` when
+  `stepca.barenoc.local` fails to resolve.
+
+## [2026.09.01.e] — 2026-09-01
+
+### Added
+- **Firmware management as a managed service (pricing tie-in):** the
+  System → Firmware page now leads with a **Managed service** status panel —
+  a single read-only snapshot of the agent's firmware upkeep (service state,
+  coverage, next maintenance window, autonomy, pending approvals/escalations,
+  last activity) backed by a new `GET /api/v1/firmware/service` endpoint
+  (`firmware.service_summary`). The panel frames firmware management as the
+  ongoing agent-delivered service (pre-stage → window → one-at-a-time → verify
+  → escalate), not a manual button, and notes the Managed-plan positioning
+  (free during beta; entitlement enforcement lands at GA). Juniper can surface
+  the same rollup in chat later.
+- **Roles: worker-side technician device-group scope enforcement:** the
+  worker (Juniper chat + ticket-thread) close/direct paths now enforce the
+  technician device-group scope the API already applies (`_tech_in_scope`),
+  closing the API/worker gap — a technician can only close/direct within
+  their group, and the auth_method is preserved across refreshed passkey
+  sessions (no lost device-group on re-auth).
+
+### Fixed
+- **Ticket note expander collapsed on poll refresh:** the "Show more (N more
+  lines)" `<details>` expander on long notes re-rendered closed on every
+  15-second ticket poll (the `open` state wasn't persisted), making long
+  notes unreadable — expand/collapse state is now kept in JS across
+  re-renders (tickets.html + chat.html).
+- **Discovery: private/randomized-MAC sightings folded into one record:**
+  devices with private/randomized MACs (phones/tablets) created a new
+  inventory row per network join (a phone showed 4 rows). Discovery +
+  adoption now fold same-identity randomized-MAC sightings into the
+  existing record (strict same-name match; never folds linked/claimed;
+  audited; the 09-01 dedupe backfill quirk is now a permanent fix).
+
 ## [2026.09.01.d] — 2026-09-01
 
 ### Fixed

@@ -117,7 +117,8 @@ def _mint_tokens(db: Session, user: User, request: Request,
     access = create_access_token({"sub": user.username, "role": user.role,
                                   "groups": groups or [], "auth_method": auth_method},
                                  ver=ver)
-    refresh = create_refresh_token({"sub": user.username, "role": user.role},
+    refresh = create_refresh_token({"sub": user.username, "role": user.role,
+                                    "groups": groups or [], "auth_method": auth_method},
                                    jti=jti, ver=ver)
     db.add(AuthSession(
         user_id=user.id, jti=jti,
@@ -370,7 +371,8 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     db.commit()
 
     new_access = create_access_token({"sub": user.username, "role": user.role,
-                                      "groups": [], "auth_method": "password"},
+                                      "groups": payload.get("groups") or (user.device_groups or []),
+                                      "auth_method": payload.get("auth_method") or "password"},
                                      ver=user.token_version or 0)
     # Keep the browser's refresh cookie fresh (same jti — still revocable).
     _set_auth_cookies(response, request, new_access, refresh=token)
@@ -504,6 +506,9 @@ def upsert_oidc_user(db: Session, cfg: dict, claims: dict) -> User:
     email = claims.get("email") or None
     name = claims.get("name") or None
     role = role_from_groups(cfg, claims)
+    groups = claims.get("groups") or claims.get("group") or []
+    if not isinstance(groups, list):
+        groups = [groups]
 
     user = None
     if sub:
@@ -521,6 +526,7 @@ def upsert_oidc_user(db: Session, cfg: dict, claims: dict) -> User:
             is_active=True,
             must_change_password=False,
             oidc_sub=sub or None,
+            device_groups=groups,
         )
         db.add(user)
     else:
@@ -530,6 +536,7 @@ def upsert_oidc_user(db: Session, cfg: dict, claims: dict) -> User:
         if email:
             user.email = email
         user.role = role
+        user.device_groups = groups
         user.must_change_password = False  # passkey auth is strong auth
 
     db.commit()

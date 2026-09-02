@@ -109,6 +109,18 @@ class EncryptionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             rb.decrypt_file_to(bad, os.path.join(self.tmp, "x.tar.gz"), os.urandom(32))
 
+    def test_ensure_dek_returns_whitespace_terminated_key_unchanged(self):
+        # Regression (CI flake, "errors=1"): ensure_dek used .strip() on the
+        # raw key, so a DEK whose first/last byte happened to be whitespace
+        # (0x09-0x0D, 0x20) was silently regenerated on the next read — the
+        # encrypt pass then used a DIFFERENT key than the caller held, and the
+        # decrypt raised InvalidTag. Read the exact bytes back; never strip.
+        raw = os.urandom(32)
+        raw = b" " + raw[1:-1] + b"\n"   # leading space, trailing newline
+        with open(rb.DEK_FILE, "wb") as f:
+            f.write(raw)
+        self.assertEqual(rb.ensure_dek(), raw)
+
 
 class PlanKeyTest(unittest.TestCase):
     def test_valid_beta_key(self):
@@ -155,9 +167,18 @@ class SignerTest(unittest.TestCase):
         self.assertEqual(h["x-amz-content-sha256"], rb._sha256_hex(b"abc"))
 
     def test_sign_request_deterministic_same_payload(self):
-        a = rb.sign_request("GET", "https://m:9000/b", "r", "AK", "SK")
-        b = rb.sign_request("GET", "https://m:9000/b", "r", "AK", "SK")
+        fixed = datetime.datetime(2026, 8, 30, 3, 15, 0,
+                                  tzinfo=datetime.timezone.utc)
+        a = rb.sign_request("GET", "https://m:9000/b", "r", "AK", "SK",
+                            now=fixed)
+        b = rb.sign_request("GET", "https://m:9000/b", "r", "AK", "SK",
+                            now=fixed)
         self.assertEqual(a["Authorization"], b["Authorization"])
+        # a different clock produces a different signature (the date/amz-date
+        # are part of the canonical request), proving `now` is actually used.
+        c = rb.sign_request("GET", "https://m:9000/b", "r", "AK", "SK",
+                            now=fixed + datetime.timedelta(seconds=1))
+        self.assertNotEqual(a["Authorization"], c["Authorization"])
 
 
 class S3ClientTest(unittest.TestCase):

@@ -453,35 +453,52 @@ function markdownLite(text) {
   return out.join('');
 }
 
-function noteBody(ev, text) {
+// ── expander state survives re-renders ────────────────────────────────────
+// loadThread re-renders the thread every 4 s (and on actions), which would
+// otherwise collapse any note the user has expanded mid-read. Keys are stable
+// per note (ticket_id + note index). The delegated `toggle` listener (capture
+// phase — the toggle event does not bubble) records opens/closes in a Set;
+// noteBody re-applies `open` on every render.
+var expandedNotes = new Set();
+document.addEventListener('toggle', function (e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'DETAILS' || !el.classList.contains('note-more')) return;
+  var key = el.getAttribute('data-note-key');
+  if (!key) return;
+  if (el.open) expandedNotes.add(key); else expandedNotes.delete(key);
+}, true);
+
+function noteBody(ev, text, key) {
   var s = String(text == null ? '' : text);
   var lines = s.split('\n');
   if (lines.length <= NOTE_COLLAPSE_LINES) return markdownLite(s);
   var hiddenCount = lines.length - NOTE_COLLAPSE_LINES;
   var preview = markdownLite(lines.slice(0, NOTE_COLLAPSE_LINES).join('\n'));
   var hidden = markdownLite(lines.slice(NOTE_COLLAPSE_LINES).join('\n'));
+  var openAttr = (key && expandedNotes.has(key)) ? ' open' : '';
+  var keyAttr = key ? ' data-note-key="' + key + '"' : '';
   return '<div class="note-collapsible">'
     + '<div class="note-preview">' + preview + '</div>'
-    + '<details class="note-more"><summary>Show more (' + hiddenCount + ' more lines)</summary>'
+    + '<details class="note-more"' + openAttr + keyAttr + '><summary>Show more (' + hiddenCount + ' more lines)</summary>'
     + '<div class="note-full">' + hidden + '</div></details></div>';
 }
 
-function finalAnswerNote(text, time) {
+function finalAnswerNote(text, time, key) {
   return el('div', 'flex justify-start',
     el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm bg-white border border-gray-200 rounded-bl-sm',
-      '<div class="break-words note-content">' + noteBody('agent_completed', text) + '</div>',
+      '<div class="break-words note-content">' + noteBody('agent_completed', text, key) + '</div>',
       '<div class="text-[10px] mt-0.5 text-gray-400">' + time + '</div>'));
 }
-function agentBubbleNote(text, time) {
+function agentBubbleNote(text, time, key) {
   return el('div', 'flex justify-start',
     el('div', 'max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm bg-barenoc-50 border border-barenoc-200 rounded-bl-sm',
-      '<div class="break-words note-content">' + noteBody('ai_tech_feedback', text) + '</div>',
+      '<div class="break-words note-content">' + noteBody('ai_tech_feedback', text, key) + '</div>',
       '<div class="text-[10px] mt-0.5 text-gray-400">' + time + '</div>'));
 }
-function progressNote(text, time) {
+function progressNote(text, time, key) {
   return el('div', 'flex justify-start',
     '<div class="max-w-[85%] text-xs text-gray-400 italic px-1 py-0.5 note-content">'
-      + noteBody('agent_progress', text)
+      + noteBody('agent_progress', text, key)
       + (time ? ' · ' + time : '') + '</div>');
 }
 function noticeLine(ev, text, time) {
@@ -512,14 +529,15 @@ async function loadThread() {
     // Customer-facing thread: user messages + Lily's replies (agent_completed,
     // ai_tech_feedback, agent_progress) as bubbles; internal pipeline chatter
     // (processing / agent_response / auto_execute / agent_retry) is hidden.
-    notes.forEach(n => {
+    notes.forEach((n, idx) => {
       if (!n || typeof n !== 'object') return;
       const ev = n.event || '';
       const tm = fmtTime(n.timestamp);
+      const key = (curTicket || 'ticket') + ':' + idx;
       if (ev === 'user_message') box.appendChild(bubble('user', n.detail, tm, null));
-      else if (ev === 'agent_completed') box.appendChild(finalAnswerNote(n.detail, tm));
-      else if (ev === 'ai_tech_feedback') box.appendChild(agentBubbleNote(n.detail, tm));
-      else if (ev === 'agent_progress') box.appendChild(progressNote(n.detail, tm));
+      else if (ev === 'agent_completed') box.appendChild(finalAnswerNote(n.detail, tm, key));
+      else if (ev === 'ai_tech_feedback') box.appendChild(agentBubbleNote(n.detail, tm, key));
+      else if (ev === 'agent_progress') box.appendChild(progressNote(n.detail, tm, key));
       else if (ev === 'checkin_request') box.appendChild(noticeLine(ev, n.detail, tm));
       else if (ev === 'escalated' || ev === 'failed' || ev === 'agent_failed' || ev === 'completed' || ev === 'closed' || ev === 'autoclosed')
         box.appendChild(systemLine(ev, n.detail, tm));
@@ -530,7 +548,7 @@ async function loadThread() {
     // Final resolution chip — only once the ticket is actually resolved/closed;
     // while it's open the in-thread notes already carry Lily's answer.
     if (t.resolution && ['completed','closed'].includes(t.status))
-      box.appendChild(finalAnswerNote('✓ ' + t.resolution, fmtTime(t.resolved_at)));
+      box.appendChild(finalAnswerNote('✓ ' + t.resolution, fmtTime(t.resolved_at), curTicket + ':resolution'));
     if (stick) box.scrollTop = box.scrollHeight;
     else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
     const acts = $('th-actions'); acts.innerHTML = '';

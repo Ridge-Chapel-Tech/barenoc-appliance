@@ -20,8 +20,8 @@ from unittest.mock import patch
 _TMP = tempfile.mkdtemp(prefix="juniper-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))            # worker/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))  # api/ (queue_status, models…)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))            # worker/ (juniper, main — must win over api/main)
 
 from queue_status import is_paused, derive_status  # noqa: E402
 from database import SessionLocal, init_db  # noqa: E402
@@ -533,6 +533,102 @@ class CloseDirectiveHandlerTest(unittest.TestCase):
         db.close()
         self.assertIsNotNone(ev)
         self.assertEqual(ev.actor, "juniper")
+
+
+class TechScopeCloseTest(unittest.TestCase):
+    """Technician device-group scope on the Juniper close path (worker side).
+
+    The worker has no JWT — it reads the Pocket ID groups persisted on the
+    user row (User.device_groups) to enforce the same scope the API enforces
+    via token claims."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        db.commit()
+        self.bot = User(username="juniper", display_name="Juniper",
+                        hashed_password="x", role="admin", is_active=True, is_bot=True)
+        self.owner = User(username="owner", display_name="Owner",
+                          hashed_password="x", role="tenant", is_active=True)
+        self.tech = User(username="tech", display_name="Tech",
+                         hashed_password="x", role="technician", is_active=True,
+                         device_groups=["family-a"])
+        self.admin = User(username="boss", display_name="Boss",
+                          hashed_password="x", role="admin", is_active=True)
+        db.add_all([self.bot, self.owner, self.tech, self.admin])
+        db.commit()
+        db.add_all([
+            Device(name="Home GW", ip_address="10.0.0.1", device_group="default"),
+            Device(name="Family NAS", ip_address="10.0.0.2", device_group="family-a"),
+            Device(name="Office SW", ip_address="10.0.0.3", device_group="office"),
+        ])
+        db.commit()
+        db.close()
+
+    def _make_ticket(self, ticket_id, device_group):
+        db = SessionLocal()
+        owner = db.query(User).filter(User.username == "owner").first()
+        dev = db.query(Device).filter(Device.device_group == device_group).first()
+        t = Ticket(ticket_id=ticket_id, title="test ticket", description="d",
+                   priority="P3", status="open", source="chat",
+                   submitter_id=owner.id, target_device_id=dev.id, work_notes="[]")
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.close()
+        return t
+
+    def _run(self, body, sender_username):
+        db = SessionLocal()
+        sender = db.query(User).filter(User.username == sender_username).first()
+        bot = db.query(User).filter(User.is_bot == True).first()  # noqa: E712
+        msg = ChatMessage(from_user_id=sender.id, to_user_id=bot.id, body=body)
+        out = juniper.handle_message(db, bot, msg, sender)
+        text = out.body
+        db.close()
+        return text
+
+    def _status(self, ticket_id):
+        db = SessionLocal()
+        t = db.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
+        s = t.status
+        db.close()
+        return s
+
+    def test_technician_closes_in_scope_group(self):
+        self._make_ticket("TKT-20260819-0001", "family-a")
+        text = self._run("close TKT-20260819-0001", "tech")
+        self.assertEqual(text, "Done — TKT-20260819-0001 is closed.")
+        self.assertEqual(self._status("TKT-20260819-0001"), "closed")
+
+    def test_technician_denied_out_of_scope_group(self):
+        self._make_ticket("TKT-20260819-0002", "office")
+        text = self._run("close TKT-20260819-0002", "tech")
+        self.assertIn("outside your scope", text)
+        self.assertEqual(self._status("TKT-20260819-0002"), "open")
+
+    def test_technician_closes_ungrouped(self):
+        self._make_ticket("TKT-20260819-0003", "default")
+        text = self._run("close TKT-20260819-0003", "tech")
+        self.assertEqual(text, "Done — TKT-20260819-0003 is closed.")
+        self.assertEqual(self._status("TKT-20260819-0003"), "closed")
+
+    def test_admin_closes_any_group(self):
+        self._make_ticket("TKT-20260819-0004", "office")
+        text = self._run("close TKT-20260819-0004", "boss")
+        self.assertEqual(text, "Done — TKT-20260819-0004 is closed.")
+        self.assertEqual(self._status("TKT-20260819-0004"), "closed")
+
+    def test_owner_closes_own_grouped_ticket(self):
+        self._make_ticket("TKT-20260819-0005", "office")
+        text = self._run("close TKT-20260819-0005", "owner")
+        self.assertEqual(text, "Done — TKT-20260819-0005 is closed.")
+        self.assertEqual(self._status("TKT-20260819-0005"), "closed")
 
 
 class PendingItemsContextTest(unittest.TestCase):

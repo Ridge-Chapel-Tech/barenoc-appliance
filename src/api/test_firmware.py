@@ -455,5 +455,104 @@ class PendingQueueTest(unittest.TestCase):
         db.close()
 
 
+class ServiceSummaryTest(unittest.TestCase):
+    """The managed-service snapshot (pricing tie-in: firmware as a service)."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        _clean(db, DeviceFirmware, FirmwareUpgrade, PendingAction,
+               MaintenanceWindow, Ticket)
+        db.close()
+
+    def _seed(self):
+        db = SessionLocal()
+        db.add(DeviceFirmware(mac_address="aa:00:01", name="AP", device_type="ap",
+                              current_version="6.6.50",
+                              available_version="6.6.55", upgradeable=True,
+                              online=True))
+        db.add(DeviceFirmware(mac_address="aa:00:02", name="SW", device_type="switch",
+                              current_version="6.6.55", upgradeable=False,
+                              online=True))
+        db.commit()
+        return db
+
+    def test_plan_positioning(self):
+        db = SessionLocal()
+        s = firmware.service_summary(db, now=T0, env=AUTONOMOUS,
+                                     unifi_configured=False)
+        self.assertEqual(s["plan"]["tier"], "managed")
+        self.assertEqual(s["plan"]["name"], "Managed network service")
+        self.assertTrue(s["plan"]["beta"])
+        self.assertEqual(s["state"], "not_configured")
+        db.close()
+
+    def test_off(self):
+        db = self._seed()
+        s = firmware.service_summary(db, now=T0, env=OFF, unifi_configured=True)
+        self.assertEqual(s["state"], "off")
+        db.close()
+
+    def test_needs_window(self):
+        db = self._seed()
+        s = firmware.service_summary(db, now=T0, env=AUTONOMOUS,
+                                     unifi_configured=True)
+        self.assertEqual(s["state"], "needs_window")
+        self.assertEqual(s["coverage"]["total"], 2)
+        self.assertEqual(s["coverage"]["upgradeable"], 1)
+        self.assertEqual(s["coverage"]["up_to_date"], 1)
+        self.assertEqual(s["coverage"]["by_type"], {"ap": 1, "switch": 1})
+        db.close()
+
+    def test_active_with_window(self):
+        db = self._seed()
+        _mk_window(db, hour=3, duration=60)
+        s = firmware.service_summary(db, now=T0, env=AUTONOMOUS,
+                                     unifi_configured=True)
+        self.assertEqual(s["state"], "active")
+        self.assertEqual(s["windows"]["enabled"], 1)
+        self.assertTrue(s["windows"]["active_now"])
+        self.assertIsNotNone(s["windows"]["next"])
+        db.close()
+
+    def test_awaiting_approval(self):
+        db = self._seed()
+        _mk_window(db, hour=3, duration=60)
+        db.add(PendingAction(kind="approval", title="t", mac_address="aa:00:01",
+                             status="pending", required_role="admin"))
+        db.commit()
+        s = firmware.service_summary(db, now=T0, env=BALANCED,
+                                     unifi_configured=True)
+        self.assertEqual(s["state"], "awaiting_approval")
+        self.assertEqual(s["pending"]["approvals_pending"], 1)
+        db.close()
+
+    def test_escalated(self):
+        db = self._seed()
+        _mk_window(db, hour=3, duration=60)
+        db.add(PendingAction(kind="escalation", title="t", mac_address="aa:00:01",
+                             status="pending", required_role="admin",
+                             extra={"severity": "P1"}))
+        db.commit()
+        s = firmware.service_summary(db, now=T0, env=AUTONOMOUS,
+                                     unifi_configured=True)
+        self.assertEqual(s["state"], "escalated")
+        self.assertEqual(s["pending"]["escalations_pending"], 1)
+        db.close()
+
+    def test_healthy(self):
+        db = SessionLocal()
+        db.add(DeviceFirmware(mac_address="aa:00:02", name="SW", device_type="switch",
+                              current_version="6.6.55", upgradeable=False,
+                              online=True))
+        db.commit()
+        _mk_window(db, hour=3, duration=60)
+        s = firmware.service_summary(db, now=T0, env=AUTONOMOUS,
+                                     unifi_configured=True)
+        self.assertEqual(s["state"], "healthy")
+        self.assertEqual(s["coverage"]["upgradeable"], 0)
+        db.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

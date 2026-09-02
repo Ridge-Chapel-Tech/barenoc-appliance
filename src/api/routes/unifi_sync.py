@@ -833,7 +833,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
             return None
 
     clients = client.get_clients()
-    c_added = c_updated = c_skipped = c_pruned = 0
+    c_added = c_updated = c_folded = c_skipped = c_pruned = 0
 
     for uc in clients:
         # Only invent devices for clients we can actually reach/monitor
@@ -862,6 +862,24 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
         real_last_seen = now if uc["online"] else (seen or now)
 
         existing = discovery.find_existing(db, uc["mac"], uc["ip"])
+
+        if existing is None:
+            # Randomized-MAC fold (phone-mac-fold): private/randomized clients
+            # present a fresh MAC per network join, so MAC/IP matching can't
+            # collapse them. Fold a same-identity unclaimed sighting into the
+            # canonical record instead of a new row.
+            folded = discovery.find_fold_target(
+                db, mac=uc["mac"], name=uc.get("name"),
+                hostname=uc.get("hostname"), vendor=uc.get("vendor"))
+            if folded is not None:
+                discovery.fold_sighting(
+                    db, folded, mac=uc["mac"], ip=uc["ip"],
+                    name=uc.get("name"), hostname=uc.get("hostname"),
+                    vendor=uc.get("vendor"),
+                    status="online" if uc["online"] else "offline",
+                    source="unifi-sync")
+                c_folded += 1
+                continue
 
         if existing and not existing.mac_address and not existing.claimed and uc["mac"]:
             # Merge a ping-scan find (no MAC, generic 'discovered-*' name) with
@@ -929,6 +947,7 @@ def sync_from_unifi(db: Session = Depends(get_db), user: User = Depends(require_
         "adopted": adopted,
         "clients_added": c_added,
         "clients_updated": c_updated,
+        "clients_folded": c_folded,
         "clients_skipped": c_skipped,
         "clients_pruned": c_pruned,
         "retention_days": retention_days,
