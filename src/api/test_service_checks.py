@@ -12,6 +12,7 @@ import datetime
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -436,6 +437,17 @@ class HttpProbeTest(unittest.TestCase):
     def test_ping_loopback_when_available(self):
         if not shutil.which("ping"):
             self.skipTest("ping not installed")
+        # ping may be installed but non-functional in unprivileged/containerized
+        # environments (no CAP_NET_RAW): verify it actually works before
+        # asserting a successful loopback probe, else skip.
+        try:
+            probe = subprocess.run(
+                ["ping", "-c", "1", "-W", "2", "127.0.0.1"],
+                capture_output=True, timeout=6)
+        except Exception:
+            probe = None
+        if probe is None or probe.returncode != 0:
+            self.skipTest("ping not permitted (no raw socket)")
         m = SimpleNamespace(check_type="ping", params={})
         ok, _ = sc.run_probe(m, "127.0.0.1", dict(CFG))
         self.assertTrue(ok)

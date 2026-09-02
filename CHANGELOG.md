@@ -17,6 +17,23 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.02.c] — 2026-09-02
+
+### Fixed
+- **Network-opt schedule write is hermetic.** `network_opt._write_schedule`
+  called `os.makedirs(STATUS_DIR)` on the hardcoded
+  `/opt/barenoc/volumes/update_status`, so the gate failed with
+  `PermissionError` when the API ran as an unprivileged user (SAT-010's 4
+  `test_network_opt` errors). It now creates the schedule file's parent
+  directory, so tests can point `SCHEDULE_FILE` at a temp path while prod is
+  unchanged.
+- **Ping probes skip cleanly when ping can't actually run.**
+  `test_service_checks.test_ping_loopback_when_available` and
+  `test_discover_sweep.test_single_host_reachable` only skipped when the
+  `ping` binary was absent; on a box without `CAP_NET_RAW` ping is present
+  but non-functional, so they failed. Both now probe ping first and skip
+  rather than assert success on a host that can't ping.
+
 ## [2026.09.02.b] — 2026-09-02
 
 ### Fixed

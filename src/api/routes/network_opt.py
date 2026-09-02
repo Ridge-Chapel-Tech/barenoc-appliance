@@ -89,7 +89,7 @@ def _write_schedule(conf: dict):
     when = (conf.get("when") or "").strip()
     fired = (conf.get("fired") or "").strip()
     try:
-        os.makedirs(STATUS_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(SCHEDULE_FILE) or ".", exist_ok=True)
         with open(SCHEDULE_FILE, "w") as f:
             f.write("# BareNOC Network Optimization schedule (admin; scheduler applies it)\n")
             f.write(f"mode={mode}\n")
