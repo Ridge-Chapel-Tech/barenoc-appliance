@@ -78,6 +78,13 @@ if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
   sed -i "0,/^## \[Unreleased\]/s//## [$NEWVER] — $(date +%F)/" CHANGELOG.md
 fi
 
+# the GOTCHA: bump renames [Unreleased] → [<ver>] but MUST leave a fresh
+# [Unreleased] header behind above it, or the next bump has nothing to rename
+# and SAT-009 (missing [Unreleased] header) fires post-bump.
+if grep -q "^## \[$NEWVER\]" CHANGELOG.md; then
+  sed -i "0,/^## \[$NEWVER\]/s//## [Unreleased]\n\n## [$NEWVER]/" CHANGELOG.md
+fi
+
 git add "$VERSION_FILE" CHANGELOG.md
 git commit -m "build: bump version to $NEWVER" >/dev/null
 

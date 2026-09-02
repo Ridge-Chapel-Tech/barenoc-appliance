@@ -15,6 +15,23 @@ Categories per release:
 - **Docs** — documentation (local + wiki)
 - **Ops** — deployment, backup, tooling
 
+## [Unreleased]
+
+## [2026.09.02.b] — 2026-09-02
+
+### Fixed
+- **Agent update apply: zero-apply no-op no longer reports `reboot_needed`.**
+  `apply_updates.sh` read the host's `/var/run/reboot-required` marker
+  unconditionally, so a run that applied nothing could still flip
+  `reboot_needed=true` and break the hermetic `test_apply_updates.sh`
+  zero-sources case on a host carrying a real reboot marker (SAT-010). The
+  Debian/Ubuntu marker is now consulted only when an OS update was actually
+  applied this run.
+- **Release bump: fresh `[Unreleased]` header restored after bump.**
+  `bump_version.sh` renamed `[Unreleased]` → `[<version>]` but left no fresh
+  header behind, so the post-bump CHANGELOG tripped SAT-009 (missing
+  `[Unreleased]` header). It now re-inserts one above the new release.
+
 ## [2026.09.02.a] — 2026-09-02
 
 ### Fixed

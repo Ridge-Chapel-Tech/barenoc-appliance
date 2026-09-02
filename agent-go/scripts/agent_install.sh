@@ -909,8 +909,14 @@ fi
 REBOOT_NEEDED="false"
 # Atomic: the staged deployment activates on reboot.
 [ "$APPLIED_RPMOSTREE" -gt 0 ] && REBOOT_NEEDED="true"
-# Debian/Ubuntu: the package manager's own marker.
-[ -f /var/run/reboot-required ] && REBOOT_NEEDED="true"
+# Debian/Ubuntu: the package manager's own marker. Consult it ONLY when we
+# actually applied an OS update this run — a stale host marker must not flip a
+# zero-apply no-op to reboot_needed (hermeticity: test_apply_updates.sh's
+# zero-sources case asserts reboot_needed=false even on a host carrying a real
+# /var/run/reboot-required).
+if [ "$APPLIED_OS" -gt 0 ] && [ -f /var/run/reboot-required ]; then
+  REBOOT_NEEDED="true"
+fi
 # A kernel package in the pre-apply OS listing ⇒ a reboot is pending.
 if [ "$APPLIED_OS" -gt 0 ]; then
   B64=$(printf '%s\n' "$CHECK_JSON" | sed -n 's/.*"updates_b64":"\([^"]*\)".*/\1/p')
