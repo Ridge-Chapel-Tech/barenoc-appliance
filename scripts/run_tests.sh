@@ -10,6 +10,12 @@ export RATE_LIMIT_ENABLED=false
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Prefer the repo venv when present (the Command Center's dev clone + CI have
+# no system fastapi — running with bare python3 gives 43 import errors).
+PY="python3"
+[ -x "$ROOT/.venv/bin/python" ] && PY="$ROOT/.venv/bin/python"
+export PY
+
 # Run a unittest group. On success we print only the summary tail; on failure
 # we ALSO surface the ERROR/FAIL blocks (test name + full traceback) that the
 # old `tail -3` hid — which is exactly how api-suite errors went unseen in CI.
@@ -18,7 +24,7 @@ _run_unittest() {
   local log rc
   log="$(mktemp)"
   rc=0
-  ( cd "$dir" && python3 -m unittest "$@" >"$log" 2>&1 ) || rc=$?
+  ( cd "$dir" && "$PY" -m unittest "$@" >"$log" 2>&1 ) || rc=$?
   tail -3 "$log"
   if [ "$rc" -ne 0 ]; then
     echo "--- failing tests (name + traceback) ---"
@@ -29,7 +35,7 @@ _run_unittest() {
 }
 
 echo "==> py_compile (whole tree)"
-find src -name '*.py' -not -path '*/__pycache__/*' -print0 | xargs -0 python3 -m py_compile
+find src -name '*.py' -not -path '*/__pycache__/*' -print0 | xargs -0 "$PY" -m py_compile
 
 echo "==> scripts tests"
 _run_unittest scripts test_forum_confirm
