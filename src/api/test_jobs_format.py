@@ -144,7 +144,7 @@ class WindowsFormatTest(unittest.TestCase):
         text = _format_info_answer("windows_diag", out)
         self.assertIn("Windows health report for DADS-PC (Windows 11 Pro)", text)
         self.assertIn("LOW DISK", text)
-        self.assertIn("top CPU: chrome (900.0s)", text)
+        self.assertIn("top CPU: chrome (900s)", text)
         self.assertIn("top RAM: chrome (2048 MB)", text)
         self.assertIn("Defender: real-time ON, signatures 3d old (v1.2.3)", text)
         self.assertIn("last boot: 2026-09-02T08:00:00 (up 1.2d)", text)
