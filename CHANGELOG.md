@@ -17,6 +17,16 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.03.c] — 2026-09-03
+
+### Fixed
+- **Mobile chat: re-selecting Juniper landed mid-feed.** Navigating back kept
+  the conversation's content + scroll position, and re-opening Juniper
+  restored the mid-feed position instead of showing the newest messages —
+  so bot replies and ticket links (e.g. Juniper's "Opened TKT-… →") sat below
+  the fold and looked like nothing happened. An explicit open now pins to the
+  newest message.
+
 ## [2026.09.03.b] — 2026-09-03
 
 ### Added

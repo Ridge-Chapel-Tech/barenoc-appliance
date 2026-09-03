@@ -229,8 +229,10 @@ function showHome(tab) { curTicket = null; if (!token()) return showAuth();
 }
 function showList() { showHome(); }
 
+let juniperJustOpened = false;   // an EXPLICIT open jumps to the newest (bottom)
 function openJuniper() { if (!token()) return showAuth();
   $('chat-sidebar').classList.remove('unauth');
+  juniperJustOpened = true;    // re-selecting Juniper must NOT restore a mid-feed position
   clearInterval(listTimer); listTimer = null;
   $('screen-juniper').style.display = 'flex';
   $('screen-list').style.display = 'none'; $('screen-thread').style.display = 'none';
@@ -322,6 +324,7 @@ async function loadJuniper() {
     const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     const fromBottom = box.scrollHeight - box.scrollTop;
     box.innerHTML = '';
+    if (juniperJustOpened) stick = true;   // explicit open -> pin to the newest
     const msgs = d.messages || [];
     if (msgs.length === 0) {
       // First-time chat (no history): open with Juniper's greeting + help,
@@ -339,7 +342,15 @@ async function loadJuniper() {
     }
     if (stick) box.scrollTop = box.scrollHeight;
     else if (fromBottom > 0) box.scrollTop = Math.max(0, box.scrollHeight - fromBottom);
+    if (juniperJustOpened) {
+      // even when the fetch raced the layout, land on the NEWEST message
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { box.scrollTop = box.scrollHeight; });
+      });
+      juniperJustOpened = false;
+    }
   } catch (e) {
+    juniperJustOpened = false;
     // Offline/disabled chat: still show the front-desk greeting rather than a
     // blank pane.
     if (!box.children.length) box.appendChild(bubble('agent', juniperGreeting(), '', null));
