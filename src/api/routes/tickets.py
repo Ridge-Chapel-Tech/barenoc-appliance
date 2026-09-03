@@ -181,6 +181,7 @@ def create_ticket(
         source="manual",
         submitter_id=user.id,
         target_device_id=ticket_data.target_device_id,
+        web_research=bool(ticket_data.web_research),
     )
     db.add(ticket)
     db.commit()
@@ -310,6 +311,10 @@ def update_ticket(
             add_note(ticket, "priority_change",
                      f"Priority changed {ticket.priority} → {new_prio} by {ctx['user'].username}")
             ticket.priority = new_prio
+    if update.web_research is not None:
+        # L3 opt-in toggle (per ticket). The worker re-checks the deployment
+        # WEB_RESEARCH_ENABLED toggle before any network egress.
+        ticket.web_research = bool(update.web_research)
 
     ticket.updated_at = datetime.datetime.utcnow()
     db.commit()

@@ -839,6 +839,43 @@ def main():
     db.close()
     _MD.clear()
 
+    # 31. ENDPOINT-SCAN GUARDRAIL (forum: "odd results when looking for
+    # endpoints"): "what endpoints are responding on 192.168.1.0/24" is a
+    # subnet ping-sweep (network_discovery), NOT a network/VLAN summary
+    # (network_info). Even when the AI reads the word "network" and returns
+    # network_info, the worker must correct it to the live-host sweep the
+    # customer asked for. (Judge is disabled at this point in the run — this
+    # exercises the direct-LLM path, the same one the judge/executor fix
+    # covers via test_judge.)
+    t = make_ticket(
+        "endpoints on the network",
+        "Can you please tell me what endpoints are responding on the "
+        "192.168.1.0/24 network?")
+    db = SessionLocal()
+    wrong_resp = LLMResponse(action="network_info", target="", params={},
+                             reason="fetch network/VLAN/SSID config",
+                             confidence=0.95, raw_text="{}",
+                             model="deepseek/deepseek-chat",
+                             prompt_tokens=5, response_tokens=5, cost_usd=0.0)
+    with patch("llm_client.call_llm", return_value=wrong_resp):
+        worker.process_ticket(db, db.query(Ticket).filter(Ticket.id == t.id).first())
+    t = db.query(Ticket).filter(Ticket.id == t.id).first()
+    ok("endpoint scan -> auto-executed", t.status == "in_progress", t.status)
+    ok("endpoint scan -> job written",
+       bool(t.job_file_path) and os.path.exists(t.job_file_path),
+       t.job_file_path or "none")
+    if t.job_file_path and os.path.exists(t.job_file_path):
+        job = json.load(open(t.job_file_path))
+        ok("endpoint scan -> network_discovery",
+           job["action"] == "network_discovery", job.get("action"))
+        ok("endpoint scan -> CIDR target",
+           job["target"] == "192.168.1.0/24", job.get("target"))
+    notes = json.loads(t.work_notes or "[]")
+    ok("endpoint scan -> correction note",
+       any("instead of network_info" in (n.get("detail") or "") for n in notes),
+       str([n.get("detail") for n in notes[-4:]]))
+    db.close()
+
     print(f"\nALL {PASS} INTEGRATION CHECKS PASSED (scratch DB: {_TMP})")
 
 

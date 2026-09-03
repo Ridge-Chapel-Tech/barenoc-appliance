@@ -14,10 +14,10 @@ Keep this module importable from BOTH src/api and src/worker (it must not
 import anything outside stdlib + the ticket object's attributes).
 """
 
-import json
 import datetime
 
 from tone_pool import friendly_note
+from worknotes import parse_notes
 
 
 # Stage derived from the last meaningful work_note event. The chat thread can
@@ -40,11 +40,12 @@ ACTIVE_STATUSES = ("open", "in_progress", "awaiting_approval", "escalated")
 
 
 def list_notes(ticket) -> list:
-    """Parse a ticket's work_notes JSON into a list of dicts ([] on junk)."""
-    try:
-        return json.loads(ticket.work_notes) if ticket.work_notes else []
-    except (json.JSONDecodeError, TypeError):
-        return []
+    """Parse a ticket's work_notes JSON into a list of dicts ([] on junk).
+
+    Uses the shared ``parse_notes`` guard so a double-encoded/corrupted field
+    (#102) unwraps to a real list instead of a bare string that downstream
+    loops would iterate as individual characters."""
+    return parse_notes(ticket.work_notes)
 
 
 def last_meaningful_note(ticket):

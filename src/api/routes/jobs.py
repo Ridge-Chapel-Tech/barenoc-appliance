@@ -10,7 +10,7 @@ from database import get_db
 from models import Ticket, User
 from auth import require_any_role, require_role
 from schemas import TicketResponse
-from worknotes import add_note
+from worknotes import add_note, parse_notes
 from audit import log_event
 from tone_filter import ellipsize, strip_meta_narration, structure_answer
 
@@ -317,10 +317,7 @@ def report_job_result(result: JobResult, db: Session = Depends(get_db),
     # Dedup guard: the agent may post its own result (legacy behavior) or the
     # runner may retry — if the last note is already an agent_completed posted
     # within the last 60s, ignore the duplicate instead of double-posting.
-    try:
-        notes = json.loads(ticket.work_notes) if ticket.work_notes else []
-    except Exception:
-        notes = []
+    notes = parse_notes(ticket.work_notes)
     if result.success and notes and notes[-1].get("event") == "agent_completed":
         last_ts = notes[-1].get("timestamp") or ""
         try:

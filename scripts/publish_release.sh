@@ -28,6 +28,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="${2:-}"; shift 2 ;;
     --sign) SIGN=1; shift ;;
     --stage) STAGE=1; SIGN=1; shift ;;  # staged = the sign flow minus the versions.json flip
+    --finalize) SIGN=1; shift ;;         # the final public launch = the sign (flip versions.json + .sig + mirror)
     *) TAG="$1"; shift ;;
   esac
 done

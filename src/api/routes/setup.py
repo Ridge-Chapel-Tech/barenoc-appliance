@@ -2,10 +2,12 @@
 
 The wizard walks a fresh install through setup in one sitting. Two
 presentations, one engine:
-  - EXPRESS (home default): 4 steps — admin account → network (UniFi) →
-    name & share the chat → done. Every skipped step writes a correct home
-    default at /setup/complete (cloud LLM, autonomous + pi flag, UniFi
-    auto-discover, backups on, email off, browser-detected TZ).
+  - EXPRESS (home default): 5 steps — admin account → network (UniFi) →
+    name & share the chat → updates (check / install now / auto-update
+    schedule) → done. Every skipped step writes a correct home default at
+    /setup/complete (cloud LLM, autonomous + pi flag, UniFi auto-discover,
+    backups on, email off, browser-detected TZ, auto-update on weekly
+    Sunday 03:00 local).
   - ADVANCED (the "Advanced setup" expander): the full 9-step path.
 
 Until SETUP_COMPLETE is set the wizard + account endpoint are PUBLIC

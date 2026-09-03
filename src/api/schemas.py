@@ -52,6 +52,7 @@ class TicketCreate(BaseModel):
     description: Optional[str] = None
     priority: str = "P3"
     target_device_id: Optional[int] = None
+    web_research: Optional[bool] = False   # L3 opt-in: allow Lily web fetch/search
 
 
 class TicketUpdate(BaseModel):
@@ -59,6 +60,7 @@ class TicketUpdate(BaseModel):
     resolution: Optional[str] = None
     assigned_to: Optional[str] = None
     priority: Optional[str] = None
+    web_research: Optional[bool] = None
 
 
 class TicketResponse(BaseModel):
@@ -72,6 +74,7 @@ class TicketResponse(BaseModel):
     submitter_id: Optional[int] = None
     assigned_to: Optional[str] = None
     target_device_id: Optional[int] = None
+    web_research: Optional[bool] = None
     action: Optional[str] = None
     llm_confidence: Optional[float] = None
     llm_model: Optional[str] = None
@@ -113,6 +116,17 @@ class TicketResponse(BaseModel):
         if dt is None:
             return None
         return dt.isoformat()
+
+    @field_serializer("work_notes")
+    def serialize_work_notes(self, value, _info) -> str:
+        """Always emit work_notes as a JSON array string.
+
+        A corrupted (double-encoded) field (#102) stored a bare JSON string,
+        which the chat/ticket UIs then iterated as individual characters —
+        blocking ticket readability. Normalize here so every API response
+        self-heals the field for clients without mutating the DB row."""
+        from worknotes import parse_notes
+        return json.dumps(parse_notes(value))
 
 
 # ── Device Schemas ──

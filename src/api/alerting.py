@@ -28,6 +28,7 @@ from emailer import send_email, get_recipients, smtp_configured, alert_html
 from audit import log_event
 from link_monitor import LinkMonitor, find_open_wan_episode, promote_wan_ticket
 from starlink import StarlinkHealthMonitor
+from worknotes import parse_notes
 
 logger = logging.getLogger("barenoc-alerts")
 
@@ -91,11 +92,7 @@ def _ticket_lifecycle_config() -> dict:
 
 def _last_checkin_ts(t) -> "datetime.datetime | None":
     """Timestamp of the most recent checkin_request work note (or None)."""
-    import json
-    try:
-        notes = json.loads(t.work_notes or "[]")
-    except (json.JSONDecodeError, TypeError):
-        return None
+    notes = parse_notes(t.work_notes)
     latest = None
     for n in notes:
         if isinstance(n, dict) and n.get("event") == "checkin_request" and n.get("timestamp"):

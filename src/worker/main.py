@@ -23,7 +23,7 @@ from action_validator import (
     unknown_target_detail, find_subnet,
 )
 from audit import log_event
-from worknotes import add_note
+from worknotes import add_note, parse_notes
 from queue_status import is_paused
 import juniper
 
@@ -77,6 +77,28 @@ def _ticket_status_intent(text: str):
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _SCAN_INTENT_RE = re.compile(
     r"\b(ping|sweep|scan|discover|find|reachable|online|hosts?|devices?)\b", re.I)
+
+# ── endpoint-scan guardrail (forum: "odd results when looking for endpoints") ──
+# "what endpoints are responding on 192.168.1.0/24" is a subnet ping-sweep
+# (network_discovery), NOT a network/VLAN summary. The AI — and the judge's
+# short-circuit — sometimes read the word "network" and answer network_info
+# (the VLAN/SSID table) instead of the live-host sweep the customer asked for.
+_ENDPOINT_SCAN_RE = re.compile(
+    r"\b(endpoints?|hosts?|devices?|machines?|clients?)\b[^.!?\n]{0,120}"
+    r"\b(respond(?:ing|s)?|reachable|online|alive|up|answer(?:ing|s)?|active|live)\b",
+    re.I)
+
+
+def _endpoint_scan_subnet(text: str) -> "str | None":
+    """Return the subnet CIDR to ping-sweep when the request asks which
+    endpoints/hosts are responding/reachable/online on that subnet. None
+    otherwise (no endpoint-scan phrasing, or no concrete subnet to scan)."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if not _ENDPOINT_SCAN_RE.search(t):
+        return None
+    return find_subnet(t)
 
 
 def _subnet_scan_fallback(ticket_text: str, target: str) -> "str | None":
@@ -461,6 +483,28 @@ def process_ticket(db, ticket):
         if changed:
             llm_response.params = params
 
+    # Endpoint-scan guardrail (forum: "odd results when looking for endpoints"):
+    # when the customer names a subnet and asks which endpoints/hosts respond,
+    # the answer is a subnet ping-sweep — not a network/VLAN summary, a device
+    # list, or anything else. If the AI/judge picked a script action other than
+    # network_discovery, correct it so the ticket does the actual live-host
+    # sweep the customer asked for.
+    _scan_subnet = _endpoint_scan_subnet(blob)
+    if _scan_subnet and llm_response.action not in (
+            "network_discovery", "escalate_human", "complete_ticket",
+            "request_customer_input"):
+        _was = llm_response.action
+        llm_response.action = "network_discovery"
+        llm_response.target = _scan_subnet
+        llm_response.params = {}
+        llm_response.reason = (
+            f"Scan {_scan_subnet} for responding endpoints (the customer asked "
+            f"which endpoints respond on that subnet; correcting {_was})")
+        llm_response.confidence = max(llm_response.confidence, 0.95)
+        add_note(ticket, "agent_progress",
+                 f"{_assistant_name()}: I'll scan {_scan_subnet} for live hosts "
+                 f"instead of {_was} — that answers 'which endpoints are responding'.")
+
     add_note(ticket, "agent_response", f"{_assistant_name()} suggested {llm_response.action} on {llm_response.target or '(no target)'} (confidence {llm_response.confidence}, via {llm_response.model})")
     ticket.llm_confidence = llm_response.confidence
     ticket.llm_model = llm_response.model
@@ -709,22 +753,17 @@ def process_ticket(db, ticket):
 
 def _count_user_notes(ticket) -> int:
     """Count customer/user comments (user_message events) on a ticket."""
-    import json as _json
-    notes = []
-    if ticket.work_notes:
-        try:
-            notes = _json.loads(ticket.work_notes)
-        except (json.JSONDecodeError, TypeError):
-            notes = []
+    notes = parse_notes(ticket.work_notes)
     return sum(1 for n in notes if isinstance(n, dict) and n.get("event") == "user_message")
 
 
 def _notes_list(ticket) -> list:
-    """Parse a ticket's work_notes JSON into a list of dicts."""
-    try:
-        return json.loads(ticket.work_notes) if ticket.work_notes else []
-    except (json.JSONDecodeError, TypeError):
-        return []
+    """Parse a ticket's work_notes JSON into a list of dicts.
+
+    Uses the shared ``parse_notes`` guard so a double-encoded/corrupted field
+    (#102) returns a list instead of a bare string (which would crash callers
+    that call ``.get()`` on each element)."""
+    return parse_notes(ticket.work_notes)
 
 
 def _last_note_event(ticket) -> str:
@@ -1045,6 +1084,24 @@ def _pi_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _web_research_enabled() -> bool:
+    """Deployment-level L3 egress opt-in (compliance control web_research ->
+    WEB_RESEARCH_ENABLED). Per-ticket opt-in is checked separately; the runner
+    re-checks both and gates the actual network in the web scripts."""
+    from llm_providers import read_env_file
+    val = (read_env_file().get("WEB_RESEARCH_ENABLED")
+           or os.getenv("WEB_RESEARCH_ENABLED") or "false").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _ticket_web_research(ticket) -> bool:
+    """Effective L3 egress for a ticket: the per-ticket opt-in AND the
+    deployment toggle must both be on (opt-in egress, never implicit)."""
+    if not bool(getattr(ticket, "web_research", False)):
+        return False
+    return _web_research_enabled()
+
+
 def _prior_agent_context(ticket, limit: int = 3) -> str:
     """The AI's own prior work on this ticket (last completed/failed runs and the
     recorded resolution). A follow-up comment must see the backstory — 'how about
@@ -1179,11 +1236,21 @@ def _dispatch_pi(db, ticket, ticket_text) -> bool:
         db.commit()
         return True
     context = _pi_task_context(db, ticket, ticket_text)
+    web_research = _ticket_web_research(ticket)
+    if bool(getattr(ticket, "web_research", False)) and not web_research:
+        # The customer asked for web grounding but the deployment toggle is
+        # off — say so instead of silently answering from local knowledge.
+        add_note(ticket, "agent_progress",
+                 f"{_assistant_name()}: web research was requested but is "
+                 f"disabled at the appliance level (Settings → Security). "
+                 f"I'll answer from what I already know.",
+                 actor=_assistant_name())
     job = {
         "ticket_id": ticket.ticket_id,
         "action": "pi_task",
         "target": "",
-        "params": {"task": ticket_text[:8000], "context": context[:6000]},
+        "params": {"task": ticket_text[:8000], "context": context[:6000],
+                   "web_research": web_research},
         "reason": "Autonomous Pi Coding Agent dispatch",
         "confidence": 1.0,
         "created_at": datetime.datetime.utcnow().isoformat(),

@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+import datetime
 from types import SimpleNamespace
 
 _TMP = tempfile.mkdtemp(prefix="tickets-")
@@ -16,6 +17,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
 from database import SessionLocal, init_db
 from models import Ticket, User
+from worknotes import add_note, parse_notes
+from schemas import TicketResponse
 from routes.tickets import (
     PROGRESS_NOTE_MAX_CHARS,
     ProgressNote,
@@ -105,6 +108,78 @@ class ProgressNoteTest(unittest.TestCase):
                               db=db, user=SimpleNamespace(role="operator"))
         self.assertEqual(ctx.exception.status_code, 404)
         db.close()
+
+
+class WorkNotesCorruptionGuardTest(unittest.TestCase):
+    """Regression for #102: a 6.4k malformed work_notes string (double-encoded
+    JSON) must never leave readers iterating characters or the writer storing a
+    bare string. parse_notes unwraps one level of double-encoding; add_note
+    recovers the field and always writes back a JSON array."""
+
+    @staticmethod
+    def _malformed_sample() -> "tuple[list, str]":
+        notes = [
+            {
+                "timestamp": "2026-08-20T12:00:00",
+                "event": "agent_progress",
+                "detail": ("Lily is checking the laptop now — gathering the "
+                           "update state, comparing package versions, and "
+                           "preparing a safe upgrade plan for the next window. "),
+                "actor": "Lily",
+            }
+            for _ in range(30)
+        ]
+        malformed = json.dumps(json.dumps(notes))  # the #102 double-encode
+        return notes, malformed
+
+    def test_malformed_sample_is_a_bare_string_when_parsed_naively(self):
+        notes, malformed = self._malformed_sample()
+        self.assertGreater(len(malformed), 6000)          # the 6.4k scale
+        self.assertIsInstance(json.loads(malformed), str)  # the corruption shape
+
+    def test_parse_notes_unwraps_double_encoded_string(self):
+        notes, malformed = self._malformed_sample()
+        self.assertEqual(parse_notes(malformed), notes)
+
+    def test_parse_notes_never_returns_a_bare_string(self):
+        _, malformed = self._malformed_sample()
+        for junk in (malformed, "not json", "", None, "[]", "{}", '["a"]'):
+            result = parse_notes(junk)
+            self.assertIsInstance(result, list, f"junk={junk!r} -> {result!r}")
+
+    def test_add_note_recovers_malformed_field_and_writes_a_list(self):
+        notes, malformed = self._malformed_sample()
+        ticket = SimpleNamespace(work_notes=malformed, updated_at=None)
+        add_note(ticket, "user_message", "hi, is it fixed?", actor="owner")
+
+        stored = json.loads(ticket.work_notes)
+        self.assertIsInstance(stored, list)
+        self.assertEqual(stored[:-1], notes)          # history recovered intact
+        self.assertEqual(stored[-1]["event"], "user_message")
+        self.assertEqual(stored[-1]["detail"], "hi, is it fixed?")
+
+    def test_add_note_resets_junk_field_to_a_list(self):
+        ticket = SimpleNamespace(work_notes="not json", updated_at=None)
+        add_note(ticket, "processing", "worker picked it up", actor="system")
+        stored = json.loads(ticket.work_notes)
+        self.assertIsInstance(stored, list)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["event"], "processing")
+        self.assertEqual(stored[0]["detail"], "worker picked it up")
+        self.assertEqual(stored[0]["actor"], "system")
+        self.assertIn("timestamp", stored[0])
+
+    def test_ticket_response_normalizes_malformed_work_notes(self):
+        _, malformed = self._malformed_sample()
+        now = datetime.datetime.utcnow()
+        resp = TicketResponse(
+            id=1, ticket_id="TKT-20260820-1294", title="update laptop",
+            priority="P3", status="open", source="chat", work_notes=malformed,
+            created_at=now, updated_at=now,
+        )
+        out = resp.model_dump()["work_notes"]
+        self.assertEqual(json.loads(out), json.loads(json.loads(malformed)))
+        self.assertIsInstance(json.loads(out), list)
 
 
 class EngageTicketTest(unittest.TestCase):

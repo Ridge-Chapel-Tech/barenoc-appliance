@@ -277,8 +277,9 @@ async def lifespan(app: FastAPI):
     start_telemetry_engine()  # background: time-series collectors
     from firmware import start_firmware_engine
     start_firmware_engine()  # background: autonomy-aware firmware upgrades
-    from routes.settings import _write_provider_secret
+    from routes.settings import _write_provider_secret, _write_web_research_secret
     _write_provider_secret()  # sync the pi-agent provider key at startup
+    _write_web_research_secret()  # sync the pi-agent L3 egress flag at startup
     from routes.settings import _remount_net_backup
     _remount_net_backup()  # reconnect the NAS backup share (best-effort)
     from starlink import purge_phantom_dish_at_startup
@@ -495,13 +496,14 @@ def dashboard_page(request: Request, _: User = Depends(require_page_session)):
 
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request):
-    """First-run wizard: EXPRESS (default) = 4 steps — admin account →
-    network (UniFi) → name & share the chat → done; every skipped step writes
-    a correct home default at /setup/complete. The "Advanced setup" expander
-    restores the full 9-step path (LLM providers, TZ, site, email, autonomy,
-    backups, first device, share). Public while the setup is incomplete (no
-    admin session exists yet); after SETUP_COMPLETE it just renders (the APIs
-    are admin-gated)."""
+    """First-run wizard: EXPRESS (default) = 5 steps — admin account →
+    network (UniFi) → name & share the chat → updates (check / install now /
+    auto-update schedule) → done; every skipped step writes a correct home
+    default at /setup/complete. The "Advanced setup" expander restores the
+    full 9-step path (LLM providers, TZ, site, email, autonomy, backups,
+    first device, share). Public while the setup is incomplete (no admin
+    session exists yet); after SETUP_COMPLETE it just renders (the APIs are
+    admin-gated)."""
     return templates.TemplateResponse("setup.html", {"request": request})
 
 

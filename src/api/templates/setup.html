@@ -95,7 +95,7 @@ async function api(path, opts) {
 const TZ_OPTIONS = ['UTC','America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles','America/Anchorage','Pacific/Honolulu','Europe/London','Europe/Berlin','Australia/Sydney','Asia/Tokyo'];
 
 // ── Two presentations, one engine ──────────────────────────────────────────
-// EXPRESS (default) = 4 steps; every skipped step writes a correct default at
+// EXPRESS (default) = 5 steps; every skipped step writes a correct default at
 // finish + a "Configure" link into Settings. ADVANCED = the full 9-step path.
 // required = must be done to move forward (Next stays disabled until saved);
 // optional steps advance via "Skip for now" without marking done.
@@ -103,6 +103,7 @@ const EXPRESS_STEPS = [
   { key: 'account', title: 'Your admin account', sub: 'Set your username + password — the first login on this appliance.', icon: '👤', required: true },
   { key: 'network', title: 'Your network (UniFi)', sub: 'BareNOC discovers your gear from your router — add its credentials or skip.', icon: '📡', required: false },
   { key: 'share',   title: 'Name it & share the chat', sub: 'Site name, the AI technician, and the chat link for the family.', icon: '💬', required: false },
+  { key: 'updates', title: 'Updates', sub: 'Check for new releases, install now, and set auto-updates.', icon: '🔄', required: false },
   { key: 'done',    title: 'You\'re ready', sub: 'Review the defaults and start watching your network.', icon: '🎉', required: false },
 ];
 
@@ -124,6 +125,7 @@ try { detectedTZ = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } cat
 let expressSite = '';   // site name collected on the express share step
 let aiChoice = 'cloud'; // the express LLM two-choice card (== compliance llm_egress)
 let uniFiDefaultUrl = '';
+let updChoice = { auto: true, day: '0', hour: 3 }; // auto-update defaults (Sunday 03:00 local)
 
 function steps() { return ADVANCED ? ADVANCED_STEPS : EXPRESS_STEPS; }
 function isSkippable(s) {
@@ -139,7 +141,7 @@ function expressFirstUndone() {
   if (STATUS.steps.account !== true) return 0;
   if (STATUS.steps.network !== true) return 1;
   if (STATUS.steps.site_name !== true) return 2;
-  return 3;
+  return 3; // updates step
 }
 function validTz(tz) {
   if (!tz) return false;
@@ -199,6 +201,7 @@ function render() {
   if (s.key === 'backups') loadBackupsStep();
   if (!ADVANCED && s.key === 'network') loadNetworkDefaults();
   if (!ADVANCED && s.key === 'share') aiEgressMode();
+  if (!ADVANCED && s.key === 'updates') loadUpdatesStep();
   // navigation
   const nextDisabled = s.required && !done;
   $('nav').innerHTML = (cur > 0
@@ -243,6 +246,7 @@ function expressEditorFor(s) {
   }
   if (s.key === 'network') return networkForm();
   if (s.key === 'share') return shareForm();
+  if (s.key === 'updates') return updatesForm();
   if (s.key === 'done') return doneForm();
   return '';
 }
@@ -293,6 +297,7 @@ function shareForm() {
 function doneForm() {
   const tz = detectedTZ || '(auto-detected)';
   const llm = aiChoice === 'local' ? 'Local only — no data leaves your network' : 'Cloud (recommended — best answers)';
+  const upd = updChoice.auto ? 'on — ' + updSchedLabel(updChoice.day, updChoice.hour) : 'off';
   return '<div class="space-y-2 text-sm">'
     + '<p class="text-gray-600">Here\'s what BareNOC turns on for you — change any of it later in Settings.</p>'
     + '<ul class="text-xs text-gray-600 space-y-1 mt-2">'
@@ -300,6 +305,7 @@ function doneForm() {
     + '<li>🕐 Timezone: <b>' + esc(tz) + '</b> (from your browser)</li>'
     + '<li>🤖 Autonomy: <b>autonomous</b> — the AI acts on its own</li>'
     + '<li>💾 Backups: <b>on</b> (local, automatic)</li>'
+    + '<li>🔄 Updates: <b>' + esc(upd) + '</b></li>'
     + '<li>📡 Auto-discovery: <b>on</b> — new devices appear automatically</li>'
     + '<li>🔒 Remote support: <b>off</b></li>'
     + '</ul>'
@@ -318,6 +324,134 @@ function aiEgressMode() {
   const local = document.getElementById('f-ai-local');
   if (cloud) cloud.classList.toggle('hidden', mode === 'local');
   if (local) local.classList.toggle('hidden', mode !== 'local');
+}
+
+// ----- express updates step (check / install now / auto-update schedule) -----
+
+const UPD_WIZ_DAYS = [['0','Sunday'],['1','Monday'],['2','Tuesday'],['3','Wednesday'],['4','Thursday'],['5','Friday'],['6','Saturday']];
+
+function updSchedLabel(day, hour) {
+  if (String(day) === 'daily') {
+    return 'every day at ' + String(hour == null ? 3 : hour).padStart(2, '0') + ':00 local time';
+  }
+  const d = UPD_WIZ_DAYS.find(function (x) { return x[0] === String(day); });
+  const name = d ? d[1] : 'week';
+  return 'every ' + name + ' at ' + String(hour == null ? 3 : hour).padStart(2, '0') + ':00 local time';
+}
+
+function updatesForm() {
+  const dayOpts = UPD_WIZ_DAYS.map(function (d) {
+    return '<option value="' + d[0] + '"' + (String(updChoice.day) === d[0] ? ' selected' : '') + '>' + d[1] + '</option>';
+  }).join('');
+  let hourOpts = '';
+  for (let i = 0; i < 24; i++) {
+    hourOpts += '<option value="' + i + '"' + (updChoice.hour === i ? ' selected' : '') + '>' + String(i).padStart(2, '0') + ':00</option>';
+  }
+  return '<div class="space-y-3 text-sm">'
+    + '<div id="upd-wiz-status" class="text-xs text-gray-500">Checking for updates…</div>'
+    + '<div id="upd-wiz-action" class="mt-2"></div>'
+    + '<div class="rounded-lg border border-gray-200 p-3">'
+    + '<label class="flex items-start gap-2 text-sm font-medium text-gray-700">'
+    + '<input type="checkbox" id="upd-wiz-enable" ' + (updChoice.auto ? 'checked' : '') + ' onchange="updWizToggle()">'
+    + '<span>Auto-update — apply new releases automatically (only when one is available)</span></label>'
+    + '<div id="upd-wiz-sched" class="mt-2 flex flex-wrap items-center gap-2 text-xs ' + (updChoice.auto ? '' : 'opacity-40 pointer-events-none') + '">'
+    + '<select id="upd-wiz-day" class="rounded-lg border border-gray-300 px-2 py-1.5">' + dayOpts + '</select>'
+    + '<select id="upd-wiz-hour" class="rounded-lg border border-gray-300 px-2 py-1.5">' + hourOpts + '</select>'
+    + '<span class="text-gray-400">local time</span>'
+    + '</div>'
+    + '<p class="text-xs text-gray-400 mt-1">Weekly Sunday 03:00 is the default. Uncheck to opt out — change it any time in System → Updates.</p>'
+    + '</div>'
+    + '<div class="flex items-center gap-2">'
+    + '<button onclick="wizSaveUpdates()" class="rounded-lg bg-barenoc-600 px-4 py-2 text-xs font-semibold text-white">Save &amp; continue →</button>'
+    + '<span id="upd-wiz-save-msg" class="text-xs"></span>'
+    + '</div>'
+    + '</div>';
+}
+
+function updWizToggle() {
+  const on = $('upd-wiz-enable') ? $('upd-wiz-enable').checked : updChoice.auto;
+  updChoice.auto = on;
+  const sched = $('upd-wiz-sched');
+  if (sched) { sched.classList.toggle('opacity-40', !on); sched.classList.toggle('pointer-events-none', !on); }
+}
+
+function reRenderUpdSched() {
+  const en = $('upd-wiz-enable'); const day = $('upd-wiz-day'); const hour = $('upd-wiz-hour');
+  if (en) en.checked = updChoice.auto;
+  if (day) day.value = updChoice.day;
+  if (hour) hour.value = String(updChoice.hour);
+  updWizToggle();
+}
+
+async function loadUpdatesStep() {
+  const st = $('upd-wiz-status');
+  if (!st) return;
+  st.innerHTML = 'Checking for updates…';
+  let s;
+  try {
+    s = await api('/api/v1/updates/status');
+  } catch (e) {
+    st.innerHTML = '<span class="text-amber-600">Couldn\'t reach the update server — you can still set auto-updates below.</span>';
+    return;
+  }
+  // Refresh a stale / never-run check so the "install now" offer is current.
+  if (!s.checked_at || s.check_stale) {
+    try { await api('/api/v1/updates/check', { method: 'POST' }); s = await api('/api/v1/updates/status'); }
+    catch (e) { /* keep whatever /status already returned */ }
+  }
+  // Pre-fill the schedule from the persisted conf (default Sunday 03:00).
+  const sc = s.schedule || {};
+  if (sc.enabled !== undefined && sc.enabled !== null) updChoice.auto = !!sc.enabled;
+  const d = (sc.day === undefined || sc.day === null || sc.day === '' || sc.day === 'daily') ? '0' : String(sc.day);
+  updChoice.day = d;
+  updChoice.hour = (sc.hour === undefined || sc.hour === null) ? 3 : (parseInt(sc.hour, 10) || 3);
+  let statusHtml = '';
+  if (s.current) statusHtml += 'Version: <b>' + esc(s.current) + '</b>';
+  if (s.available) {
+    statusHtml += ' → <b>' + esc(s.latest) + '</b> available';
+  } else if (s.checked_at) {
+    statusHtml += ' — up to date';
+  }
+  if (s.manifest_error) statusHtml += '<span class="text-amber-600"> ' + esc(s.manifest_error) + '</span>';
+  st.innerHTML = statusHtml;
+  const act = $('upd-wiz-action');
+  if (act) {
+    act.innerHTML = s.available
+      ? '<button onclick="wizUpdateNow()" class="rounded-lg bg-green-600 px-4 py-2 text-xs font-semibold text-white">Install update now</button>'
+        + '<span id="upd-wiz-now-msg" class="ml-2 text-xs"></span>'
+        + '<p class="text-xs text-gray-400 mt-1">Runs in the background — the appliance restarts briefly. Or turn on auto-update below and BareNOC applies it on schedule.</p>'
+      : '<p class="text-xs text-gray-400">No update available right now. Auto-update below keeps the appliance current.</p>';
+  }
+  reRenderUpdSched();
+}
+
+async function wizUpdateNow() {
+  const msg = $('upd-wiz-now-msg');
+  if (msg) msg.innerHTML = '<span class="text-gray-500">queuing…</span>';
+  try {
+    const r = await api('/api/v1/updates/now', { method: 'POST' });
+    if (msg) msg.innerHTML = '<span class="text-green-600">✅ ' + esc(r.note || 'queued') + '</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>';
+  }
+}
+
+async function wizSaveUpdates() {
+  const msg = $('upd-wiz-save-msg');
+  updChoice.auto = $('upd-wiz-enable').checked;
+  updChoice.day = $('upd-wiz-day').value;
+  updChoice.hour = parseInt($('upd-wiz-hour').value, 10) || 3;
+  if (msg) msg.innerHTML = '<span class="text-gray-500">saving…</span>';
+  try {
+    await api('/api/v1/updates/schedule', { method: 'POST', body: JSON.stringify({
+      enabled: updChoice.auto, mode: 'recurring', day: updChoice.day, hour: updChoice.hour, when: ''
+    }) });
+    if (msg) msg.innerHTML = '<span class="text-green-600">✅ saved</span>';
+    advance();
+  } catch (e) {
+    if (msg) msg.innerHTML = '<span class="text-red-600">✗ ' + esc(e.message) + '</span>';
+    alert('Updates: ' + e.message);
+  }
 }
 
 async function loadNetworkDefaults() {
@@ -866,6 +1000,9 @@ function nextStep() {
     alert('Complete this step first — it\'s needed for the appliance to work. (' + s.title + ')');
     return;
   }
+  // The updates step always persists the (possibly default) schedule before
+  // leaving, so "Next" and the review can never disagree with the conf.
+  if (!ADVANCED && s.key === 'updates') { wizSaveUpdates(); return; }
   advance();
 }
 
@@ -875,7 +1012,11 @@ function advance() {
 }
 
 function backStep() { if (cur > 0) { cur--; render(); } }
-function skipStep() { advance(); }
+function skipStep() {
+  const s = steps()[cur];
+  if (!ADVANCED && s.key === 'updates') { wizSaveUpdates(); return; }
+  advance();
+}
 
 // done dots are clickable (backward + between done steps); the current dot
 // always is; anything ahead that isn't done stays locked (enforced order).

@@ -191,6 +191,17 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: web_research (L3 research opt-in, 2026-09-02) — per-ticket
+    # egress opt-in: Lily may fetch/search the public web for this ticket only
+    # when True AND the deployment WEB_RESEARCH_ENABLED toggle is on. Default
+    # off; create_all adds it on fresh DBs, this ALTER covers existing DBs.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE tickets ADD COLUMN web_research BOOLEAN DEFAULT 0"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: auth_sessions (P0 revocation batch 2026-08-25). NEW table —
     # create_all above already creates it; the guarded CREATEs are idempotent
     # belt-and-suspenders no-ops. KEEP IN SYNC with models.AuthSession.

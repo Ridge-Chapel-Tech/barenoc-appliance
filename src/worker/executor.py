@@ -79,6 +79,10 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
         params, reason = {}, "Checking device status"
     elif action == "network_info":
         params, reason = {}, "Fetching network/VLAN/SSID configuration"
+    elif action == "network_discovery":
+        from action_validator import find_subnet as _find_subnet
+        target = _find_subnet(ticket_text) or ""
+        params, reason = {}, "Ping-sweeping the subnet to find responding endpoints"
     elif action == "system_time":
         params, reason = {}, "Reading appliance time and timezone"
     elif action == "ticket_status":

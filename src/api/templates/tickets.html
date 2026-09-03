@@ -83,6 +83,13 @@
           <option value="P4">P4 - Low</option>
         </select>
       </div>
+      <div class="flex items-start gap-2">
+        <input id="new-ticket-web-research" type="checkbox" class="mt-1">
+        <label for="new-ticket-web-research" class="text-sm text-gray-700">
+          Let Lily research this on the web
+          <span class="text-gray-400">(read-only fetch/search, sources cited — opt-in egress)</span>
+        </label>
+      </div>
     </div>
     <div class="px-6 py-4 border-t flex justify-end gap-3">
       <button onclick="hideNewTicketModal()" class="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Cancel</button>
@@ -263,6 +270,7 @@ async function fetchTickets(offset) {
       var pc = t.priority === 'P1' ? 'bg-red-100 text-red-700' :
                t.priority === 'P2' ? 'bg-orange-100 text-orange-700' :
                t.priority === 'P3' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600';
+      var researchChip = t.web_research ? ' <span title="Web research opted in" class="ml-1">🌐</span>' : '';
       var sc = t.status === 'closed' ? 'text-green-600' :
                t.status === 'escalated' ? 'text-purple-600' :
                t.status === 'customer_action' ? 'text-orange-600' : '';
@@ -272,7 +280,7 @@ async function fetchTickets(offset) {
       tbody.innerHTML += '<tr class="hover:bg-gray-50">'
         + '<td class="px-6 py-4 text-sm font-mono text-barenoc-600">' + esc(t.ticket_id) + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-900">' + esc(t.title) + '</td>'
-        + '<td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ' + pc + '">' + t.priority + '</span></td>'
+        + '<td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full ' + pc + '">' + t.priority + researchChip + '</span></td>'
         + '<td class="px-6 py-4 text-sm ' + sc + '">' + esc(String(t.status || '').replace(/_/g, ' ')) + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(t.assigned_to || '\u2014') + '</td>'
         + '<td class="px-6 py-4 text-sm text-gray-500">' + esc(fmtTz(t.created_at)) + '</td>'
@@ -280,6 +288,7 @@ async function fetchTickets(offset) {
         + '<tr id="d-' + t.ticket_id + '" style="display:none"><td colspan="7" class="px-6 py-4 bg-gray-50">'
         + '<div class="text-sm text-gray-700">'
         + '<p><strong>Description:</strong> ' + esc(t.description || 'No description') + '</p>'
+        + '<p class="mt-1"><strong>Web research:</strong> ' + (t.web_research ? 'opted in 🌐' : 'off') + '</p>'
         + (t.resolution ? '<p class="mt-1"><strong>Resolution:</strong> ' + esc(t.resolution) + '</p>' : '')
         + '<p class="mt-1"><strong>Source:</strong> ' + esc(t.source) + '</p>'
         + (t.work_notes ? '<div class="mt-2"><details><summary class="cursor-pointer text-barenoc-600 text-xs font-medium">Work Notes</summary><div class="mt-1 space-y-1 max-h-40 overflow-y-auto">' + renderNotes(t.work_notes, t.ticket_id) + '</div></details></div>' : '')
@@ -416,16 +425,18 @@ async function createTicket() {
   var title = document.getElementById('new-ticket-title').value.trim();
   var desc = document.getElementById('new-ticket-desc').value;
   var priority = document.getElementById('new-ticket-priority').value;
+  var webResearch = document.getElementById('new-ticket-web-research').checked;
   if (!title) { alert('Title is required'); return; }
   try {
     var r = await fetch('/api/v1/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
-      body: JSON.stringify({ title: title, description: desc, priority: priority })
+      body: JSON.stringify({ title: title, description: desc, priority: priority, web_research: webResearch })
     });
     if (!r.ok) throw new Error('API error');
     document.getElementById('new-ticket-title').value = '';
     document.getElementById('new-ticket-desc').value = '';
+    document.getElementById('new-ticket-web-research').checked = false;
     hideNewTicketModal();
     fetchTickets(0);
   } catch (e) { alert('Failed: ' + e.message); }

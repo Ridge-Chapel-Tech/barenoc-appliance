@@ -539,6 +539,38 @@ def _api_key_status():
 
 
 PROVIDER_SECRET_FILE = "/opt/barenoc/volumes/secrets/llm_provider.json"
+WEB_RESEARCH_SECRET_FILE = "/opt/barenoc/volumes/secrets/web_research.json"
+
+
+def _write_web_research_secret():
+    """Keep the pi-agent web-research egress flag in sync with Settings.
+
+    The runner (pi-agent) cannot read the 0600 .env, so the deployment-level
+    L3 opt-in toggle (compliance control ``web_research`` ->
+    ``WEB_RESEARCH_ENABLED``) is mirrored here, mirroring the llm_provider.json
+    pattern. Per-ticket opt-in is still enforced separately by the worker.
+    """
+    try:
+        env = _read_env_file()
+        enabled = (env.get("WEB_RESEARCH_ENABLED", "false") or "false").strip().lower()
+        enabled = enabled in ("1", "true", "yes", "on")
+        os.makedirs(os.path.dirname(WEB_RESEARCH_SECRET_FILE), exist_ok=True)
+        with open(WEB_RESEARCH_SECRET_FILE, "w") as f:
+            json.dump({"enabled": enabled}, f)
+        os.chmod(WEB_RESEARCH_SECRET_FILE, 0o640)
+        try:
+            import grp
+            gid = grp.getgrnam("pi-agent").gr_gid
+        except Exception:
+            gid = None
+        try:
+            if gid is None:
+                gid = os.stat(os.path.dirname(WEB_RESEARCH_SECRET_FILE)).st_gid
+            os.chgrp(WEB_RESEARCH_SECRET_FILE, gid)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _persist_provider_secret(payload: str):

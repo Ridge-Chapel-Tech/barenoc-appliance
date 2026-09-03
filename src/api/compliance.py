@@ -32,6 +32,16 @@ CONTROLS = {
                        "'local' = an on-prem (Ollama/LM Studio) endpoint only — "
                        "no data leaves your network.",
     },
+    "web_research": {
+        "label": "Web research egress",
+        "kind": "bool",
+        "default": "off",
+        "baseline": "off",
+        "description": "Allow Lily (the AI assistant) to fetch/search the public "
+                       "web to research questions and cite sources. Read-only "
+                       "(HTTP GET only), SSRF-guarded, and per-ticket opt-in is "
+                       "still required even when this is on.",
+    },
     "mfa_enforcement": {
         "label": "MFA enforcement",
         "kind": "bool",
@@ -239,6 +249,8 @@ def mirror_to_effective(env: dict) -> dict:
     telemetry/auth hot-read. Mutates + returns the env dict."""
     ctl = get_controls(env)
     env["LLM_EGRESS"] = ctl["llm_egress"]["state"]
+    env["WEB_RESEARCH_ENABLED"] = ("true" if ctl["web_research"]["state"] == "on"
+                                    else "false")
     env["MFA_ENFORCED"] = "true" if ctl["mfa_enforcement"]["state"] == "on" else "false"
     env["TELEMETRY_ENABLED"] = "true" if ctl["telemetry"]["state"] == "on" else "false"
     env["AUDIT_LOG_ENABLED"] = "true" if ctl["audit_log"]["state"] == "on" else "false"

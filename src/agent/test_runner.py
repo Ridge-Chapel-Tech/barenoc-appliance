@@ -261,6 +261,47 @@ class SysCtxTest(unittest.TestCase):
         self.assertIn("HARD SELF-PROTECTION RULE", sysctx)  # base ctx intact
 
 
+class SysCtxWebResearchTest(unittest.TestCase):
+    """L3 research (web fetch/search) sysctx guidance + deployment egress gate."""
+
+    def test_disabled_by_default(self):
+        sysctx = runner._build_sysctx("")
+        self.assertIn("WEB RESEARCH (L3 — DISABLED)", sysctx)
+        self.assertNotIn("WEB RESEARCH (L3 — ENABLED", sysctx)
+        self.assertIn("Do NOT fetch or", sysctx)
+
+    def test_enabled_block_when_opted_in(self):
+        sysctx = runner._build_sysctx("", web_research=True)
+        self.assertIn("WEB RESEARCH (L3 — ENABLED", sysctx)
+        self.assertIn("web_search.sh", sysctx)
+        self.assertIn("web_fetch.sh", sysctx)
+        self.assertIn("FETCH → SUMMARIZE → CITE", sysctx)
+        self.assertIn("cite each source as a URL", sysctx)
+        self.assertNotIn("WEB RESEARCH (L3 — DISABLED)", sysctx)
+
+    def test_base_ctx_still_present_when_enabled(self):
+        sysctx = runner._build_sysctx("", web_research=True)
+        self.assertIn("HARD SELF-PROTECTION RULE", sysctx)
+        self.assertIn("INFRA-CHANGE CONTRACT", sysctx)
+
+    def test_web_research_enabled_reads_secret_file(self):
+        tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".json")
+        tmp.write(json.dumps({"enabled": True}))
+        tmp.close()
+        orig = runner.WEB_RESEARCH_SECRET_FILE
+        try:
+            runner.WEB_RESEARCH_SECRET_FILE = tmp.name
+            self.assertTrue(runner._web_research_enabled())
+            os.unlink(tmp.name)
+            self.assertFalse(runner._web_research_enabled())
+        finally:
+            runner.WEB_RESEARCH_SECRET_FILE = orig
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+
 class IdentityRedactionTest(unittest.TestCase):
     """Known personal identifiers must be redacted before the agent sees them
     (context/task) and never pass the progress-note filter (TKT-4534/08-26)."""
@@ -386,7 +427,7 @@ class PiTaskDedupTest(unittest.TestCase):
         real_impl = runner._run_pi_task_impl
         calls = []
 
-        def fake_impl(task, context, ticket_id, timeout=600):
+        def fake_impl(task, context, ticket_id, timeout=600, web_research=False):
             calls.append(ticket_id)
             entered.set()
             release.wait(timeout=5)
@@ -427,7 +468,7 @@ class PiTaskDedupTest(unittest.TestCase):
         release = threading.Event()
         real_impl = runner._run_pi_task_impl
 
-        def fake_impl(task, context, ticket_id, timeout=600):
+        def fake_impl(task, context, ticket_id, timeout=600, web_research=False):
             if ticket_id == "TKT-A":
                 entered_a.set()
                 release.wait(timeout=5)

@@ -41,6 +41,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional, Union
 
+from worknotes import parse_notes
+
 logger = logging.getLogger("barenoc-email")
 
 ENV_PATH = "/opt/barenoc/.env"
@@ -181,11 +183,7 @@ def notify_customer_action(db, ticket) -> None:
         if not recipients:
             return
         question = ""
-        notes = []
-        try:
-            notes = json.loads(ticket.work_notes) if ticket.work_notes else []
-        except Exception:
-            notes = []
+        notes = parse_notes(ticket.work_notes)
         for n in reversed(notes):
             if isinstance(n, dict) and n.get("event") == "customer_input":
                 question = n.get("detail") or ""

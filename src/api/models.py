@@ -168,6 +168,7 @@ class Ticket(Base):
     description = Column(Text, nullable=True)
     priority = Column(String(4), default="P3")  # P1 | P2 | P3 | P4
     status = Column(String(24), default="open")  # open | in_progress | awaiting_approval | completed | failed | escalated | closed
+    web_research = Column(Boolean, default=False)  # L3 opt-in: allow Lily to fetch/search the public web for this ticket
     source = Column(String(16), default="manual")  # manual | auto | escalation
     submitter_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     assigned_to = Column(String(64), nullable=True)  # username or "system"

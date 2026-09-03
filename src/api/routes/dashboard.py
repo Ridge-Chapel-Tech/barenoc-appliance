@@ -7,13 +7,13 @@ from models import Device, Ticket, User, AuditLog
 from schemas import DashboardStats, TicketResponse
 from auth import get_current_user
 from routes.settings import _read_env_file
+from worknotes import parse_notes
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
 
 from sqlalchemy import func, or_, and_
 from datetime import datetime, timedelta, timezone
-import json as _json
 
 
 def _branding() -> tuple[str, bool]:
@@ -67,10 +67,7 @@ def _report_env_float(key: str, default: float) -> float:
 
 
 def _notes_events(t) -> list:
-    try:
-        return _json.loads(t.work_notes or "[]")
-    except (ValueError, TypeError):
-        return []
+    return parse_notes(t.work_notes)
 
 
 # Work-note events that ARE a customer-facing reply (the AI/team talking to the

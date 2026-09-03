@@ -17,6 +17,59 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.03.a] — 2026-09-03
+
+### Fixed
+- **Work-notes corruption guard (#102).** A double-encoded `work_notes` string
+  (the 6.4k malformed value written on TKT-1294) made the chat/ticket UIs
+  iterate individual characters and crashed note writes with `AttributeError`.
+  `worknotes.parse_notes` now unwraps one level of double-encoding and always
+  returns a list; `add_note` recovers the field and always writes back a JSON
+  array; the read paths (queue status, worker, jobs dedup, dashboard,
+  alerting, emailer) and `TicketResponse` use the same guard so a corrupted
+  field self-heals on the next read/write instead of blocking readability.
+- **Title interpreter no longer leaks LLM meta-text into ticket titles (B3).**
+  `generate_title`'s `_clean_title` only stripped a leading `Title:` prefix and
+  surrounding quotes, so a model that answered with a polite preamble ("Sure!
+  Here's a concise title: …"), a reasoning block, or markdown emphasis stored
+  the meta-text as the chat-spawned ticket title. The cleaner now drops
+  thinking blocks, peels markdown/quotes/bullets, and extracts the text after
+  the last title/subject/summary/suggestion label before trimming trailing
+  punctuation, with regression coverage in `test_llm_client`.
+- **"Endpoints responding on a subnet" no longer returns the VLAN/SSID table.**
+  "what endpoints are responding on 192.168.1.0/24" is a subnet ping-sweep
+  (`network_discovery`), but the judge's known-good short-circuit matched the
+  word "network" and answered `network_info` (the configured VLAN/SSID layout)
+  — the "odd results when looking for endpoints" forum report. The judge now
+  short-circuits endpoint-scan-over-a-CIDR requests to `network_discovery`,
+  and the worker adds a deterministic post-LLM guardrail that corrects any
+  wrong action to the subnet sweep (target = the CIDR), with regression tests
+  in `test_judge` + `test_integration`.
+### Added
+- **Knowledge-layer L3 — Lily web research (opt-in egress).** Lily can now
+  research questions on the public web with two READ-ONLY tools
+  (`src/scripts/web_search.sh` / `web_fetch.sh` over a stdlib-only
+  `web_research.py`) so she can ground answers in docs, best practices and
+  upstream releases — fetch → summarize → cite sources in the reply. Egress is
+  strictly opt-in and never implicit: a new compliance control **Web research
+  egress** (off by default) mirrors to `WEB_RESEARCH_ENABLED`, and each ticket
+  must also opt in (`Ticket.web_research`, set at creation or via PATCH). The
+  agent runner re-checks both and exports `WEB_RESEARCH_ALLOWED=1` only for
+  that run; the tools refuse to network without it. Hard SSRF guard (http/https
+  only, every DNS answer must be public-global — LAN/private/CGNAT/loopback
+  refused, so the appliance's own surface is unreachable) + per-topic cache
+  (search by query, fetch by URL, TTL'd) as the cost lever. No write-only
+  surfaces exist.
+- **Setup wizard asks about updates up front (F1).** The express wizard gains a
+  5th step (**Updates**, between *Name & share* and *Done*) that checks for
+  available releases on load, offers **Install update now** when one is
+  available, and lets the new owner set the auto-update schedule up front
+  (default **ON**, weekly **Sunday 03:00** local; one-click opt-out). It reuses
+  the existing `/api/v1/updates/status`, `/check`, `/now` and `/schedule`
+  endpoints + `update_schedule.conf` — and `/setup/complete`'s default-schedule
+  sweep still never overwrites an explicit opt-out (the conf file's existence
+  is the marker).
+
 ## [2026.09.02.c] — 2026-09-02
 
 ### Fixed

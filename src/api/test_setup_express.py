@@ -3,11 +3,13 @@
 
 Covers the acceptance criteria:
   1. Route binding (the 08-16 lesson) — the wizard's endpoints are registered.
-  2. The 4-step express wizard + the "Advanced setup" expander (full 9-step
+  2. The 5-step express wizard + the "Advanced setup" expander (full 9-step
      path still present in the template).
   3. Every skipped step writes a correct home default.
   4. The express LLM card maps to the SAME compliance control the Security
      panel uses (COMPLIANCE_LLM_EGRESS + effective LLM_EGRESS).
+  5. The updates step (F1) reuses /updates/status + /updates/schedule and
+     the completion sweep never flips an explicit opt-out back on.
 
     cd src/api && python3 -m unittest test_setup_express -v
 """
@@ -63,7 +65,7 @@ class RouteBindingTest(unittest.TestCase):
 
 
 class TemplateExpanderTest(unittest.TestCase):
-    """The express wizard defaults to 4 steps; 'Advanced setup' restores the
+    """The express wizard defaults to 5 steps; 'Advanced setup' restores the
     full 9-step path."""
 
     def _html(self):
@@ -83,6 +85,25 @@ class TemplateExpanderTest(unittest.TestCase):
         for key in ("account", "llm", "timezone", "site_name", "email",
                     "autonomy", "backups", "devices", "share"):
             self.assertIn(f"key: '{key}'", html)
+
+    def test_updates_step_present_in_express(self):
+        html = self._html()
+        self.assertIn("{ key: 'updates'", html)
+        self.assertIn("'Updates'", html)
+
+    def test_updates_step_reuses_updates_endpoints(self):
+        html = self._html()
+        for token in ("/api/v1/updates/status", "/api/v1/updates/check",
+                      "/api/v1/updates/now", "/api/v1/updates/schedule"):
+            self.assertIn(token, html)
+
+    def test_updates_step_defaults_on_sunday_3am(self):
+        html = self._html()
+        self.assertIn("updChoice = { auto: true, day: '0', hour: 3 }", html)
+
+    def test_done_review_mentions_updates(self):
+        html = self._html()
+        self.assertIn("🔄 Updates:", html)
 
 
 class HomeDefaultsTest(unittest.TestCase):
@@ -192,6 +213,25 @@ class CompleteEndpointTest(unittest.TestCase):
         self.assertIn("enabled=true", content)
         self.assertIn("day=0", content)
         self.assertIn("hour=3", content)
+
+    def test_complete_preserves_wizard_disabled_schedule(self):
+        """F1: if the wizard turned auto-update OFF before /setup/complete,
+        the completion sweep must not flip it back on (the conf file's
+        existence is the opt-out marker)."""
+        tmp = tempfile.mkdtemp(prefix="setup-updates-optout-")
+        with patch.object(updates_routes, "STATUS_DIR", tmp):
+            updates_routes._write_schedule({
+                "mode": "recurring", "enabled": False,
+                "day": "1", "hour": 2, "when": "", "fired": ""})
+            r, env, conf = self._complete({}, {"timezone": "America/New_York"})
+            sc = updates_routes._read_schedule()
+            with open(os.path.join(tmp, "update_schedule.conf")) as f:
+                content = f.read()
+        self.assertIs(r["complete"], True)
+        self.assertFalse(sc["enabled"])
+        self.assertEqual(sc["day"], "1")
+        self.assertIn("enabled=false", content)
+        self.assertIn("day=1", content)
 
 
 if __name__ == "__main__":

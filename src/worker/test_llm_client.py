@@ -89,6 +89,19 @@ class GenerateTitleTest(unittest.TestCase):
                 "I see my plex server is on http://192.168.4.13/")
         self.assertEqual(title, "Update the plex server")
 
+    def test_strips_preamble_meta_text(self):
+        # End-to-end B3 regression: the adapter returns the polite preamble the
+        # model often adds, and generate_title must hand back only the title.
+        def fake_adapter(p, model, messages, temperature, max_tokens, timeout):
+            return "Sure! Here's a concise title: Update the plex server", 10, 5
+
+        with patch.object(llm_client, "provider_chain", return_value=[_provider()]), \
+             patch.object(llm_client, "maybe_refresh"), \
+             patch.dict(llm_client.ADAPTERS, {"openai": fake_adapter}):
+            title = llm_client.generate_title(
+                "I see my plex server is on http://192.168.4.13/")
+        self.assertEqual(title, "Update the plex server")
+
     def test_provider_failure_returns_none(self):
         def boom(p, model, messages, temperature, max_tokens, timeout):
             raise RuntimeError("down")
@@ -102,6 +115,77 @@ class GenerateTitleTest(unittest.TestCase):
         with patch.object(llm_client, "provider_chain", return_value=[]), \
              patch.object(llm_client, "maybe_refresh"):
             self.assertIsNone(llm_client.generate_title("anything"))
+
+
+class CleanTitleTest(unittest.TestCase):
+    """_clean_title must strip LLM meta-text (B3 regression): preambles,
+    reasoning, thinking blocks, markdown emphasis and trailing punctuation —
+    only the actual title may land in a chat-spawned ticket."""
+
+    def test_plain_title_unchanged(self):
+        self.assertEqual(
+            llm_client._clean_title("Update the plex server"),
+            "Update the plex server")
+
+    def test_leading_title_label(self):
+        self.assertEqual(
+            llm_client._clean_title("Title: Update the plex server"),
+            "Update the plex server")
+
+    def test_preamble_before_title_label(self):
+        # The B3 leak: a polite preamble before the labelled title.
+        self.assertEqual(
+            llm_client._clean_title(
+                "Sure! Here's a concise title: Update the plex server"),
+            "Update the plex server")
+
+    def test_reasoning_then_title_label(self):
+        self.assertEqual(
+            llm_client._clean_title(
+                "The customer is asking about their Plex server. "
+                "Title: Update Plex server"),
+            "Update Plex server")
+
+    def test_thinking_block_is_dropped(self):
+        self.assertEqual(
+            llm_client._clean_title(
+                "<thinking>The user wants a firmware update.</thinking> "
+                "Update the switch firmware"),
+            "Update the switch firmware")
+
+    def test_markdown_emphasis_is_peeled(self):
+        self.assertEqual(
+            llm_client._clean_title("**Update the switch firmware**"),
+            "Update the switch firmware")
+
+    def test_quoted_title_is_peeled(self):
+        self.assertEqual(
+            llm_client._clean_title('"Update the plex server"'),
+            "Update the plex server")
+
+    def test_suggestion_label(self):
+        self.assertEqual(
+            llm_client._clean_title(
+                "Here's a suggestion: Update the plex server"),
+            "Update the plex server")
+
+    def test_title_for_the_ticket_filler(self):
+        self.assertEqual(
+            llm_client._clean_title(
+                "Here is a title for the ticket: Update the switch firmware"),
+            "Update the switch firmware")
+
+    def test_trailing_period_is_trimmed(self):
+        self.assertEqual(
+            llm_client._clean_title("Update the plex server."),
+            "Update the plex server")
+
+    def test_label_without_value_returns_none(self):
+        self.assertIsNone(llm_client._clean_title("Title:"))
+
+    def test_empty_input_returns_none(self):
+        self.assertIsNone(llm_client._clean_title(""))
+        self.assertIsNone(llm_client._clean_title("   "))
 
 
 if __name__ == "__main__":

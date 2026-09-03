@@ -620,6 +620,19 @@ def _run_single(action: str, target: str, params: dict, ticket_id: str,
 
 
 PI_PROVIDER_SECRET_FILE = "/opt/barenoc/volumes/secrets/llm_provider.json"
+WEB_RESEARCH_SECRET_FILE = "/opt/barenoc/volumes/secrets/web_research.json"
+
+
+def _web_research_enabled() -> bool:
+    """Deployment-level L3 egress opt-in (compliance control web_research ->
+    WEB_RESEARCH_ENABLED), mirrored to this pi-agent-readable file by the API.
+    The per-ticket opt-in is checked separately; both must be on before any
+    network egress (opt-in, never implicit)."""
+    try:
+        with open(WEB_RESEARCH_SECRET_FILE) as f:
+            return bool(json.load(f).get("enabled"))
+    except Exception:
+        return False
 
 
 def _pi_provider_config() -> dict:
@@ -1287,13 +1300,46 @@ def _environment_digest() -> str:
         return ""
 
 
+# ── L3 web research (opt-in egress) sysctx guidance ───────────────────────
+# The pi agent already has bash; these blocks make the egress contract explicit
+# and keep the runner's env gate (WEB_RESEARCH_ALLOWED) as the hard enforcement.
+# Tests assert both blocks so a wording drift never silently re-enables egress.
+WEB_RESEARCH_ENABLED_BLOCK = (
+    "WEB RESEARCH (L3 — ENABLED for this ticket):\n"
+    "- You may research the public web to ground your answer. Use ONLY the "
+    "sanctioned READ-ONLY tools: `bash /opt/barenoc/scripts/web_search.sh "
+    "\"<query>\" [count]` and `bash /opt/barenoc/scripts/web_fetch.sh \"<url>\"`. "
+    "Search prints JSON {results:[{title,url,snippet}]}; fetch prints JSON "
+    "{title,text,links}.\n"
+    "- FETCH → SUMMARIZE → CITE: read what you fetch, then in your final answer "
+    "summarize the findings and cite each source as a URL so the customer can "
+    "verify. Never pass a search snippet off as your own knowledge without the "
+    "source.\n"
+    "- These tools cache results per topic/URL (the cost lever) — reuse them "
+    "instead of re-fetching. They are HTTP-GET-only and SSRF-guarded (public "
+    "internet only; they refuse LAN/private/appliance addresses). Do NOT work "
+    "around them with curl/wget — that is never allowed.\n"
+    "- If the tools fail or are blocked, say so and answer from local knowledge "
+    "— never fabricate a source or a URL."
+)
+
+WEB_RESEARCH_DISABLED_BLOCK = (
+    "WEB RESEARCH (L3 — DISABLED):\n"
+    "- Web research is OFF for this ticket (opt-in egress). Do NOT fetch or "
+    "search the public web (no curl/wget to external sites). Answer from local "
+    "knowledge and the ticket context only, and say web research is not enabled "
+    "if the question needs current external information."
+)
+
+
 def _build_sysctx(context: str = "", checkpoint_dir: str = "",
-                  env_digest: str = "") -> str:
+                  env_digest: str = "", web_research: bool = False) -> str:
     """The pi system context: operations guide + hard rules + ticket context.
     One function so tests can assert the script guidance and the 'not yours'
     creds line stay intact. The INFRA-CHANGE CONTRACT (agent-foresight) rides
     here so every port/VLAN/network action is plan-first + checkpointed. The
-    knowledge-layer environment digest (L1) is appended when provided."""
+    knowledge-layer environment digest (L1) is appended when provided, and the
+    L3 web-research contract is appended per the ticket's effective opt-in."""
     sysctx = (
         "You are Lily, the BareNOC network operations assistant, working an autonomous "
         "ticket session with FULL tool access (bash, file reads, the UniFi controller "
@@ -1384,6 +1430,8 @@ def _build_sysctx(context: str = "", checkpoint_dir: str = "",
         "- Do not invent data: report only what your tools actually returned.\n\n"
         + INFRA_CHANGE_CONTRACT
     )
+    sysctx += "\n\n" + (WEB_RESEARCH_ENABLED_BLOCK if web_research
+                        else WEB_RESEARCH_DISABLED_BLOCK)
     cp_block = _checkpoint_block(checkpoint_dir)
     if cp_block:
         sysctx += "\n\n" + cp_block
@@ -1485,7 +1533,8 @@ def _pi_usage_block(session_dir: str, task_text: str, response_text: str,
     }
 
 
-def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
+def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600,
+                 web_research: bool = False) -> dict:
     """Run the Pi Coding Agent headlessly on a ticket task.
 
     Idempotent per ticket: if a pi session for this ticket is already running,
@@ -1500,18 +1549,21 @@ def _run_pi_task(task: str, context: str, ticket_id: str, timeout: int = 600) ->
                                        "this duplicate launch was merged (no second session spawned)."}}
         _ACTIVE_PI_TICKETS.add(ticket_id)
     try:
-        return _run_pi_task_impl(task, context, ticket_id, timeout)
+        return _run_pi_task_impl(task, context, ticket_id, timeout,
+                                 web_research=web_research)
     finally:
         with _ACTIVE_PI_LOCK:
             _ACTIVE_PI_TICKETS.discard(ticket_id)
 
 
-def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 600) -> dict:
+def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 600,
+                      web_research: bool = False) -> dict:
     """Implementation: uses `pi -p` (non-interactive) — task + context passed as
     system context, final response captured on stdout. Runs as pi-agent with the
     provider/model/api-key read live from BareNOC's .env. While the agent works,
     its session transcript is polled and brief assistant messages are relayed to
-    the ticket as LIVE work notes."""
+    the ticket as LIVE work notes. web_research=True enables the read-only L3
+    web tools (gated again here via WEB_RESEARCH_ALLOWED in the child env)."""
     pi_bin = os.getenv("PI_AGENT_BIN", "/home/pi-agent/.local/share/pi-node/current/bin/pi")
     pi_dir = os.path.dirname(os.path.dirname(pi_bin))
     workdir = os.getenv("PI_AGENT_WORKDIR", "/opt/barenoc/pi-work")
@@ -1528,7 +1580,8 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
     cdir = _checkpoint_dir(ticket_id)
     os.makedirs(cdir, exist_ok=True)
     sysctx = _build_sysctx(context, checkpoint_dir=cdir,
-                           env_digest=_environment_digest())
+                           env_digest=_environment_digest(),
+                           web_research=web_research)
 
     def run_once(provider, model, api_key, session_subdir, label):
         sdir = os.path.join(workdir, "sessions", session_subdir)
@@ -1543,6 +1596,9 @@ def _run_pi_task_impl(task: str, context: str, ticket_id: str, timeout: int = 60
                "--append-system-prompt", sysctx, _redact_identities(task)[:8000]]
         env = dict(os.environ)
         env["PATH"] = f"{pi_dir}/bin:" + env.get("PATH", "")   # so `node` resolves for pi
+        # L3 egress hard gate: the web tools refuse to network unless the
+        # runner opted this ticket in. Guidance is not the gate — this is.
+        env["WEB_RESEARCH_ALLOWED"] = "1" if web_research else "0"
         logger.info(f"PI task started (ticket {ticket_id}, provider={provider}/{model}, label={label}, timeout {timeout}s)")
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1707,7 +1763,11 @@ def execute_job(job: dict) -> dict:
             return {"success": False, "error": "blocked",
                     "output": {"blocked": "self-protection", "reason": bad,
                                 "note": "The appliance may never harm itself or take itself offline — no profile overrides this."}}
-        return _run_pi_task(task, context, ticket_id, timeout)
+        # L3 research: opt-in egress only — per-ticket flag AND the deployment
+        # toggle (both re-checked here so a hand-crafted job can't widen it).
+        web_research = bool(params.get("web_research")) and _web_research_enabled()
+        return _run_pi_task(task, context, ticket_id, timeout,
+                            web_research=web_research)
     # UniFi MAC-target actions (port/restart) keep the RAW target so the
     # name->MAC/uplink resolution happens in _build_cmd — pre-resolving to an
     # IP here would defeat it.

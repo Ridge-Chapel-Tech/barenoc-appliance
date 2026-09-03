@@ -151,9 +151,12 @@ run `./deploy.sh barenoc@<ip>` yourself later.
    appliance cert already covers the IP, so no domain needed). Log in with
    `admin` + the seeded password (the UI forces a change on first login).
 2. **First-run wizard (fresh installs):** if the dashboard shows the setup
-   banner, open `https://<vm-ip>/setup` — it walks you through account →
-   LLM key → timezone → site name → alert email → autonomy profile →
-   backups → adopt first device → share the chat URL.
+   banner, open `https://<vm-ip>/setup` — the **express** path (default) walks
+   you through account → network (UniFi) → name & share → **updates** (check
+   for releases / install now / auto-update schedule) → done. The **Advanced
+   setup** expander restores the full path: account → LLM key → timezone →
+   site name → alert email → autonomy profile → backups → adopt first
+   device → share the chat URL.
 3. **No real domain?** Password-only login works as-is — you can skip
    Identity/passkeys entirely (a home user doesn't need a domain). If you
    want passkeys, see Common → Identity & DNS (a cheap domain resolved
@@ -169,7 +172,7 @@ run `./deploy.sh barenoc@<ip>` yourself later.
    - **General** — site ID, customer name, timezone, bot names.
    - **Identity** — Pocket ID passkeys (enroll your first passkey!), device groups.
    - **Tickets / Autonomy Policy** — lifecycle + approval profile for your site.
-   - **Dashboard → Updates** — check for releases, **Update now / Schedule /
+   - **System → Updates** — check for releases, **Update now / Schedule /
      Rollback** (free & open — no key needed).
 
 <a id="a5-verification-checklist"></a>

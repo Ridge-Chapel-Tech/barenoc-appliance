@@ -63,6 +63,22 @@ class JudgeShortCircuitTest(unittest.TestCase):
         self.assertIsNotNone(v)
         self.assertEqual(v.action_class, "network_info")
 
+    def test_endpoint_scan_short_circuits_to_network_discovery(self):
+        # "endpoints responding on a subnet" is a subnet ping-sweep, NOT a
+        # network/VLAN summary — the word "network" must not route it to
+        # network_info (forum: "odd results when looking for endpoints").
+        v = short_circuit_verdict(
+            "Can you please tell me what endpoints are responding on the "
+            "192.168.1.0/24 network?", "P3")
+        self.assertIsNotNone(v)
+        self.assertEqual(v.action_class, "network_discovery")
+
+    def test_endpoint_scan_without_subnet_not_short_circuited(self):
+        # No concrete CIDR -> no endpoint-scan short-circuit (returns None so
+        # the real judge decides; no generic pattern matches this phrase).
+        v = short_circuit_verdict("which endpoints are responding", "P3")
+        self.assertIsNone(v)
+
     def test_write_action_never_short_circuits(self):
         for text in ("reboot switch-01 tonight",
                      "apply patch FW-6.6.55",
@@ -179,6 +195,15 @@ class ExecutorTest(unittest.TestCase):
         with patch("executor.get_provider", return_value={"api_key": ""}):
             resp = call_executor("anything", "P3", verdict=None)
         self.assertEqual(resp.action, "escalate_human")
+
+    def test_mock_executor_network_discovery_extracts_subnet(self):
+        v = Verdict(lawful="yes", action_class="network_discovery", risk="low",
+                    checks={"legal": True}, reason="ok")
+        with patch("executor.get_provider", return_value={"api_key": ""}):
+            resp = call_executor(
+                "what endpoints are responding on 192.168.1.0/24", "P3", verdict=v)
+        self.assertEqual(resp.action, "network_discovery")
+        self.assertEqual(resp.target, "192.168.1.0/24")
 
     def test_prompt_contains_only_approved_action(self):
         v = Verdict(lawful="yes", action_class="reboot_device", risk="high",

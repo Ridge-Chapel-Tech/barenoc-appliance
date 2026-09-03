@@ -23,11 +23,11 @@ Your ONLY allowed actions are:
   5. reboot_device - Reboot a device via SSH (immediate)
   6. collect_logs - Collect diagnostic logs from a device
   7. escalate_human - Escalate to a human operator (use when unsure or blocked)
-  8. network_discovery - Ping-sweep a subnet to find live hosts (target is a CIDR like 192.0.2.0/24)
+  8. network_discovery - Ping-sweep a subnet to find live hosts (target is a CIDR like 192.0.2.0/24). Use for questions like "what endpoints are responding on 192.168.1.0/24", "which hosts are online on the subnet", or "scan 192.168.1.0/24".
   9. install_chat_client - Install the BareNOC chat client on an onboarded Linux device via SSH (requires approval)
  10. complete_ticket - Close the ticket when the customer confirms the issue is resolved or no action is needed
  11. unifi_port_config - Assign native/tagged VLAN networks to a UniFi switch port (target = the switch MAC, params: {"port_idx": N, "tagged": ["Storage"], "native": "Production"}). This is a WRITE action: whether it runs automatically or waits for human approval is governed by the deployment's Autonomy Policy.
- 12. network_info - Read-only: fetch and report the network/VLAN/SSID configuration from the UniFi controller (no target needed). Use for questions like "what vlans are on my network" or "list the subnets".
+ 12. network_info - Read-only: fetch and report the CONFIGURED network/VLAN/SSID layout from the UniFi controller (no target needed). Use for questions like "what vlans are on my network" or "list the subnets" — NOT for "what is responding/reachable on a subnet" (that is network_discovery).
  13. request_customer_input - Ask the CUSTOMER for missing information/clarification; sets the ticket to Customer Action. Use when the ticket can't proceed without details only the customer can provide.
  14. unifi_clients - Read-only: list known + active clients from UniFi (who is online, what IPs are in use). No target needed. Optional params: {"online": true} (online now only), {"wired": true} (wired only) / {"wired": false} (wireless only) — combinable.
  15. unifi_devices - Read-only: list managed UniFi devices with health/uptime/version (how is the network gear doing). No target needed. Optional params (combinable): {"device_type": "ap" | "switch" | "gateway"}, {"status": "online" | "offline"} — e.g. "list my wireless APs" -> {"device_type": "ap"}; "which APs are offline" -> {"device_type": "ap", "status": "offline"}.
@@ -378,21 +378,79 @@ TITLE_SYSTEM_PROMPT = (
 )
 
 
+# Reasoning models wrap the requested title in thinking blocks; drop those
+# whole before trying to find the title text (same idea as _parse_llm_response).
+_TITLE_THINK_RE = re.compile(
+    r"<(?:think|thinking|analysis|reasoning|response)>"
+    r".*?</(?:think|thinking|analysis|reasoning|response)>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# A labelled title ("Title:", "Summary for the ticket:", "Here's a
+# suggestion:") is meta-text: keep only what follows the LAST label. The value
+# may still be quoted/emphasised, so the caller peels it again after
+# extraction. Anchored to start-of-text or a separator so a word like
+# "subtitle" never matches.
+_TITLE_LABEL_RE = re.compile(
+    r"(?:^|[\s>\"'`])"
+    r"(?:title|subject|summary|suggestion|idea)"
+    r"(?:\s+(?:suggestion|idea|option|for\s+(?:the\s+)?(?:ticket|request|issue|report)))?"
+    r"\s*[:：\-—]\s*",
+    re.IGNORECASE,
+)
+
+# Surrounding markdown/quotes/bullets that wrap the title ("**Title**",
+# `"Title"`, "- Title", "# Title"). Kept separate from the final punctuation
+# trim so a bare "Title:" label keeps its colon long enough to be detected
+# (and then discarded as a label with no value).
+_TITLE_LEAD_WRAP_RE = re.compile(r"^[\s`*#_>\"'“”‘’\-–—]+")
+_TITLE_TAIL_WRAP_RE = re.compile(r"[\s`*#_\"'“”‘’]+$")
+_TITLE_TAIL_PUNCT_RE = re.compile(r"[\s`*#_\"'“”‘’.,;:]+$")
+
+
 def _clean_title(raw: str, max_chars: int = 80) -> "Optional[str]":
-    """Reduce a raw LLM title reply to a short single-line ticket title."""
+    """Reduce a raw LLM title reply to a short single-line ticket title.
+
+    Models often wrap the requested title in meta-text — a thinking block, a
+    preamble ("Sure! Here's a concise title:"), reasoning before a "Title:"
+    label, markdown emphasis, or a trailing period. Strip all of that so only
+    the actual title lands in the ticket (B3 regression).
+    """
     if not raw:
         return None
-    t = " ".join(str(raw).strip().split())
+
+    # 1. Drop reasoning/thinking blocks whole (their content is prose, not a
+    #    title) and collapse to a single line for whitespace-safe parsing.
+    t = _TITLE_THINK_RE.sub("", str(raw))
+    t = " ".join(t.strip().split())
     if not t:
         return None
-    # Strip markdown fences / bullets / surrounding quotes and a leading
-    # "Title:" prefix so the model's formatting never leaks into the UI.
-    t = re.sub(r"^[\"'`\-*#>\s]+", "", t)
-    t = re.sub(r"[\"'`]+$", "", t)
-    t = re.sub(r"^(?:title\s*[:：-]\s*)", "", t, flags=re.I)
-    t = " ".join(t.split())
+
+    # 2. Peel surrounding markdown/quotes/bullets ("**Title**", "Title",
+    #    `Title`, "- Title", "# Title").
+    t = _TITLE_LEAD_WRAP_RE.sub("", t)
+    t = _TITLE_TAIL_WRAP_RE.sub("", t)
     if not t:
         return None
+
+    # 3. If the model wrote a labelled title anywhere, keep the text after the
+    #    LAST label ("The user wants X. Title: Update X" → "Update X"). The
+    #    value may itself be quoted/emphasised, so peel it again.
+    matches = list(_TITLE_LABEL_RE.finditer(t))
+    if matches:
+        t = t[matches[-1].end():]
+        t = _TITLE_LEAD_WRAP_RE.sub("", t)
+        t = _TITLE_TAIL_WRAP_RE.sub("", t)
+        t = " ".join(t.split())
+    if not t:
+        return None
+
+    # 4. Trim trailing punctuation/emphasis left on the final value.
+    t = _TITLE_TAIL_PUNCT_RE.sub("", t)
+    if not t:
+        return None
+
+    # 5. Enforce the max length on a word boundary.
     if len(t) > max_chars:
         cut = t[:max_chars]
         boundary = cut.rfind(" ")

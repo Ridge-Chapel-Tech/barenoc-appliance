@@ -40,6 +40,7 @@ import hashlib
 from dataclasses import dataclass, field, asdict
 
 from llm_client import get_provider
+from action_validator import find_subnet
 
 # Catalog the judge may pick from — mirror of action_validator.AllowedAction.
 # (unifi_port_config lives only in the chat-client path today; see action_validator.)
@@ -132,6 +133,15 @@ _KNOWN_GOOD_PATTERNS = [
     (re.compile(r"\b(vlan|subnet|ssid|networks?|ip ?addresses?)\b", re.I), "network_info"),
 ]
 
+# "what endpoints are responding on 192.168.1.0/24" is a subnet ping-sweep
+# (network_discovery), NOT a network/VLAN summary — the word "network" used to
+# match the network_info pattern above and return the VLAN/SSID table instead
+# of the live-host sweep the customer asked for.
+_ENDPOINT_SCAN_RE = re.compile(
+    r"\b(endpoints?|hosts?|devices?|machines?|clients?)\b[^.!?\n]{0,120}"
+    r"\b(respond(?:ing|s)?|reachable|online|alive|up|answer(?:ing|s)?|active|live)\b",
+    re.I)
+
 
 @dataclass
 class Verdict:
@@ -163,6 +173,19 @@ def short_circuit_verdict(text: str, priority: str,
     for pat in _active_risk_patterns(risk_filters):
         if re.search(pat, t):
             return None  # write/risky — always go to the judge
+    # Endpoint scan over a named subnet: the customer asked which endpoints/
+    # hosts respond on a concrete CIDR — that is a subnet ping-sweep, and it
+    # must win over the generic "network" -> network_info pattern below.
+    if _ENDPOINT_SCAN_RE.search(t) and find_subnet(t):
+        return Verdict(
+            lawful="yes",
+            action_class="network_discovery",
+            risk="low",
+            scope="managed",
+            checks={"legal": True, "doable": True, "safe": True, "in_scope": True},
+            reason="Short-circuit: endpoint scan over a subnet -> network_discovery ping sweep.",
+            short_circuit=True,
+        )
     for pat, action in _KNOWN_GOOD_PATTERNS:
         if pat.search(t):
             return Verdict(

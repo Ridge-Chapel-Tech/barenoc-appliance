@@ -26,6 +26,7 @@ def _effective(env: dict) -> dict:
     ctl = compliance.get_controls(env)
     return {
         "llm_egress": ctl["llm_egress"]["state"],
+        "web_research_enabled": ctl["web_research"]["state"] == "on",
         "mfa_enforced": ctl["mfa_enforcement"]["state"] == "on",
         "telemetry_enabled": ctl["telemetry"]["state"] == "on",
         "audit_log_enabled": ctl["audit_log"]["state"] == "on",
@@ -33,6 +34,15 @@ def _effective(env: dict) -> dict:
         "session_idle_min": int(env.get("SESSION_IDLE_TIMEOUT_MIN", "0") or 0),
         "session_lockout_after": int(env.get("SESSION_LOCKOUT_AFTER", "0") or 0),
     }
+
+
+def _sync_web_research_secret():
+    """Refresh the pi-agent-readable web-research flag after a control change."""
+    try:
+        from routes.settings import _write_web_research_secret
+        _write_web_research_secret()
+    except Exception:
+        pass
 
 
 @router.get("")
@@ -76,6 +86,7 @@ def update_compliance(config: dict, db: Session = Depends(get_db),
                 "note": "Customer consented to vendor remote support.",
             })
     compliance.write_env(env)
+    _sync_web_research_secret()
     log_event(db, "compliance_change", user.username, {"changes": changed})
     return {"status": "ok", "controls": compliance.get_controls(env),
             "changed": changed,
@@ -94,6 +105,7 @@ def apply_preset(db: Session = Depends(get_db),
     env = compliance.read_env()
     before = compliance.get_controls(env)
     compliance.apply_preset(env=env, persist=True)
+    _sync_web_research_secret()
     after = compliance.get_controls(env)
     changed = {k: {"before": before[k]["state"], "after": after[k]["state"]}
                for k in compliance.CONTROL_KEYS
@@ -111,6 +123,7 @@ def revert_preset(db: Session = Depends(get_db),
     """Restore the values captured before the preset (if any)."""
     env = compliance.read_env()
     controls, env, restored = compliance.revert_preset(env=env, persist=True)
+    _sync_web_research_secret()
     log_event(db, "compliance_revert", user.username, {"restored": restored})
     return {"status": "ok", "restored": restored, "controls": controls}
 

@@ -2,7 +2,7 @@
 
 ## First-run setup wizard
 
-On a fresh install you land on the **express setup wizard** — four steps:
+On a fresh install you land on the **express setup wizard** — five steps:
 
 1. **Admin account** — create the first admin.
 2. **Network** — UniFi controller credentials (with the auto-discover preview right
@@ -11,8 +11,12 @@ On a fresh install you land on the **express setup wizard** — four steps:
    **Cloud (recommended — best answers)** vs **Local only (no data leaves your
    network)** — the same egress toggle the [Compliance Controls](/wiki/compliance)
    panel uses.
-4. **Done** — you land on the dashboard with the defaults already applied
-   (autonomous AI, UniFi auto-sync on, alerts off until you add a recipient).
+4. **Updates** — check for new releases, **install now** if one is available,
+   and set the **auto-update schedule** (on by default, weekly Sunday 03:00
+   local; opt out any time in System → Updates).
+5. **Done** — you land on the dashboard with the defaults already applied
+   (autonomous AI, UniFi auto-sync on, auto-updates on, alerts off until you
+   add a recipient).
 
 Everything you skip gets a **sane default** + a "change it in Settings" link.
 If you want the full nine-step flow (timezone, email, autonomy, backups,
