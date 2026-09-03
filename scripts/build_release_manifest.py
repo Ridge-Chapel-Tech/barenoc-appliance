@@ -85,12 +85,31 @@ def classify(prev: str, cur: str) -> str:
     return "patch"
 
 
+# The shared modules the worker image COPYs into its build context. They live
+# in src/api/; the worker's Dockerfile + llm_client import them, so the
+# tarball MUST ship them side-by-side in src/worker/ — the 09-03 self-update
+# bug: .03.b's worker build failed '"/tierrouter.py": not found' because the
+# release tarball lacked them (the box's bootstrap copy step is install-only;
+# self-updates replace worker/ with the tarball's content).
+SHARED_MODULES = ("action_validator.py", "audit.py", "audit_catalog.py", "crypto.py",
+                  "database.py", "models.py", "sanitizer.py", "schemas.py",
+                  "worknotes.py", "queue_status.py", "tone_pool.py",
+                  "llm_providers.py", "emailer.py", "ratewindows.py", "tierrouter.py")
+
+
 def build_tarball(source: pathlib.Path, ver: str, out: pathlib.Path) -> pathlib.Path:
     tarball = out / f"bareNOC-{ver}.tar.gz"
     with tarfile.open(tarball, "w:gz") as tf:
         for p in sorted(source.iterdir()):
             if p.name in (".git", "__pycache__", "dist", "SESSION_LOG.md"):
                 continue
+            if p.name == "worker":
+                # include the shared modules from src/api/ inside src/worker/
+                # (they are COPYed by the worker's Dockerfile at build time)
+                for m in SHARED_MODULES:
+                    mp = source / "api" / m
+                    if mp.exists():
+                        tf.add(mp, arcname=f"worker/{m}")
             tf.add(p, arcname=p.name, recursive=True)
     return tarball
 
