@@ -252,6 +252,15 @@ def init_db():
             ))
     except OperationalError:
         pass  # Column already exists
+    # Migration: windows_health_schedule (F8 Windows PC health/cleanup
+    # schedule — per-device JSON). Idempotent like the rest.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE devices ADD COLUMN windows_health_schedule JSON"
+            ))
+    except OperationalError:
+        pass  # Column already exists
     # Migration: link_episodes (link-stability monitor state machine). A NEW
     # table — create_all above already creates it, so this guarded CREATE is an
     # idempotent belt-and-suspenders no-op. KEEP IN SYNC with models.LinkEpisode.

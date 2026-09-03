@@ -16,6 +16,7 @@ from audit import log_event
 from change_log import record
 import network_scope
 import discovery
+import port_blast_radius
 
 router = APIRouter(prefix="/api/v1/unifi", tags=["unifi"])
 
@@ -644,6 +645,30 @@ def set_port_vlans(switch_mac: str, port_idx: int, body: dict,
         raise HTTPException(status_code=404, detail=f"Port {port_idx} not found on {switch_mac}")
     nets = client.get_networks_map()
 
+    # Blast-radius gate (08-19 root-cause): the array merge in set_port_vlans
+    # is merge-safe with respect to the OTHER ports, but it says nothing about
+    # what is BEHIND the port being flipped. Compute the blast radius and
+    # refuse to remove a protected network (the appliance's own subnet or a
+    # management VLAN) from the port that currently carries it.
+    try:
+        raw_devices = client.get_raw_devices() or []
+        clients = client.get_clients() or []
+    except Exception:
+        raw_devices, clients = [], []
+    downstream = port_blast_radius.downstream_devices_for_port(raw_devices, switch_mac, port_idx)
+    port_clients = port_blast_radius.clients_for_port(clients, switch_mac, port_idx)
+    raw_device = next((d for d in raw_devices
+                       if (d.get("mac") or "").strip().lower() == switch_mac.strip().lower()), None)
+    gate = port_blast_radius.check_port_change(
+        networks=nets,
+        port=port_blast_radius.effective_port(raw_device, port),
+        proposed_native_id=native_id,
+        proposed_tagged_ids=tagged_ids,
+        appliance_ips=port_blast_radius.appliance_ips(),
+        downstream_devices=downstream,
+        connected_clients=port_clients,
+    )
+
     preview = {
         "switch_mac": switch_mac,
         "port_idx": port_idx,
@@ -652,15 +677,32 @@ def set_port_vlans(switch_mac: str, port_idx: int, body: dict,
                     "tagged": [nets.get(i, {}).get("name", i) for i in port["tagged_network_ids"]]},
         "after": {"native": nets.get(native_id, {}).get("name", "") if native_id else "(unchanged)",
                    "tagged": [nets.get(i, {}).get("name", i) for i in tagged_ids]},
+        "blast_radius": gate["blast_radius"],
+        "blocked": gate["blocked"],
     }
+    if gate["reason"]:
+        preview["blocked_reason"] = gate["reason"]
     _audit = {"switch_mac": switch_mac, "port_idx": port_idx,
               "port_name": port["name"], "before": preview["before"],
               "after": preview["after"]}
     if body.get("dry_run"):
         preview["dry_run"] = True
         log_event(db, "unifi_port_change", user.username,
-                  {**_audit, "dry_run": True})
+                  {**_audit, "dry_run": True, "blocked": gate["blocked"]})
         return preview
+
+    if gate["blocked"]:
+        confirmed = bool(body.get("confirm")) and getattr(user, "role", None) == "admin"
+        if not confirmed:
+            log_event(db, "unifi_port_change_blocked", user.username,
+                      {**_audit, "blocked_reason": gate["reason"],
+                       "blast_radius": gate["blast_radius"]})
+            raise HTTPException(
+                status_code=403,
+                detail=(gate["reason"] +
+                        " Set confirm=true as an admin to override."))
+        log_event(db, "unifi_port_change_override", user.username,
+                  {**_audit, "blocked_reason": gate["reason"]})
 
     result = client.set_port_vlans(switch_mac, port_idx, tagged_ids,
                                    native_network_id=native_id or port["native_network_id"])
@@ -699,6 +741,41 @@ def set_port_disabled(switch_mac: str, port_idx: int, body: dict,
     client = _unifi_client(cfg)
     if not client.login():
         raise HTTPException(status_code=502, detail=f"Could not log in to UniFi controller: {client.last_error or 'unknown'}")
+
+    # Blast-radius gate: disabling a port that carries the appliance, a
+    # protected network, or downstream devices strands reachability — refuse
+    # without an explicit admin confirmation (same gate family as the VLAN flip).
+    if disabled:
+        try:
+            raw_devices = client.get_raw_devices() or []
+            clients = client.get_clients() or []
+        except Exception:
+            raw_devices, clients = [], []
+        ports = client.get_switch_ports(switch_mac)
+        port = next((p for p in ports if p["port_idx"] == port_idx), None)
+        if port:
+            downstream = port_blast_radius.downstream_devices_for_port(raw_devices, switch_mac, port_idx)
+            port_clients = port_blast_radius.clients_for_port(clients, switch_mac, port_idx)
+            raw_device = next((d for d in raw_devices
+                               if (d.get("mac") or "").strip().lower() == switch_mac.strip().lower()), None)
+            disable_gate = port_blast_radius.check_port_disable(
+                networks=client.get_networks_map(),
+                port=port_blast_radius.effective_port(raw_device, port),
+                appliance_ips=port_blast_radius.appliance_ips(),
+                downstream_devices=downstream,
+                connected_clients=port_clients,
+            )
+            if disable_gate["blocked"] and not (bool(body.get("confirm")) and getattr(user, "role", None) == "admin"):
+                log_event(db, "unifi_port_disable_blocked", user.username,
+                          {"switch_mac": switch_mac, "port_idx": port_idx,
+                           "disabled": disabled,
+                           "blocked_reason": disable_gate["reason"],
+                           "blast_radius": disable_gate["blast_radius"]})
+                raise HTTPException(
+                    status_code=403,
+                    detail=(disable_gate["reason"] +
+                            " Set confirm=true as an admin to override."))
+
     result = client.set_port_disabled(switch_mac, port_idx, disabled)
     if not result.get("applied"):
         log_event(db, "unifi_port_disable_failed", user.username,

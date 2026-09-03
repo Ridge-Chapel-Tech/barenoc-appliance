@@ -17,7 +17,72 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.03.b] — 2026-09-03
+
+### Added
+- **Windows PC health diagnostics + safe cleanup on adopted devices (F8).**
+  Two first-class device actions over SSH — `windows_diag` (read-only health
+  report: volumes/disk-full, top CPU + RAM processes, startup items, Defender
+  real-time status + signature age, 7-day critical/error events, boot times,
+  SMART counters where available) and `windows_cleanup` (stops + removes
+  autostart for a configurable offender list — default Adobe CollabSync +
+  Copilot — clears TEMP + recycle, and reports bytes recovered, measured
+  BEFORE any removal). Results post back as a ticket note/report. A per-device
+  schedule (`windows_health_schedule`) runs daily/weekly health and a
+  low-usage cleanup window via the scheduler, creating a `source=auto` report
+  ticket owned by the device owner. No partition ops or uninstalls — they have
+  no code path here (explicit per-device owner confirmation required, and not
+  implemented as an action).
+### Fixed
+- **In-app Submit Report silently losing its diagnostic bundle.** The
+  `forum-submit` edge function stored the bundle under the reporter's profile
+  id (not the thread id) and swallowed the storage/attachment errors, so a
+  failed upload still returned a 201 and the appliance reported success. The
+  appliance client (`report_submit.py`) now treats a 201 WITHOUT a bundle
+  confirmation (`bundle_path`/`bundle_url`/`attachment_id`) as a failure and
+  surfaces a 502, and the canonical Supabase side (new `supabase/` tree: the
+  corrected `forum-submit` edge function + a `threads.bundle_path` migration)
+  stores the bundle under `session-logs/<thread_id>/<file>`, references it on
+  the thread, and rolls the thread back + returns 5xx when storage fails.
+  Regression coverage in `test_report_submit.py` (`SubmitTransportTest`).
+- **UniFi controller lockout from login-per-call (B4).** Every UniFi route
+  handler, the scheduler sync, link monitor, telemetry and network-opt sweep
+  built a fresh `UniFiClient` and `POST /api/auth/login` on every call, so a
+  burst of agent scripts tripped the controller's login throttle and locked
+  the account. `UniFiClient` now shares one authenticated session per
+  controller + credential set (cookie jar + CSRF token) across the whole API
+  process, `login()` reuses an active session instead of re-authenticating,
+  and 429/connection failures retry with exponential backoff. Session expiry
+  (401/403) re-authenticates once transparently. Stdlib-only regression tests
+  in `test_unifi`.
+### Security
+- **Blast-radius gate for UniFi port config flips** (the 08-19 `.4.x` segment
+  outage root-cause fix). The original port flip was *merge-safe* — it read the
+  full `port_overrides` array and preserved every other port's override — so it
+  reviewed clean, but nothing checked what was **behind** the flipped port, and
+  re-homing its native VLAN stranded the appliance's own segment. New
+  `port_blast_radius.py` computes the blast radius (downstream devices,
+  appliance clients, protected networks) before any port VLAN change or disable
+  and refuses to remove a protected network (the appliance's subnet or a
+  management VLAN) from the port that carries it. `set_port_vlans` and
+  `set_port_disabled` now block with a 403 + blast-radius detail unless an
+  admin passes `confirm=true`; the autonomous agent path can never override it.
+  Regression coverage in `test_port_blast_radius.py`.
+
 ## [2026.09.03.a] — 2026-09-03
+- **Cost optimization (F6): rate-aware + tier-routed LLM policy.** The
+  appliance now mirrors the Command Center's `rate_windows` + `tier_map`
+  schema (`src/api/ratewindows.py`, `src/api/tierrouter.py`; per-box config
+  auto-seeded under `/opt/barenoc/volumes/db/`). Non-urgent (P3/P4) LLM work
+  is biased into off-peak windows (`plan_start` + a waiting queue in the
+  worker), while bulk/cheap work (the judge→executor structured job-fill) is
+  window-inverted: cloud off-peak, local (the M7 Ollama box) at peak.
+  Judgment (the judge) + customer-visible copy (ticket titles) stay cloud, the
+  local box is probed before use with a graceful cloud fallback, and every
+  routed call is metered local-vs-cloud in `llm_cost_stats.json` — surfaced as
+  a `cost_optimization` block in the reports cost KPI plus a read-only
+  `/api/v1/admin/cost-optimization` endpoint. Toggles: `LLM_COST_OPTIMIZATION`
+  and `LLM_OFFPEAK_DEFER` (both default on).
 
 ### Fixed
 - **Work-notes corruption guard (#102).** A double-encoded `work_notes` string
@@ -28,6 +93,16 @@ Categories per release:
   array; the read paths (queue status, worker, jobs dedup, dashboard,
   alerting, emailer) and `TicketResponse` use the same guard so a corrupted
   field self-heals on the next read/write instead of blocking readability.
+- **UniFi controller lockout from login-per-call (B4).** Every UniFi route
+  handler, the scheduler sync, link monitor, telemetry and network-opt sweep
+  built a fresh `UniFiClient` and `POST /api/auth/login` on every call, so a
+  burst of agent scripts tripped the controller's login throttle and locked
+  the account. `UniFiClient` now shares one authenticated session per
+  controller + credential set (cookie jar + CSRF token) across the whole API
+  process, `login()` reuses an active session instead of re-authenticating,
+  and 429/connection failures retry with exponential backoff. Session expiry
+  (401/403) re-authenticates once transparently. Stdlib-only regression tests
+  in `test_unifi`.
 - **Title interpreter no longer leaks LLM meta-text into ticket titles (B3).**
   `generate_title`'s `_clean_title` only stripped a leading `Title:` prefix and
   surrounding quotes, so a model that answered with a polite preamble ("Sure!
@@ -36,6 +111,16 @@ Categories per release:
   thinking blocks, peels markdown/quotes/bullets, and extracts the text after
   the last title/subject/summary/suggestion label before trimming trailing
   punctuation, with regression coverage in `test_llm_client`.
+- **Title-gen never stores a system-prompt echo as the ticket title.** A
+  provider could answer the one-shot title call by restating the instruction
+  ("We need to generate a title for a support ticket. The request: …") and
+  `_clean_title` accepted that echoed prompt as a valid title, so chat-spawned
+  tickets showed the internal prompt as their title. `_clean_title` now rejects
+  instruction echoes and multi-sentence restatements (falling through to the
+  first-sentence heuristic), and `provider_order` drops providers whose base
+  URL is an unfilled placeholder (e.g. `http://192.168.x.x:11434`) so the
+  failover chain never attempts them. Regression coverage in `test_llm_client`
+  and `test_llm_providers`.
 - **"Endpoints responding on a subnet" no longer returns the VLAN/SSID table.**
   "what endpoints are responding on 192.168.1.0/24" is a subnet ping-sweep
   (`network_discovery`), but the judge's known-good short-circuit matched the

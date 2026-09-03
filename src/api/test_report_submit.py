@@ -141,5 +141,57 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(p["display_name"], "admin")
 
 
+class SubmitTransportTest(unittest.TestCase):
+    """The fail-loud half of the bundle-loss fix: a 201 from the edge must
+    confirm the bundle landed, or the client must refuse to report success."""
+
+    CFG = {"url": "https://example.test/forum-submit", "token": "tok"}
+
+    def _resp(self, status=201, payload=None):
+        r = SimpleNamespace(status_code=status, payload=payload or {})
+        r.json = lambda: r.payload
+        return r
+
+    def test_bundle_requires_confirmation(self):
+        user = SimpleNamespace(username="admin", display_name="Admin")
+        with patch.object(report_submit, "read_env_file", return_value={}), \
+             patch.object(report_submit.httpx, "post",
+                          return_value=self._resp(201, {"ok": True, "thread_id": "t",
+                                                       "thread_url": "u"})):
+            with self.assertRaises(RuntimeError) as ctx:
+                report_submit.submit_report("wifi", user, bundle="# bundle",
+                                            config=self.CFG)
+        self.assertIn("did not confirm", str(ctx.exception))
+
+    def test_bundle_path_confirms_success(self):
+        user = SimpleNamespace(username="admin", display_name="Admin")
+        with patch.object(report_submit, "read_env_file", return_value={}), \
+             patch.object(report_submit.httpx, "post",
+                          return_value=self._resp(201, {"ok": True, "thread_id": "t",
+                                                       "bundle_path": "session-logs/t/barenoc-support.md"})):
+            out = report_submit.submit_report("wifi", user, bundle="# bundle",
+                                              config=self.CFG)
+        self.assertEqual(out["bundle_path"], "session-logs/t/barenoc-support.md")
+
+    def test_attachment_id_confirms_success(self):
+        user = SimpleNamespace(username="admin", display_name="Admin")
+        with patch.object(report_submit, "read_env_file", return_value={}), \
+             patch.object(report_submit.httpx, "post",
+                          return_value=self._resp(201, {"ok": True, "thread_id": "t",
+                                                       "attachment_id": "att-1"})):
+            out = report_submit.submit_report("wifi", user, bundle="# bundle",
+                                              config=self.CFG)
+        self.assertEqual(out["thread_id"], "t")
+
+    def test_empty_bundle_does_not_require_confirmation(self):
+        user = SimpleNamespace(username="admin", display_name="Admin")
+        with patch.object(report_submit, "read_env_file", return_value={}), \
+             patch.object(report_submit.httpx, "post",
+                          return_value=self._resp(201, {"ok": True, "thread_id": "t",
+                                                       "thread_url": "u"})):
+            out = report_submit.submit_report("wifi", user, bundle="", config=self.CFG)
+        self.assertEqual(out["thread_id"], "t")
+
+
 if __name__ == "__main__":
     unittest.main()

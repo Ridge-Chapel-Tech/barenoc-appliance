@@ -18,7 +18,7 @@ import unittest
 _TMP = tempfile.mkdtemp(prefix="jobs-format-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.db"
 
-from routes.jobs import _format_info_answer  # noqa: E402
+from routes.jobs import _format_info_answer, _fmt_bytes  # noqa: E402
 
 
 def _b64(text: str) -> str:
@@ -111,6 +111,65 @@ class ApplyUpdatesFormatTest(unittest.TestCase):
         text = _format_info_answer("apply_updates", out)
         self.assertIn("failed: firmware", text)
         self.assertIn("2 update(s) applied", text)
+
+
+class WindowsFormatTest(unittest.TestCase):
+    """F8 — windows_diag / windows_cleanup result notes the owner reads."""
+
+    def test_fmt_bytes(self):
+        self.assertEqual(_fmt_bytes(0), "0 B")
+        self.assertEqual(_fmt_bytes(512), "512 B")
+        self.assertEqual(_fmt_bytes(2048), "2.0 KB")
+        self.assertEqual(_fmt_bytes(5 * 1024 * 1024), "5.0 MB")
+        self.assertEqual(_fmt_bytes(3 * 1024 ** 3), "3.0 GB")
+
+    def test_windows_diag_report(self):
+        out = {
+            "hostname": "DADS-PC", "os": "Windows 11 Pro",
+            "volumes": [{"device": "C:", "size_gb": 476.9, "free_gb": 38.2,
+                          "free_pct": 8.0, "disk_full": True}],
+            "top_cpu": [{"name": "chrome", "pid": 1, "cpu_s": 900}],
+            "top_ram": [{"name": "chrome", "pid": 1, "ram_mb": 2048}],
+            "startup_items": [{"name": "Adobe CollabSync", "command": "x", "location": "y"}],
+            "defender": {"available": True, "real_time_enabled": True,
+                          "signature_age_days": 3, "signature_version": "1.2.3"},
+            "recent_events": [{"time": "2026-09-03T10:00:00", "level": "Error",
+                                "id": 1000, "provider": "Disk", "message": "bad sector"}],
+            "recent_events_count": 1,
+            "boot": {"last_boot_time": "2026-09-02T08:00:00", "uptime_days": 1.2},
+            "smart": {"available": True, "disks": [{
+                "device": "PhysicalDisk0", "health": "Healthy",
+                "temperature_c": 42, "wear": 5, "power_on_hours": 1200}]},
+        }
+        text = _format_info_answer("windows_diag", out)
+        self.assertIn("Windows health report for DADS-PC (Windows 11 Pro)", text)
+        self.assertIn("LOW DISK", text)
+        self.assertIn("top CPU: chrome (900.0s)", text)
+        self.assertIn("top RAM: chrome (2048 MB)", text)
+        self.assertIn("Defender: real-time ON, signatures 3d old (v1.2.3)", text)
+        self.assertIn("last boot: 2026-09-02T08:00:00 (up 1.2d)", text)
+        self.assertIn("SMART: PhysicalDisk0 — Healthy, 42°C, wear 5%, 1200h on", text)
+
+    def test_windows_cleanup_report(self):
+        out = {
+            "hostname": "DADS-PC",
+            "bytes_recovered": 5 * 1024 ** 3,
+            "processes_stopped": ["AdobeCollabSync"],
+            "autostart_removed": ["HKCU:\\Run\\Adobe CollabSync"],
+            "before_bytes": 6 * 1024 ** 3,
+            "temp_after_bytes": 1024 ** 3,
+            "recycle_after_bytes": 0,
+        }
+        text = _format_info_answer("windows_cleanup", out)
+        self.assertIn("Cleaned DADS-PC: recovered 5.0 GB", text)
+        self.assertIn("stopped processes: AdobeCollabSync", text)
+        self.assertIn("removed autostart entries (1)", text)
+
+    def test_windows_cleanup_nothing_to_do(self):
+        out = {"hostname": "DADS-PC", "bytes_recovered": 0,
+               "processes_stopped": [], "autostart_removed": []}
+        text = _format_info_answer("windows_cleanup", out)
+        self.assertIn("nothing to clean", text)
 
 
 if __name__ == "__main__":

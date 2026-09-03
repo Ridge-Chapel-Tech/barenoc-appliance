@@ -233,7 +233,7 @@ chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
 # adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
 for m in action_validator.py audit.py audit_catalog.py crypto.py database.py models.py \
          sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
-         llm_providers.py emailer.py; do
+         llm_providers.py emailer.py ratewindows.py tierrouter.py; do
   [ -f "$BASE/api/$m" ] && cp "$BASE/api/$m" "$BASE/worker/$m"
 done
 

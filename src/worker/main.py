@@ -210,6 +210,75 @@ def _plain_reason(reason: str) -> str:
     return cleaned[:240] or "the request needs manual review"
 
 
+# ── F6 off-peak scheduling ─────────────────────────────────────────────────
+# Non-urgent (P3/P4) tickets bias their LLM work into off-peak windows (the
+# provider's half-price hours). Critical P1/P2 tickets and the autonomous pi
+# lane run anytime. Deferred tickets park in a queue file and are re-picked by
+# the poll loop once the next off-peak window arrives.
+
+def _maybe_defer_offpeak(db, ticket) -> bool:
+    """Park a non-urgent ticket until the next off-peak LLM window. Returns True
+    when the ticket was deferred (the caller must stop processing it)."""
+    try:
+        from ratewindows import (
+            cost_optimization_enabled, offpeak_defer_enabled, plan_start, enqueue,
+        )
+    except Exception:
+        return False
+    try:
+        if not cost_optimization_enabled() or not offpeak_defer_enabled():
+            return False
+        critical = ticket.priority in ("P1", "P2")
+        plan = plan_start(critical=critical)
+        if not plan.get("defer"):
+            return False
+        start_at = plan.get("start_at") or ""
+        add_note(ticket, "offpeak_deferred",
+                 f"Deferred to the next off-peak LLM window ({start_at}) — "
+                 f"{plan.get('reason')}. Non-urgent work is scheduled off-peak "
+                 f"to cut LLM cost.")
+        ticket.status = "open"
+        ticket.assigned_to = "system"
+        ticket.resolution = None
+        db.commit()
+        enqueue(topic=ticket.ticket_id, task=(ticket.title or ""),
+                start_at=start_at)
+        log_event(db, "offpeak_deferred", "system", {
+            "ticket_id": ticket.ticket_id, "start_at": start_at,
+            "state": plan.get("state"), "reason": plan.get("reason"),
+        }, ticket.ticket_id)
+        return True
+    except Exception as e:
+        logger.warning(f"off-peak deferral check failed (non-fatal): {e}")
+        return False
+
+
+def _parked_ticket_ids() -> set:
+    """Ticket ids currently parked in the off-peak waiting queue."""
+    try:
+        from ratewindows import list_queue
+        return {item.get("topic") for item in list_queue() if item.get("topic")}
+    except Exception:
+        return set()
+
+
+def _due_ticket_ids() -> set:
+    """Parked ticket ids whose off-peak window has arrived (ready to process)."""
+    try:
+        from ratewindows import due
+        return {item.get("topic") for item in due() if item.get("topic")}
+    except Exception:
+        return set()
+
+
+def _dequeue_ticket(ticket_id: str) -> None:
+    try:
+        from ratewindows import dequeue
+        dequeue(ticket_id)
+    except Exception:
+        pass
+
+
 def process_ticket(db, ticket):
     """Process a single ticket through the LLM pipeline."""
     from llm_client import call_llm
@@ -324,6 +393,11 @@ def process_ticket(db, ticket):
         _dispatch_pi(db, ticket, ticket_text)
         return
 
+    # F6 cost optimization: bias non-urgent (P3/P4) LLM work into off-peak
+    # windows. Critical tickets + the autonomous pi lane above run anytime.
+    if _maybe_defer_offpeak(db, ticket):
+        return
+
     # Step 4.5: Judge phase (opt-in) — the judge rules on lawfulness and
     # picks the action class; it never executes. Unlawful/ambiguous -> human.
     from policy import get_policy
@@ -435,6 +509,7 @@ def process_ticket(db, ticket):
                 device_context=device_context,
                 use_reasoner=use_reasoner,
                 extra_context=extra_ctx,
+                task_class="ticket_technician",
             )
 
         if not llm_response:
@@ -640,7 +715,7 @@ def process_ticket(db, ticket):
                           "network_info", "system_time", "ticket_status",
                           "unifi_clients", "unifi_devices", "unifi_ports",
                           "unifi_client_port", "unifi_firewall_rules",
-                          "fingerprint_device"}
+                          "fingerprint_device", "windows_diag"}
     conf = llm_response.confidence
 
     # Hard restrictions: action/device denies are the final gate before
@@ -1479,6 +1554,16 @@ def poll_for_tickets():
             except Exception as e:
                 logger.exception(f"Juniper responder error: {e}")
 
+            # F6 off-peak scheduling: parked non-urgent tickets wait until
+            # their window; due ones are re-added to the work list below.
+            try:
+                from ratewindows import cost_optimization_enabled as _co_on, offpeak_defer_enabled as _defer_on
+                _co_active = _co_on() and _defer_on()
+            except Exception:
+                _co_active = False
+            parked_ids = _parked_ticket_ids() if _co_active else set()
+            due_ids = _due_ticket_ids() if _co_active else set()
+
             # Fresh tickets waiting for the AI assistant. Fetch a wider window
             # then drop paused tickets BEFORE capping, so a handful of held
             # tickets can't starve the rest of the queue.
@@ -1494,9 +1579,19 @@ def poll_for_tickets():
             # Auto/monitor tickets (link flap/outage etc.) are normally owned by
             # the scheduler's lifecycle, but a HUMAN reply on one (e.g. the
             # owner resolves the issue and says "close") must be honored — treat
-            # it like any customer ticket.
+            # it like any customer ticket. Parked (off-peak-deferred) tickets
+            # are excluded here and re-added only once their window arrives.
             tickets = [t for t in tickets if not is_paused(t)
+                       and t.ticket_id not in parked_ids
                        and (t.source != "auto" or _count_user_notes(t) > 0)][:5]
+
+            # Re-add parked tickets whose off-peak window has arrived.
+            for _tid in sorted(due_ids):
+                _t = db.query(Ticket).filter(
+                    Ticket.ticket_id == _tid, Ticket.status == "open").first()
+                if _t and not is_paused(_t):
+                    tickets.append(_t)
+                _dequeue_ticket(_tid)
 
             # Tickets with new customer replies (feedback loop)
             re_process = (

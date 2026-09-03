@@ -124,6 +124,38 @@ class ApplyUpdatesParamsTest(unittest.TestCase):
         self.assertTrue(validate_params("check_updates", {})[0])
 
 
+class WindowsActionsParamsTest(unittest.TestCase):
+    """F8 — windows_diag (read-only) + windows_cleanup (safe, no uninstalls)."""
+
+    def test_windows_diag_needs_no_params(self):
+        self.assertTrue(validate_params("windows_diag", {})[0])
+
+    def test_windows_cleanup_accepts_offender_list(self):
+        self.assertTrue(validate_params("windows_cleanup", {})[0])
+        self.assertTrue(validate_params(
+            "windows_cleanup", {"offenders": ["Adobe CollabSync", "Copilot"]})[0])
+
+    def test_windows_cleanup_rejects_non_list(self):
+        ok, msg = validate_params("windows_cleanup", {"offenders": "Copilot"})
+        self.assertFalse(ok)
+        self.assertIn("must be a list", msg)
+
+    def test_windows_cleanup_rejects_non_string_entries(self):
+        ok, msg = validate_params("windows_cleanup", {"offenders": ["Copilot", 7]})
+        self.assertFalse(ok)
+        self.assertIn("non-empty strings", msg)
+
+    def test_windows_channels_require_ssh(self):
+        self.assertTrue(validate_channels("windows_diag", "server",
+                                          [CHANNEL_SSH, CHANNEL_MONITOR])[0])
+        self.assertFalse(validate_channels("windows_diag", "server",
+                                           [CHANNEL_MONITOR])[0])
+        self.assertTrue(validate_channels("windows_cleanup", "server",
+                                          [CHANNEL_SSH])[0])
+        self.assertFalse(validate_channels("windows_cleanup", "server",
+                                           [CHANNEL_AGENT, CHANNEL_MONITOR])[0])
+
+
 class FingerprintSuggestionTest(unittest.TestCase):
     def test_switch_ranks_vendor_api_over_insecure_snmp(self):
         r = suggest_from_fingerprint({

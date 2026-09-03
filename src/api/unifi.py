@@ -11,10 +11,13 @@ consoles serve self-signed certs. All network calls are wrapped so a dead or
 unreachable controller degrades to a logged warning instead of an exception.
 """
 
+import hashlib
 import http.cookiejar
 import json
 import logging
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -24,6 +27,29 @@ logger = logging.getLogger("barenoc-unifi")
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode = ssl.CERT_NONE
+
+# Cookies that mark an authenticated controller session. UniFi OS consoles set
+# TOKEN; legacy Network controllers set unifises (some builds use UISESSIONID).
+_SESSION_COOKIE_NAMES = ("TOKEN", "unifises", "UISESSIONID")
+
+# A cached session is trusted for this long before we re-authenticate. UniFi OS
+# sessions outlive this window, but the conservative cap means a controller
+# that has restarted (dropping the session) is re-logged-in promptly.
+_SESSION_MAX_AGE_SECONDS = 23 * 3600
+
+# Exponential backoff schedule (seconds). Repeated logins are what trip the
+# controller's login throttle (B4 lockout), so every retry waits longer before
+# trying again instead of hammering the controller.
+_BACKOFF_SCHEDULE = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+_LOGIN_MAX_ATTEMPTS = 5        # total login POSTs, including the first
+_REQUEST_MAX_ATTEMPTS = 4      # total data-request attempts, incl. the first
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Backoff sleep for a 1-based attempt number."""
+    idx = min(max(attempt - 1, 0), len(_BACKOFF_SCHEDULE) - 1)
+    return _BACKOFF_SCHEDULE[idx]
 
 
 def device_live_ip(d: dict) -> str:
@@ -48,6 +74,47 @@ def _num(v):
         return None
 
 
+class _Session:
+    """Shared controller session state (cookie jar + CSRF token + login time).
+
+    Password-authenticated UniFiClients that target the same controller share
+    one _Session, so repeated calls reuse the existing login instead of
+    re-authenticating per call (which trips the controller's login throttle).
+    The RLock serializes login attempts across threads: concurrent callers
+    wait, then see the just-established session and reuse it.
+    """
+    __slots__ = ("jar", "csrf_token", "logged_in_at", "lock")
+
+    def __init__(self):
+        self.jar = http.cookiejar.CookieJar()
+        self.csrf_token: Optional[str] = None
+        self.logged_in_at = 0.0
+        self.lock = threading.RLock()
+
+
+def _session_key(base_url: str, username: str, password: str,
+                 api_key: Optional[str], site: str) -> tuple:
+    """Cache key for one controller + credential set. The password is hashed
+    so a settings change (new password/API key) naturally starts a fresh
+    session instead of reusing a stale one."""
+    digest = hashlib.sha256((password or "").encode("utf-8")).hexdigest()
+    return (base_url.rstrip("/"), username or "", digest, api_key or "",
+            site or "default")
+
+
+_SESSION_CACHE: dict = {}
+_SESSION_CACHE_LOCK = threading.Lock()
+
+
+def _get_session(key: tuple) -> "_Session":
+    with _SESSION_CACHE_LOCK:
+        sess = _SESSION_CACHE.get(key)
+        if sess is None:
+            sess = _Session()
+            _SESSION_CACHE[key] = sess
+        return sess
+
+
 class UniFiClient:
     """Client for the UniFi Controller REST API (legacy + UniFi OS)."""
 
@@ -61,20 +128,35 @@ class UniFiClient:
         self.api_key = api_key or None   # UniFi OS local API key (Method A)
         self.site = site
         self.timeout = timeout
-        # Cookie jar persists whatever session the server sets — TOKEN on
-        # UniFi OS, unifises on legacy controllers. No hardcoding needed.
-        self._jar = http.cookiejar.CookieJar()
-        self._csrf_token: Optional[str] = None
         self.last_error: Optional[str] = None  # human-readable reason for the last failure
+        if self.api_key:
+            # Local API key is stateless — no session to share or cache.
+            self._session = _Session()
+        else:
+            # Password auth shares one session per controller+creds, so the
+            # scheduler, link monitor, telemetry and every route handler reuse
+            # a single login instead of each POSTing /api/auth/login.
+            self._session = _get_session(
+                _session_key(self.base_url, self.username, self.password,
+                             self.api_key, self.site))
 
     def _request(self, method: str, path: str,
                  data: Optional[dict] = None,
-                 headers: Optional[dict] = None) -> Optional[dict]:
-        """Make an HTTP request to the controller. Returns parsed JSON or None."""
+                 headers: Optional[dict] = None,
+                 _attempt: int = 1,
+                 _retry: bool = True,
+                 _relogin: bool = True) -> Optional[dict]:
+        """Make an HTTP request to the controller. Returns parsed JSON or None.
+
+        Retries HTTP 429 (the login/rate-limit throttle) and — for safe GET
+        reads — transient connection errors, with exponential backoff so a
+        throttled controller is never hammered. On 401/403 (session expired or
+        revoked) it re-authenticates ONCE and retries.
+        """
         url = f"{self.base_url}{path}"
         req_headers = {"Content-Type": "application/json"}
-        if self._csrf_token:
-            req_headers["X-CSRF-Token"] = self._csrf_token
+        if self._session.csrf_token:
+            req_headers["X-CSRF-Token"] = self._session.csrf_token
         if self.api_key:
             # UniFi OS local API key — stateless, no session needed
             req_headers["X-API-KEY"] = self.api_key
@@ -84,11 +166,15 @@ class UniFiClient:
         body = json.dumps(data).encode() if data is not None else None
         opener = urllib.request.build_opener(
             urllib.request.HTTPSHandler(context=SSL_CTX),
-            urllib.request.HTTPCookieProcessor(self._jar))
+            urllib.request.HTTPCookieProcessor(self._session.jar))
         req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
 
         try:
-            resp = opener.open(req, timeout=self.timeout)
+            # Serialize the cookie-processing part of the call — the shared
+            # CookieJar is mutated by HTTPCookieProcessor inside open(), so
+            # concurrent threads must not race it.
+            with self._session.lock:
+                resp = opener.open(req, timeout=self.timeout)
             payload = resp.read().decode()
             self._capture_csrf(resp.headers)
             self.last_error = None
@@ -102,44 +188,146 @@ class UniFiClient:
             except Exception:
                 pass
             self.last_error = f"HTTP {e.code} {e.reason} {detail}".strip()
+            # Rate-limited (login throttle / 429): back off and retry instead
+            # of extending the lockout with more immediate calls.
+            if _retry and e.code == 429 and _attempt < _REQUEST_MAX_ATTEMPTS:
+                delay = _backoff_delay(_attempt)
+                logger.warning(
+                    f"UniFi rate-limited (HTTP 429) on {method} {path} — "
+                    f"retrying in {delay:.1f}s (attempt {_attempt})")
+                time.sleep(delay)
+                return self._request(method, path, data, headers,
+                                     _attempt=_attempt + 1, _retry=_retry,
+                                     _relogin=_relogin)
+            # Session expired / revoked: re-authenticate once and retry.
+            if (_relogin and e.code in (401, 403) and not self.api_key
+                    and self._had_session()):
+                self._invalidate_session()
+                if self.login():
+                    return self._request(method, path, data, headers,
+                                         _attempt=1, _retry=_retry,
+                                         _relogin=False)
             logger.warning(f"UniFi API error: {self.last_error}")
             return None
         except Exception as e:
             self.last_error = str(e)
+            # Retry connection errors only for idempotent reads — a write may
+            # have reached the controller before the connection dropped.
+            if _retry and method == "GET" and _attempt < _REQUEST_MAX_ATTEMPTS:
+                delay = _backoff_delay(_attempt)
+                logger.warning(
+                    f"UniFi connection error on {method} {path} — "
+                    f"retrying in {delay:.1f}s (attempt {_attempt})")
+                time.sleep(delay)
+                return self._request(method, path, data, headers,
+                                     _attempt=_attempt + 1, _retry=_retry,
+                                     _relogin=_relogin)
             logger.warning(f"UniFi connection failed: {e}")
             return None
 
     def _capture_csrf(self, headers) -> None:
         token = headers.get("X-CSRF-Token") if headers else None
         if token:
-            self._csrf_token = token
+            self._session.csrf_token = token
+
+    def _had_session(self) -> bool:
+        """True when the shared cookie jar already holds a session cookie."""
+        try:
+            return any(c.name in _SESSION_COOKIE_NAMES
+                       for c in self._session.jar)
+        except Exception:
+            return False
+
+    def _session_active(self) -> bool:
+        """True when the cached session is still usable (cookie present,
+        not expired, and not older than the reuse window)."""
+        s = self._session
+        if not s.logged_in_at:
+            return False
+        if time.time() - s.logged_in_at > _SESSION_MAX_AGE_SECONDS:
+            return False
+        try:
+            for c in s.jar:
+                if c.name in _SESSION_COOKIE_NAMES and not c.is_expired():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _invalidate_session(self) -> None:
+        with self._session.lock:
+            self._session.jar.clear()
+            self._session.csrf_token = None
+            self._session.logged_in_at = 0.0
+
+    def _mark_logged_in(self) -> None:
+        self._session.logged_in_at = time.time()
+
+    def _note_csrf(self, result) -> None:
+        """Some UniFi OS builds return the CSRF token only in the login body
+        (``csrfToken``) rather than the response header. Capture either so the
+        shared session keeps a usable token for subsequent requests."""
+        if isinstance(result, dict) and result.get("csrfToken"):
+            self._session.csrf_token = result["csrfToken"]
+
+    def _sleep_backoff(self, attempt: int, why: str) -> None:
+        delay = _backoff_delay(attempt)
+        logger.warning(f"{why} — retrying in {delay:.1f}s (attempt {attempt})")
+        time.sleep(delay)
 
     # ── auth ──────────────────────────────────────────────────────
 
     def login(self) -> bool:
-        """Authenticate. With a local API key there is nothing to do — the
-        key rides on every request. Otherwise: UniFi OS 4.x uses
-        /api/auth/login (the legacy /api/login is disabled on UCG/UDM);
-        older controllers use /api/login. Returns True on success, sets
-        self.last_error on failure."""
+        """Authenticate (or reuse an existing session). With a local API key
+        there is nothing to do — the key rides on every request. Otherwise:
+        UniFi OS 4.x uses /api/auth/login (the legacy /api/login is disabled
+        on UCG/UDM); older controllers use /api/login. Returns True on
+        success, sets self.last_error on failure.
+
+        Session reuse + backoff (B4): the login is performed at most once per
+        controller session — subsequent calls reuse the cached cookie jar —
+        and retries are spaced with exponential backoff so a throttled
+        controller is never hammered into a longer lockout.
+        """
         if self.api_key:
             logger.info("UniFi auth: local API key (no session login)")
             return True
+        with self._session.lock:
+            if self._session_active():
+                logger.debug("UniFi session reuse — reusing existing login")
+                self.last_error = None
+                return True
+            return self._login_locked()
+
+    def _login_locked(self) -> bool:
+        """Perform the credential login. Caller must hold self._session.lock."""
         body = {"username": self.username, "password": self.password}
-        # UniFi OS (UCG/UDM/UXG): returns a user object with unique_id, sets a
-        # TOKEN cookie + x-csrf-token response header
-        result = self._request("POST", "/api/auth/login", body)
-        if result is not None and (
-            "unique_id" in result or result.get("meta", {}).get("rc") == "ok"
-        ):
-            logger.info("UniFi login successful (UniFi OS /api/auth/login)")
-            return True
-        # Legacy controllers: {"meta": {"rc": "ok"}}
-        result = self._request("POST", "/api/login", body)
-        if result is not None and result.get("meta", {}).get("rc") == "ok":
-            logger.info("UniFi login successful (legacy /api/login)")
-            return True
-        logger.warning("UniFi login failed")
+        last = "unknown"
+        for attempt in range(1, _LOGIN_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                self._sleep_backoff(attempt - 1, "UniFi login failed")
+            # UniFi OS (UCG/UDM/UXG): returns a user object with unique_id,
+            # sets a TOKEN cookie + x-csrf-token response header
+            result = self._request("POST", "/api/auth/login", body,
+                                   _retry=False, _relogin=False)
+            if result is not None and (
+                "unique_id" in result or result.get("meta", {}).get("rc") == "ok"
+            ):
+                self._note_csrf(result)
+                self._mark_logged_in()
+                logger.info("UniFi login successful (UniFi OS /api/auth/login)")
+                return True
+            # Legacy controllers: {"meta": {"rc": "ok"}}
+            result = self._request("POST", "/api/login", body,
+                                   _retry=False, _relogin=False)
+            if result is not None and result.get("meta", {}).get("rc") == "ok":
+                self._note_csrf(result)
+                self._mark_logged_in()
+                logger.info("UniFi login successful (legacy /api/login)")
+                return True
+            last = self.last_error or "unknown"
+        self.last_error = last
+        logger.warning(f"UniFi login failed after {_LOGIN_MAX_ATTEMPTS} attempts: {last}")
         return False
 
     def _stat(self, endpoint: str) -> Optional[dict]:

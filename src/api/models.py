@@ -153,6 +153,12 @@ class Device(Base):
     agent_version = Column(String(64), nullable=True)      # e.g. "0.1.0-p1a"
     agent_capabilities = Column(Text, nullable=True)       # JSON array of capability names
     facts_json = Column(Text, nullable=True)               # last-reported host facts as JSON
+    # F8 — per-device Windows PC health/cleanup schedule (JSON). Shape:
+    #   {"health": "off"|"daily"|"weekly", "health_hour": 3, "health_day": 0,
+    #    "cleanup": "off"|"on_request"|"low_usage", "cleanup_hour": 3,
+    #    "cleanup_window_start": 2, "cleanup_window_end": 5,
+    #    "last_health_run": period key, "last_cleanup_run": period key}
+    windows_health_schedule = Column(JSON, default=dict)
     adoption_status = Column(String(16), default="none")  # none | enrolling | linked | revoked
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # tenant who adopted it (tenant view = own devices only)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)

@@ -138,6 +138,12 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
     elif action == "apply_patch":
         target = "switch-01"
         params, reason = {"patch_id": "FW-6.6.55"}, "Applying approved patch"
+    elif action == "windows_diag":
+        target = "dads-pc"
+        params, reason = {}, "Running the Windows PC health report"
+    elif action == "windows_cleanup":
+        target = "dads-pc"
+        params, reason = {}, "Running the safe Windows cleanup (autostart offenders + temp/recycle)"
 
     return LLMResponse(
         action=action, target=target, params=params, reason=reason,
@@ -178,4 +184,5 @@ def call_executor(ticket_text: str, priority: str,
         model_tier="chat",   # executor = fast model; judgment already done
         max_tokens=800,
         temperature=0.1,
+        task_class="ticket_executor",
     )

@@ -150,3 +150,22 @@ def update_config(
     except Exception as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cost-optimization")
+def cost_optimization_status(user: User = Depends(require_role("admin"))):
+    """Read-only F6 status: rate windows, tier map, and the local-vs-cloud
+    cost counter (the proof the savings KPI rides). Never raises — every
+    source is best-effort and falls back to safe defaults."""
+    out = {"enabled": False}
+    try:
+        from ratewindows import current_state, cost_optimization_enabled
+        from tierrouter import cost_summary, all_classes, ensure_tier_map
+        out["enabled"] = cost_optimization_enabled()
+        ensure_tier_map()          # seed the editable tier_map.json if absent
+        out["rate"] = current_state()   # seeds rate_windows.json if absent
+        out["classes"] = all_classes()
+        out["cost"] = cost_summary()
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out

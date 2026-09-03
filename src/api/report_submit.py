@@ -8,6 +8,13 @@ The forum URL + shared token live in Settings → Support. The token is stored
 Payload shape (what test_report_submit.py asserts):
     { comment, version, reporter, display_name, bundle, bundle_filename,
       appliance, flagged }
+
+Response contract (the other half of the fix): the forum-submit edge function
+must store the bundle under the thread id in the `session-logs` bucket and
+confirm it in the 201 response (`bundle_path`, `bundle_url`, or
+`attachment_id`). When a bundle was sent but the response carries no such
+confirmation, the edge's storage step silently failed — and this client
+refuses to report success (raises RuntimeError so the route surfaces a 502).
 """
 
 import json
@@ -39,6 +46,23 @@ def load_forum_submit_config() -> dict:
     url = (cfg.get("url") or "").strip() or env.get("FORUM_SUBMIT_URL", "").strip() \
         or FORUM_SUBMIT_URL_DEFAULT
     return {"url": url, "token": (cfg.get("token") or "").strip()}
+
+
+def _bundle_confirmed(result) -> bool:
+    """True when a forum-submit response confirms the bundle was persisted.
+
+    The edge must return a `bundle_path` (the session-logs object path, e.g.
+    `session-logs/<thread_id>/barenoc-support.md`) or a `bundle_url`/
+    `attachment_id` once the object is safely stored. A response that only
+    carries the thread id is the silent-loss signature this client refuses to
+    accept.
+    """
+    if not isinstance(result, dict):
+        return False
+    for key in ("bundle_path", "bundle_url", "attachment_id"):
+        if str(result.get(key) or "").strip():
+            return True
+    return bool(result.get("bundle_stored"))
 
 
 def build_payload(comment: str, user, bundle: str = "", bundle_filename: str = "",
@@ -85,6 +109,12 @@ def submit_report(comment: str, user, bundle: str = "", bundle_filename: str = "
         note = body.get("note") or f"HTTP {resp.status_code}"
         raise RuntimeError(f"forum-submit rejected the report: {note}")
     try:
-        return resp.json()
+        data = resp.json()
     except Exception as e:
         raise RuntimeError(f"forum-submit returned a non-JSON response: {e}") from e
+    if bundle and not _bundle_confirmed(data):
+        raise RuntimeError(
+            "forum-submit created the thread but did not confirm the support "
+            "bundle was stored (missing bundle_path/bundle_url/attachment_id). "
+            "The diagnostic bundle may be lost — not reporting success.")
+    return data

@@ -41,6 +41,21 @@ _SOURCE_LABELS = {
 }
 
 
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte count (B/KB/MB/GB) for the cleanup report."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1024:
+        return f"{n} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        n /= 1024.0
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} TB"
+
+
 def _result_detail_text(result) -> str:
     """Human-readable text for a successful job's output (raw_output → pi
     reports / script stdout; JSON dicts get pretty-printed)."""
@@ -200,6 +215,84 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append("  ⚠ failed: " + ", ".join(str(f) for f in failed))
         if out.get("reboot_needed"):
             lines.append("  🔁 A reboot is needed to finish — I won't reboot it myself; you decide when.")
+    elif action == "windows_diag":
+        host = out.get("hostname") or "the PC"
+        os_name = out.get("os") or "Windows"
+        lines.append(f"Windows health report for {host} ({os_name}):")
+        vols = out.get("volumes") or []
+        for v in vols:
+            flag = " ⚠ LOW DISK" if v.get("disk_full") else ""
+            lines.append(f"  • drive {v.get('device','?')} — {v.get('size_gb','?')} GB total, "
+                         f"{v.get('free_gb','?')} GB free ({v.get('free_pct','?')}%){flag}")
+        cpu = out.get("top_cpu") or []
+        if cpu:
+            parts = ", ".join(f"{c.get('name','?')} ({c.get('cpu_s','?')}s)" for c in cpu[:5])
+            lines.append(f"  top CPU: {parts}")
+        ram = out.get("top_ram") or []
+        if ram:
+            parts = ", ".join(f"{r.get('name','?')} ({r.get('ram_mb','?')} MB)" for r in ram[:5])
+            lines.append(f"  top RAM: {parts}")
+        startup = out.get("startup_items") or []
+        if startup:
+            names = ", ".join(str(s.get("name", "?")) for s in startup[:12])
+            lines.append(f"  startup items ({len(startup)}): {names}")
+        df = out.get("defender") or {}
+        if df.get("available"):
+            rt = "ON" if df.get("real_time_enabled") else "OFF"
+            age = df.get("signature_age_days")
+            age_txt = f"{int(age)}d old" if age is not None else "age unknown"
+            ver = df.get("signature_version") or ""
+            lines.append(f"  Defender: real-time {rt}, signatures {age_txt}"
+                         + (f" (v{ver})" if ver else ""))
+        else:
+            lines.append("  Defender: status unavailable (needs an elevated session)")
+        events = out.get("recent_events") or []
+        lines.append(f"  events (7d, critical/error): {out.get('recent_events_count', len(events))}")
+        for e in events[:6]:
+            msg = (str(e.get("message") or "")[:100]).strip()
+            lines.append(f"    • {e.get('time','?')} [{e.get('level','?')}] "
+                         f"{e.get('provider','?')} ({e.get('id','?')})"
+                         + (f" — {msg}" if msg else ""))
+        boot = out.get("boot") or {}
+        if boot.get("last_boot_time"):
+            up = boot.get("uptime_days")
+            up_txt = f" (up {up}d)" if up is not None else ""
+            lines.append(f"  last boot: {boot['last_boot_time']}{up_txt}")
+        smart = out.get("smart") or {}
+        if smart.get("available"):
+            for d in smart.get("disks") or []:
+                bits = [f"{d.get('device') or d.get('friendly_name') or '?'} — {d.get('health','?')}"]
+                if d.get("temperature_c") is not None:
+                    bits.append(f"{d['temperature_c']}°C")
+                if d.get("wear") is not None:
+                    bits.append(f"wear {d['wear']}%")
+                if d.get("power_on_hours") is not None:
+                    bits.append(f"{d['power_on_hours']}h on")
+                lines.append("  SMART: " + ", ".join(bits))
+        elif smart.get("disks"):
+            for d in smart.get("disks"):
+                lines.append(f"  SMART: {d.get('device') or d.get('friendly_name') or '?'} — "
+                             f"{d.get('health','?')} (counters unavailable)")
+    elif action == "windows_cleanup":
+        host = out.get("hostname") or "the PC"
+        rec = out.get("bytes_recovered") or 0
+        lines.append(f"Cleaned {host}: recovered {_fmt_bytes(rec)} (temp + recycle bin).")
+        stopped = out.get("processes_stopped") or []
+        if stopped:
+            lines.append(f"  stopped processes: {', '.join(stopped)}")
+        removed = out.get("autostart_removed") or []
+        if removed:
+            lines.append(f"  removed autostart entries ({len(removed)}): "
+                         + ", ".join(str(r).split(':')[-1] for r in removed[:8]))
+        before = out.get("before_bytes")
+        if before is not None:
+            after = int(out.get('temp_after_bytes', 0)) + int(out.get('recycle_after_bytes', 0))
+            lines.append(f"  before: {_fmt_bytes(int(before))} — after: {_fmt_bytes(after)}")
+        locked = out.get("temp_locked_files") or []
+        if locked:
+            lines.append(f"  ⚠ {len(locked)} temp file(s) in use and left in place")
+        if not stopped and not removed and not rec:
+            lines.append("  nothing to clean — no offenders matched and temp/recycle were already empty")
     elif action == "batch":
         res = out.get("results") or []
         total = out.get("total", len(res))

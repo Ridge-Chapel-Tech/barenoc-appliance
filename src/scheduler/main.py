@@ -486,6 +486,119 @@ def check_netopt_schedule(token: str, last_triggered: dict):
     _queue_netopt(token, key, last_triggered, complete=False)
 
 
+def _win_sched_int(sched: dict, key: str, default: int) -> int:
+    try:
+        return int(sched.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _win_period_key(mode: str, now: datetime.datetime) -> str:
+    """Dedup period key: local date for daily/low_usage, ISO week for weekly."""
+    if mode == "weekly":
+        iso = now.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    return now.strftime("%Y-%m-%d")
+
+
+def _queue_windows_run(token: str, dev: dict, kind: str, key: str,
+                       last_triggered: dict, action: str, params: dict):
+    """Create the source=auto report ticket (owned by the device owner),
+    enqueue the windows_diag/windows_cleanup job, and mark the period run
+    server-side so it never re-fires within the same period."""
+    dev_id = dev["id"]
+    guard_key = f"win{kind}-{dev_id}-{key}"
+    if last_triggered.get(guard_key):
+        return
+    try:
+        r = _api_post_json(f"/devices/{dev_id}/windows-health-ticket",
+                           {"kind": kind}, token)
+        ticket_id = r.get("ticket_id") or ""
+    except Exception as e:
+        logger.warning(f"windows {kind} ticket create failed for device {dev_id}: {e}")
+        return
+    if not ticket_id:
+        return
+
+    job = {
+        "ticket_id": ticket_id,
+        "action": action,
+        "target": dev.get("ip_address") or dev.get("name"),
+        "params": params,
+        "reason": f"Scheduled Windows {kind} for {dev.get('name')}",
+        "confidence": 1.0,
+        "created_at": datetime.datetime.utcnow().isoformat(),
+        "source": "scheduler",
+    }
+    job_path = f"/opt/barenoc/jobs/incoming/win{kind}-{dev_id}-{int(time.time())}.json"
+    try:
+        with open(job_path, "w") as f:
+            json.dump(job, f, indent=2)
+    except Exception as e:
+        logger.warning(f"windows {kind} job write failed for device {dev_id}: {e}")
+        return
+
+    # Mark the period run so it never re-fires this period (survives restart).
+    field = "health" if kind == "health" else "cleanup"
+    try:
+        _api_patch(f"/devices/{dev_id}/windows-schedule/mark-run",
+                   {field: key}, token)
+    except Exception as e:
+        logger.warning(f"windows {kind} mark-run failed for device {dev_id}: {e}")
+    last_triggered[guard_key] = True
+    logger.info(f"Queued Windows {kind} for {dev.get('name')} ({ticket_id})")
+
+
+def check_windows_health_schedule(token: str, last_triggered: dict):
+    """F8 — per-device Windows health/cleanup schedule.
+
+    Health: daily/weekly at a local hour (health_hour, weekly health_day).
+    Cleanup: low_usage = daily within a local hour window
+    (cleanup_window_start..end); on_request is never scheduled (the chat
+    action covers it). Each due run creates a source=auto ticket owned by the
+    device's owner, enqueues the job, and marks the period run."""
+    try:
+        devices = _api_get("/devices?limit=500", token)
+    except Exception as e:
+        logger.debug(f"windows health schedule device read failed: {e}")
+        return
+
+    tz = _appliance_tz()
+    now = _local_now(tz)
+    today = now.strftime("%Y-%m-%d")
+    sun0 = (now.weekday() + 1) % 7
+
+    for dev in devices.get("devices", []):
+        sched = dev.get("windows_health_schedule") or {}
+        if not isinstance(sched, dict):
+            continue
+        # Only SSH-controlled devices can run the PowerShell pass.
+        if not dev.get("ssh_configured"):
+            continue
+
+        hmode = str(sched.get("health") or "off").lower()
+        if hmode in ("daily", "weekly"):
+            due = now.hour >= _win_sched_int(sched, "health_hour", 3)
+            if hmode == "weekly":
+                due = due and sun0 == _win_sched_int(sched, "health_day", 0)
+            hkey = _win_period_key(hmode, now)
+            if due and sched.get("last_health_run") != hkey:
+                _queue_windows_run(token, dev, "health", hkey, last_triggered,
+                                   "windows_diag", {})
+
+        cmode = str(sched.get("cleanup") or "off").lower()
+        if cmode == "low_usage":
+            start = _win_sched_int(sched, "cleanup_window_start", 2)
+            end = _win_sched_int(sched, "cleanup_window_end", 5)
+            if start <= end:
+                in_window = start <= now.hour <= end
+            else:
+                in_window = now.hour >= start or now.hour <= end  # overnight
+            if in_window and sched.get("last_cleanup_run") != today:
+                _queue_windows_run(token, dev, "cleanup", today, last_triggered,
+                                   "windows_cleanup", {})
+
+
 def _service_check_config() -> tuple:
     """Service-check poll settings from .env. Returns (enabled, interval_min).
     The api container owns the check engine — the scheduler only triggers the
@@ -845,6 +958,7 @@ def run():
     last_service_checks = 0
     last_revoke_integrity = 0
     last_prune = 0
+    last_windows_sched = 0
     _last_triggered = {}
 
     while True:
@@ -903,6 +1017,11 @@ def run():
             if now - last_netopt >= 60:
                 check_netopt_schedule(token, _last_triggered)
                 last_netopt = now
+
+            # Windows PC health/cleanup schedule (F8) — checked every 60s.
+            if now - last_windows_sched >= 60:
+                check_windows_health_schedule(token, _last_triggered)
+                last_windows_sched = now
 
             # Service checks (ping/TCP/HTTP monitors → tickets) — the api
             # container owns the engine; this pass just triggers it on the

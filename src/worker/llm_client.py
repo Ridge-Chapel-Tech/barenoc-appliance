@@ -13,6 +13,15 @@ from llm_providers import (
     judge_model_name,
 )
 
+# F6 cost optimization — rate-window + tier-routing lanes. Imported defensively
+# so the module still works in a context without the two new files.
+try:
+    from ratewindows import cost_optimization_enabled as _cost_opt_enabled
+    import tierrouter as _tierrouter
+except Exception:  # pragma: no cover - only when the modules are absent
+    _cost_opt_enabled = None
+    _tierrouter = None
+
 
 SYSTEM_PROMPT = """You are BareNOC, a network operations assistant for SMB infrastructure.
 Your ONLY allowed actions are:
@@ -44,6 +53,8 @@ Your ONLY allowed actions are:
  26. enroll_device - WRITE: adopt a Linux device with a certificate from the internal CA (SSH transport; installs step-cli + a short-lived cert + auto-renewal, then the device links itself over mTLS). Target = the device (IP/name). Use for "adopt the camera" / "enroll this server" / "give the NAS a certificate".
  27. system_time - Read-only: report the appliance's current local time and timezone (no target needed). Use for "what time is it" / "what timezone is this appliance set to".
  28. ticket_status - Read-only: look up a ticket's live status by its TKT-… id (params: {"ticket_id": "TKT-YYYYMMDD-NNNN"}). Use when the user asks about a specific ticket ("status on TKT-…", "where's TKT-… at", "is TKT-… done?"). No target needed.
+ 29. windows_diag - Read-only: run a Windows PC health report over SSH (disk/volumes + disk-full, top CPU + RAM processes, startup items, Defender real-time status + signature age, recent 7-day critical/error events, boot times, SMART counters where available). Target = the Windows PC (name/IP). Use for "check my PC's health", "why is dad's PC slow", "is the disk full", "run a health check on dads-pc".
+ 30. windows_cleanup - Safe cleanup on a Windows PC over SSH: stop + remove autostart for known offenders (configurable list — default Adobe CollabSync + Copilot), clear TEMP + empty the recycle bin, and report bytes recovered. NEVER uninstalls software or touches partitions. Target = the Windows PC. Optional params: {"offenders": ["name", ...]}. Use for "clean up my PC", "free up disk space on dads-pc", "stop Copilot/CollabSync autostart".
 
 You are Lily, the BareNOC network operations assistant. Read the ticket, judge whether the request is legal and doable
 with the allowed actions. If it is NOT legal/doable or needs a human decision, use
@@ -232,6 +243,11 @@ def call_llm(
     max_tokens: int = 150,
     temperature: float = 0.1,
     extra_context: Optional[str] = None,
+    # F6: the tier-map class this call belongs to (ticket_judge /
+    # ticket_technician / ticket_executor / ticket_title). When provided and
+    # cost optimization is enabled, bulk/cheap classes route to the local tier
+    # and every real call is metered local-vs-cloud.
+    task_class: Optional[str] = None,
 ) -> Optional[LLMResponse]:
     """
     Call the LLM provider chain (primary → secondary → tertiary) with ticket
@@ -266,6 +282,37 @@ def call_llm(
     # on-prem endpoint -> mock
     if all(not p.get("api_key") and p.get("deployment") != "on_prem" for p in chain):
         return _mock_llm_call(ticket_text, priority)
+
+    # F6 cost optimization: route bulk/cheap classes to the local tier (the
+    # M7 Ollama box) and meter every real call local-vs-cloud. Judgment +
+    # customer-visible classes stay cloud (the tier_map defaults). When the
+    # local box is unreachable, route() already downgraded to cloud, so a
+    # local preference here only happens on a healthy box.
+    route = None
+    prefer_local = False
+    if task_class and _cost_opt_enabled is not None and _tierrouter is not None \
+            and _cost_opt_enabled():
+        try:
+            route = _tierrouter.route(task_class)
+            prefer_local = bool(route and route.get("tier") == "local")
+        except Exception:
+            route = None
+            prefer_local = False
+    if prefer_local:
+        local_prov = _tierrouter.local_provider()
+        if local_prov:
+            local_model = (route.get("local_model") or "").strip() \
+                or local_prov.get("chat_model") or ""
+            local_entry = dict(local_prov)
+            if local_model:
+                local_entry["chat_model"] = local_model
+                local_entry["reasoner_model"] = local_model
+                local_entry["judge_model"] = local_model
+            # Local first; the rest of the cloud chain stays as the graceful
+            # fallback if the local box fails mid-call.
+            chain = [local_entry] + [p for p in chain if p["name"] != local_entry["name"]]
+        else:
+            prefer_local = False
 
     prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
     messages = [
@@ -347,6 +394,19 @@ def call_llm(
             cost = (prompt_tokens / 1_000_000 * inp) + (response_tokens / 1_000_000 * out)
 
             _note_provider_ok(name)
+            # F6: meter the actual tier used (local if the answering provider
+            # is on-prem, else cloud). The local-down fallback (routed local,
+            # answered cloud) is flagged for the savings KPI.
+            if task_class and _cost_opt_enabled is not None and _tierrouter is not None \
+                    and _cost_opt_enabled():
+                try:
+                    used_tier = "local" if (provider.get("deployment") or "hosted").lower() == "on_prem" \
+                        else "cloud"
+                    _tierrouter.record_call(
+                        used_tier, task_class,
+                        local_fallback=bool(prefer_local and used_tier == "cloud"))
+                except Exception:
+                    pass
             return LLMResponse(
                 action=parsed.get("action", "escalate_human"),
                 target=parsed.get("target", ""),
@@ -407,6 +467,42 @@ _TITLE_LEAD_WRAP_RE = re.compile(r"^[\s`*#_>\"'“”‘’\-–—]+")
 _TITLE_TAIL_WRAP_RE = re.compile(r"[\s`*#_\"'“”‘’]+$")
 _TITLE_TAIL_PUNCT_RE = re.compile(r"[\s`*#_\"'“”‘’.,;:]+$")
 
+# A reply that merely RESTATES the title-gen instruction instead of producing
+# the title is the model echoing the system prompt (the 09-02 leaked-title
+# report: "We need to generate a title for a support ticket. The request: …",
+# "We need to output a title of at most 8 words for the customer request: …").
+# Detect and reject it so the caller's first-sentence heuristic fires rather
+# than storing the prompt text as the ticket title.
+_TITLE_ECHO_ACTION_RE = re.compile(
+    r"\b(generate|output|write|create|make|produce)\s+(?:a|an|the)?\s*title\b",
+    re.IGNORECASE,
+)
+_TITLE_ECHO_MARKERS = (
+    "title for a support ticket",
+    "title for the support ticket",
+    "title of at most",
+    "concise title",
+    "at most 8 words",
+    "at most eight words",
+    "customer request",
+    "customer's request",
+    "the request",
+    "no preamble",
+    "no quotes",
+    "trailing period",
+    "reply with only",
+    "network operations help desk",
+)
+
+
+def _looks_like_title_echo(t: str) -> bool:
+    """True when a cleaned title reply is just a restatement of the title-gen
+    instruction (an echo of the system prompt), not an actual title."""
+    low = (t or "").lower()
+    if _TITLE_ECHO_ACTION_RE.search(low):
+        return True
+    return any(m in low for m in _TITLE_ECHO_MARKERS)
+
 
 def _clean_title(raw: str, max_chars: int = 80) -> "Optional[str]":
     """Reduce a raw LLM title reply to a short single-line ticket title.
@@ -448,6 +544,12 @@ def _clean_title(raw: str, max_chars: int = 80) -> "Optional[str]":
     # 4. Trim trailing punctuation/emphasis left on the final value.
     t = _TITLE_TAIL_PUNCT_RE.sub("", t)
     if not t:
+        return None
+
+    # 4b. Reject instruction echoes and multi-sentence restatements: a reply
+    #     that repeats the title-gen task (or is still a full sentence) is the
+    #     model narrating, not a title — fall through to the heuristic.
+    if _looks_like_title_echo(t) or re.search(r"[.!?]\s+\S", t):
         return None
 
     # 5. Enforce the max length on a word boundary.
@@ -504,6 +606,17 @@ def generate_title(text: str, timeout: "Optional[int]" = None,
                                     timeout=timeout)
             title = _clean_title(raw, max_chars)
             if title:
+                # F6: ticket titles are customer-visible -> cloud by default.
+                # Meter the call for the local-vs-cloud savings KPI, keyed on
+                # the provider that actually answered.
+                if _cost_opt_enabled is not None and _tierrouter is not None \
+                        and _cost_opt_enabled():
+                    try:
+                        used_tier = "local" if (provider.get("deployment") or "hosted").lower() == "on_prem" \
+                            else "cloud"
+                        _tierrouter.record_call(used_tier, "ticket_title")
+                    except Exception:
+                        pass
                 return title
         except Exception:
             # Next provider in the chain (or None → heuristic fallback).

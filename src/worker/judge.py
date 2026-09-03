@@ -56,6 +56,7 @@ ACTION_CATALOG = [
     "enroll_device",
     "fingerprint_device", "install_chat_client", "complete_ticket",
     "request_customer_input", "escalate_human",
+    "windows_diag", "windows_cleanup",
 ]
 
 JUDGE_SYSTEM_PROMPT = """You are the JUDGE in a two-phase network-operations pipeline.
@@ -367,6 +368,7 @@ def judge_request(ticket_text: str, priority: str,
         model_tier="judge",
         max_tokens=600,
         temperature=0.0,
+        task_class="ticket_judge",
     )
     if resp is None:
         return Verdict(lawful="ambiguous", action_class="", risk="unknown", scope="unknown",

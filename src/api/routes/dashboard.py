@@ -250,6 +250,32 @@ def _report_stats(db, days: int = 30) -> dict:
     res_by_priority_avg = {p: _avg(v) for p, v in sorted(res_by_priority.items())}
     first_by_priority_avg = {p: _avg(v) for p, v in sorted(first_by_priority.items())}
 
+    # F6 cost optimization: the local-vs-cloud routing + off-peak scheduling
+    # proof (local/cloud call counters + estimated savings). Read-only and
+    # best-effort — a missing/inaccessible state file must never break reports.
+    try:
+        from tierrouter import cost_summary as _cost_summary
+        from ratewindows import (
+            load_config as _rate_config, is_peak as _rate_is_peak,
+            factor_at as _rate_factor, cost_optimization_enabled as _co_enabled,
+        )
+        _co_on = _co_enabled()
+        _co = _cost_summary() if _co_on else {}
+        _rc = _rate_config() if _co_on else {}
+        cost_optimization = {
+            "enabled": _co_on,
+            "rate_state": "PEAK" if (_rc and _rate_is_peak(now, _rc)) else "OFF-PEAK",
+            "rate_factor": round(_rate_factor(now, _rc) if _rc else 1.0, 3),
+            "off_peak_factor": (_rc or {}).get("off_peak_factor"),
+            "llm_local_calls": (_co.get("calls") or {}).get("local", 0),
+            "llm_cloud_calls": (_co.get("calls") or {}).get("cloud", 0),
+            "llm_local_fallbacks": _co.get("local_down_fallbacks", 0),
+            "llm_local_savings_usd": _co.get("est_savings_usd", 0.0),
+            "local_configured": bool(_co.get("local_configured")),
+        }
+    except Exception:
+        cost_optimization = {"enabled": False}
+
     created = len(created_rows)
     return {
         "days": days,
@@ -287,6 +313,7 @@ def _report_stats(db, days: int = 30) -> dict:
         "status_funnel": status_funnel,
         "priority_dist": priority_dist,
         "trend": trend,
+        "cost_optimization": cost_optimization,
     }
 
 

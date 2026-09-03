@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import unittest
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import patch, mock_open
 
 import main
 
@@ -380,6 +380,105 @@ class RevokeIntegrityPollTest(unittest.TestCase):
         mj = postj.start(); self.addCleanup(postj.stop)
         main.check_revoke_integrity("tok")   # must not raise
         self.assertEqual(mj.call_count, 1)
+
+
+class WindowsScheduleTest(unittest.TestCase):
+    """F8 — per-device Windows health/cleanup schedule due-logic."""
+
+    def test_period_key_daily(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        self.assertEqual(main._win_period_key("daily", now), "2026-09-03")
+        self.assertEqual(main._win_period_key("low_usage", now), "2026-09-03")
+
+    def test_period_key_weekly(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        self.assertEqual(main._win_period_key("weekly", now), "2026-W36")
+
+    def test_sched_int(self):
+        self.assertEqual(main._win_sched_int({}, "health_hour", 3), 3)
+        self.assertEqual(main._win_sched_int({"health_hour": "bad"}, "health_hour", 3), 3)
+        self.assertEqual(main._win_sched_int({"health_hour": 7}, "health_hour", 3), 7)
+
+    def _run_windows(self, devices, now, ticket_id="TKT-TEST-0001"):
+        get = patch.object(main, "_api_get", return_value={"devices": devices})
+        tz = patch.object(main, "_appliance_tz", return_value="UTC")
+        ln = patch.object(main, "_local_now", return_value=now)
+        pj = patch.object(main, "_api_post_json",
+                          return_value={"ticket_id": ticket_id})
+        pa = patch.object(main, "_api_patch")
+        op = patch("builtins.open", mock_open())
+        get.start(); tz.start(); ln.start()
+        mock_pj = pj.start(); mock_pa = pa.start(); op.start()
+        for p in (get, tz, ln, pj, pa, op):
+            self.addCleanup(p.stop)
+        main.check_windows_health_schedule("tok", {})
+        return mock_pj, mock_pa
+
+    def test_daily_health_due_queues_and_marks(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": True,
+                    "windows_health_schedule": {"health": "daily",
+                                                "health_hour": 3, "cleanup": "off"}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_called_once()
+        self.assertEqual(pj.call_args[0][0], "/devices/7/windows-health-ticket")
+        self.assertEqual(pj.call_args[0][1], {"kind": "health"})
+        pa.assert_called_once_with("/devices/7/windows-schedule/mark-run",
+                                   {"health": "2026-09-03"}, "tok")
+
+    def test_daily_health_skips_when_already_run_today(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": True,
+                    "windows_health_schedule": {"health": "daily", "health_hour": 3,
+                                                "cleanup": "off",
+                                                "last_health_run": "2026-09-03"}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_not_called()
+        pa.assert_not_called()
+
+    def test_weekly_health_skips_wrong_day(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        wrong_day = (now.weekday() + 1) % 7 + 1 if (now.weekday() + 1) % 7 < 6 else 0
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": True,
+                    "windows_health_schedule": {"health": "weekly", "health_hour": 3,
+                                                "health_day": wrong_day,
+                                                "cleanup": "off"}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_not_called()
+
+    def test_low_usage_cleanup_queues_in_window(self):
+        now = datetime.datetime(2026, 9, 3, 3, 0)
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": True,
+                    "windows_health_schedule": {"health": "off", "cleanup": "low_usage",
+                                                "cleanup_window_start": 2,
+                                                "cleanup_window_end": 5}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_called_once()
+        self.assertEqual(pj.call_args[0][1], {"kind": "cleanup"})
+        pa.assert_called_once_with("/devices/7/windows-schedule/mark-run",
+                                   {"cleanup": "2026-09-03"}, "tok")
+
+    def test_on_request_cleanup_never_scheduled(self):
+        now = datetime.datetime(2026, 9, 3, 3, 0)
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": True,
+                    "windows_health_schedule": {"health": "off",
+                                                "cleanup": "on_request"}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_not_called()
+        pa.assert_not_called()
+
+    def test_non_ssh_device_skipped(self):
+        now = datetime.datetime(2026, 9, 3, 14, 0)
+        devices = [{"id": 7, "name": "dads-pc", "ip_address": "10.0.0.5",
+                    "ssh_configured": False,
+                    "windows_health_schedule": {"health": "daily", "health_hour": 3}}]
+        pj, pa = self._run_windows(devices, now)
+        pj.assert_not_called()
 
 
 if __name__ == "__main__":

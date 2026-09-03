@@ -272,6 +272,13 @@ class NewReadActionsTest(unittest.TestCase):
         ok, _ = validate_action("unifi_ports")
         self.assertTrue(ok)
 
+    def test_windows_actions_in_catalog_and_validator(self):
+        from action_validator import validate_action
+        for a in ("windows_diag", "windows_cleanup"):
+            self.assertIn(a, judge.ACTION_CATALOG)
+            ok, _ = validate_action(a)
+            self.assertTrue(ok)
+
 
 class TicketStatusActionTest(unittest.TestCase):
     """ticket_status — read-only catalog action that answers TKT-… references."""

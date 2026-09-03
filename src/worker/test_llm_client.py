@@ -111,6 +111,21 @@ class GenerateTitleTest(unittest.TestCase):
              patch.dict(llm_client.ADAPTERS, {"openai": boom}):
             self.assertIsNone(llm_client.generate_title("anything"))
 
+    def test_prompt_echo_returns_none_for_heuristic_fallback(self):
+        # 09-02 leaked-title report: a model that echoes the title-gen
+        # instruction (instead of producing a title) must yield None — never
+        # the echoed prompt — so juniper falls back to the heuristic title.
+        def fake_adapter(p, model, messages, temperature, max_tokens, timeout):
+            return ("We need to generate a title for a support ticket. "
+                    "The request: can you open a ticket for my wifi being slow"), 10, 5
+
+        with patch.object(llm_client, "provider_chain", return_value=[_provider()]), \
+             patch.object(llm_client, "maybe_refresh"), \
+             patch.dict(llm_client.ADAPTERS, {"openai": fake_adapter}):
+            title = llm_client.generate_title(
+                "can you open a ticket for my wifi being slow")
+        self.assertIsNone(title)
+
     def test_no_provider_returns_none(self):
         with patch.object(llm_client, "provider_chain", return_value=[]), \
              patch.object(llm_client, "maybe_refresh"):
@@ -186,6 +201,23 @@ class CleanTitleTest(unittest.TestCase):
     def test_empty_input_returns_none(self):
         self.assertIsNone(llm_client._clean_title(""))
         self.assertIsNone(llm_client._clean_title("   "))
+
+    def test_instruction_echo_generate_title_is_rejected(self):
+        # 09-02 leaked-title report: the model echoed the title-gen
+        # instruction instead of producing a title — the prompt text must
+        # never become the ticket title.
+        self.assertIsNone(llm_client._clean_title(
+            "We need to generate a title for a support ticket. "
+            "The request: can you open a ticket for my wifi being slow"))
+
+    def test_instruction_echo_output_title_is_rejected(self):
+        self.assertIsNone(llm_client._clean_title(
+            "We need to output a title of at most 8 words for the "
+            "customer request: give me a wifi report"))
+
+    def test_multi_sentence_restatement_is_rejected(self):
+        self.assertIsNone(llm_client._clean_title(
+            "The customer wants their wifi fixed. They said it is slow."))
 
 
 if __name__ == "__main__":

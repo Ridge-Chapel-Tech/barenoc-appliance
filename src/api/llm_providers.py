@@ -178,16 +178,38 @@ def active_provider_name(env: Optional[dict] = None) -> str:
     return next(iter(providers), "")
 
 
+def _placeholder_base_url(base_url: str) -> bool:
+    """True when a base URL is an unfilled placeholder — e.g. the OLLAMA
+    default ``http://192.168.x.x:11434`` or ``http://your-host:11434``. Such a
+    provider must never enter the failover chain (the call would only fail /
+    time out on an unreachable host)."""
+    b = (base_url or "").strip().lower()
+    if not b:
+        return False
+    return any(m in b for m in (
+        "x.x", "example", "placeholder", "your-", "changeme", "change-me",
+        "change_me", "<", ">",
+    ))
+
+
+def _usable_providers(providers: dict) -> dict:
+    """Drop providers whose base URL is an unfilled placeholder so they are
+    never attempted by the failover chain."""
+    return {n: p for n, p in providers.items()
+            if not _placeholder_base_url(p.get("base_url", ""))}
+
+
 def provider_order(env: Optional[dict] = None) -> list:
     """The failover chain as an ordered list of provider NAMES.
 
     Source: LLM_PROVIDER_ORDER (comma-separated; primary first). Unknown or
-    unconfigured names are dropped; duplicates collapsed. In local-only
+    unconfigured names are dropped; duplicates collapsed; providers with an
+    unfilled placeholder base URL are dropped (never attempted). In local-only
     egress mode, hosted providers are filtered out entirely (see
     effective_providers) — the chain never contains a cloud provider.
     """
     env = env if env is not None else read_env_file()
-    providers = effective_providers(env)
+    providers = _usable_providers(effective_providers(env))
     raw = _get(env, "LLM_PROVIDER_ORDER", "").strip()
     names = [n.strip().lower() for n in raw.split(",") if n.strip()] if raw else []
     seen = []

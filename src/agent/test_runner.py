@@ -153,6 +153,30 @@ class AgentCredentialsTest(unittest.TestCase):
         os.unlink(cmd[5])
         runner._TEMP_KEYS.clear()
 
+    def test_windows_cmd_uses_resolved_creds_and_offenders(self):
+        # F8: windows_diag/windows_cleanup are SSH actions; cleanup carries the
+        # (optional, configurable) offender list as a comma-joined arg.
+        runner.DEVICE_BY_IP["192.0.2.99"] = 7
+        runner._TEMP_KEYS.clear()
+        with patch("runner._device_ssh_creds",
+                   return_value={"ssh_user": "barenoc", "ssh_key": "KEY"}):
+            cmd = runner._build_cmd("windows_diag", "192.0.2.99", {})
+            cmd2 = runner._build_cmd("windows_cleanup", "192.0.2.99",
+                                     {"offenders": ["Adobe CollabSync", "Copilot"]})
+        self.assertEqual(cmd[0:3], ["bash", os.path.join(runner.SCRIPTS_DIR, "windows_diag.sh"), "192.0.2.99"])
+        self.assertEqual(cmd[3], "barenoc")
+        self.assertTrue(cmd[4].startswith("/tmp/pi-agent-"))
+        self.assertEqual(cmd2[0:3], ["bash", os.path.join(runner.SCRIPTS_DIR, "windows_cleanup.sh"), "192.0.2.99"])
+        self.assertEqual(cmd2[3], "barenoc")
+        self.assertTrue(cmd2[4].startswith("/tmp/pi-agent-"))
+        self.assertEqual(cmd2[5], "Adobe CollabSync,Copilot")
+        for c in (cmd, cmd2):
+            try:
+                os.unlink(c[4])
+            except OSError:
+                pass
+        runner._TEMP_KEYS.clear()
+
 
 class SysCtxTest(unittest.TestCase):
     """The pi system context must point pi at the sanctioned scripts, state

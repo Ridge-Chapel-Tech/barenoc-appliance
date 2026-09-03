@@ -38,6 +38,8 @@ class AllowedAction(str, enum.Enum):
     COMPLETE_TICKET = "complete_ticket"  # logical action: close on customer confirmation
     REQUEST_CUSTOMER_INPUT = "request_customer_input"  # logical: ask customer for info → customer_action
     ESCALATE_HUMAN = "escalate_human"
+    WINDOWS_DIAG = "windows_diag"          # read-only: Windows PC health report over SSH
+    WINDOWS_CLEANUP = "windows_cleanup"    # safe cleanup: autostart offenders + TEMP + recycle (no uninstalls/partition ops)
 
 
 # Predefined scripts that map to each action
@@ -68,6 +70,8 @@ ACTION_SCRIPTS = {
     AllowedAction.INSTALL_CHAT_CLIENT: "scripts/install_chat_client.sh",
     AllowedAction.ENROLL_DEVICE: "scripts/enroll_device.sh",
     AllowedAction.SNMP_SWEEP: "scripts/snmp_sweep.sh",
+    AllowedAction.WINDOWS_DIAG: "scripts/windows_diag.sh",
+    AllowedAction.WINDOWS_CLEANUP: "scripts/windows_cleanup.sh",
     # ESCALATE_HUMAN has no script — it's a logical action
 }
 
@@ -163,6 +167,10 @@ ACTION_REQUIRED_CHANNELS = {
     # devices use apply_patch/check via scripts/apply_patch.sh instead.
     AllowedAction.CHECK_UPDATES: {CHANNEL_AGENT},
     AllowedAction.APPLY_UPDATES: {CHANNEL_AGENT},
+    # Windows PCs are SSH-only for now (device_adoption_model.md §2: server
+    # type + ssh channel; the Windows agent ships in a later milestone).
+    AllowedAction.WINDOWS_DIAG: {CHANNEL_SSH},
+    AllowedAction.WINDOWS_CLEANUP: {CHANNEL_SSH},
 }
 
 
@@ -303,6 +311,33 @@ DEFAULT_PATCH_ALLOWLIST = [
 ]
 
 
+# Windows cleanup: known autostart offenders (configurable per deployment via
+# WINDOWS_CLEANUP_OFFENDERS env — comma-separated). The cleanup pass stops the
+# matching process AND removes its autostart entry (Run key / Startup folder).
+# Safe by construction: no uninstalls, no partition ops — see
+# scripts/windows_cleanup.sh and the windows_cleanup validate_params branch.
+DEFAULT_WINDOWS_CLEANUP_OFFENDERS = [
+    "Adobe CollabSync",
+    "Copilot",
+]
+
+
+def windows_cleanup_offenders() -> list:
+    """Effective Windows cleanup offender list: env file -> process env ->
+    defaults. Hot (matches the patch allowlist pattern)."""
+    raw = ""
+    try:
+        from llm_providers import read_env_file
+        raw = (read_env_file().get("WINDOWS_CLEANUP_OFFENDERS") or "").strip()
+    except Exception:
+        raw = os.getenv("WINDOWS_CLEANUP_OFFENDERS", "").strip()
+    if not raw:
+        raw = os.getenv("WINDOWS_CLEANUP_OFFENDERS", "").strip()
+    if not raw:
+        return list(DEFAULT_WINDOWS_CLEANUP_OFFENDERS)
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 def patch_allowlist() -> list:
     """Effective patch allowlist: env file -> process env -> defaults. Hot."""
     raw = ""
@@ -399,6 +434,27 @@ def validate_params(action: str, params: dict) -> tuple[bool, str]:
 
     if action == AllowedAction.CHECK_UPDATES.value:
         # Read-only multi-source check — no params required.
+        return True, ""
+
+    if action == AllowedAction.WINDOWS_DIAG.value:
+        # Read-only health report over SSH — no params required.
+        return True, ""
+
+    if action == AllowedAction.WINDOWS_CLEANUP.value:
+        # Safe cleanup (autostart offenders + TEMP + recycle). The offender
+        # list is optional + configurable; it must be a list of names when
+        # provided. The script NEVER runs partition ops or uninstalls — those
+        # require an explicit per-device owner confirmation outside this
+        # action (there is no code path for them here at all).
+        offenders = params.get("offenders")
+        if offenders is not None:
+            if not isinstance(offenders, list):
+                return False, "windows_cleanup 'offenders' must be a list of names"
+            for o in offenders:
+                if not isinstance(o, str) or not o.strip():
+                    return False, "windows_cleanup 'offenders' entries must be non-empty strings"
+                if len(o) > 128:
+                    return False, "windows_cleanup offender names must be <= 128 chars"
         return True, ""
 
     if action == AllowedAction.TICKET_STATUS.value:

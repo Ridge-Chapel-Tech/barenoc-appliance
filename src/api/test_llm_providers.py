@@ -77,5 +77,43 @@ class ReasoningFallbackTest(unittest.TestCase):
         self.assertEqual(text, "ready")
 
 
+class PlaceholderProviderTest(unittest.TestCase):
+    """A provider with an unfilled placeholder base URL (e.g. the OLLAMA
+    default http://192.168.x.x:11434) must never enter the failover chain —
+    it would only fail/time out on an unreachable host (09-02 forum report)."""
+
+    ENV = {
+        "LLM_PROVIDER_ORDER": "deepseekv4,ollama",
+        "LLM_PROVIDER_DEEPSEEKV4_TYPE": "openai",
+        "LLM_PROVIDER_DEEPSEEKV4_BASE_URL": "https://api.deepseek.com",
+        "LLM_PROVIDER_DEEPSEEKV4_API_KEY": "sk-dead",
+        "LLM_PROVIDER_DEEPSEEKV4_DEPLOYMENT": "hosted",
+        "LLM_PROVIDER_DEEPSEEKV4_CHAT_MODEL": "deepseek-v4-flash",
+        "LLM_PROVIDER_OLLAMA_TYPE": "openai",
+        "LLM_PROVIDER_OLLAMA_BASE_URL": "http://192.168.x.x:11434",
+        "LLM_PROVIDER_OLLAMA_DEPLOYMENT": "on_prem",
+        "LLM_PROVIDER_OLLAMA_CHAT_MODEL": "llama3.1:8b",
+    }
+
+    def test_placeholder_provider_dropped_from_order(self):
+        from llm_providers import provider_order
+        self.assertEqual(provider_order(self.ENV), ["deepseekv4"])
+
+    def test_real_ollama_url_is_kept(self):
+        from llm_providers import provider_order
+        env = dict(self.ENV)
+        env["LLM_PROVIDER_OLLAMA_BASE_URL"] = "http://192.168.1.50:11434"
+        self.assertEqual(provider_order(env), ["deepseekv4", "ollama"])
+
+    def test_placeholder_only_yields_empty_chain(self):
+        from llm_providers import provider_order
+        env = dict(self.ENV)
+        env["LLM_PROVIDER_ORDER"] = "ollama"
+        for k in list(env.keys()):
+            if k.startswith("LLM_PROVIDER_DEEPSEEKV4"):
+                env.pop(k)
+        self.assertEqual(provider_order(env), [])
+
+
 if __name__ == "__main__":
     unittest.main()

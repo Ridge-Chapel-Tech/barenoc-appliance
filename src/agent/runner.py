@@ -239,6 +239,8 @@ ACTION_SCRIPTS = {
     "install_chat_client": "install_chat_client.sh",
     "enroll_device": "enroll_device.sh",
     "snmp_sweep": "snmp_sweep.sh",
+    "windows_diag": "windows_diag.sh",
+    "windows_cleanup": "windows_cleanup.sh",
     # escalate_human is a logical action, not a script
 }
 
@@ -504,6 +506,16 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
             return ["bash", script_path, target, str(params.get("lines", 50)),
                     ssh_user, ssh_key]
         return ["bash", script_path, target, ssh_user, ssh_key]
+    if action in ("windows_diag", "windows_cleanup"):
+        # Windows PCs are SSH-only for now: resolve the stored control creds
+        # and pass the (optional, configurable) offender list for cleanup.
+        ssh_user, ssh_key = _resolve_ssh(target, params)
+        argv = ["bash", script_path, target, ssh_user, ssh_key]
+        if action == "windows_cleanup":
+            offenders = params.get("offenders") or []
+            if isinstance(offenders, list):
+                argv.append(",".join(str(o) for o in offenders if str(o).strip()))
+        return argv
     return ["bash", script_path, target]
 
 
@@ -1262,6 +1274,9 @@ INFRA_CHANGE_CONTRACT = (
     "what happened.\n"
     "- NEVER change the ports carrying the appliance, the gateway uplink, or a management "
     "path without explicit reasoning AND a plan covering the fallback.\n"
+    "- A hard blast-radius gate runs in the appliance API: a port VLAN change or disable "
+    "that would remove the appliance's own segment or a management VLAN is refused (403) "
+    "unless an admin confirms — never attempt to work around it.\n"
     "Checkpoint helper: python3 /opt/barenoc/scripts/infra_checkpoint.py capture <switch_mac> "
     "[--checkpoint DIR] [--step N] [--total M] writes the before-state; "
     "python3 /opt/barenoc/scripts/infra_checkpoint.py restore --checkpoint <path> rolls back."
@@ -1779,7 +1794,8 @@ def execute_job(job: dict) -> dict:
     # SELF-PROTECTION: never act ON the appliance itself, even if the worker
     # or pi resolved a name to its own IP (SSH actions would reach its shell).
     if action in ("reboot_device", "apply_patch", "collect_logs", "snmp_poll",
-                  "ping_test", "fingerprint_device") and _self_target(target):
+                  "ping_test", "fingerprint_device", "windows_diag",
+                  "windows_cleanup") and _self_target(target):
         logger.warning(f"Self-protection blocked target {target} (ticket {ticket_id})")
         return {"success": False, "error": "blocked",
                 "output": {"blocked": "self-protection", "reason": "target is the appliance itself",

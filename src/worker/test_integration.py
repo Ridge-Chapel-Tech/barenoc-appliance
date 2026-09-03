@@ -47,6 +47,10 @@ _ENV_PATCHER.start()
 # the settings save) can't override test values.
 _ENV2_PATCHER = patch("llm_providers.read_env_file", return_value={})
 _ENV2_PATCHER.start()
+# F6 cost optimization is OFF for this suite — the integration checks exercise
+# the pipeline itself, not the rate-window deferral / tier routing (covered by
+# test_ratewindows + test_tierrouter).
+os.environ["LLM_COST_OPTIMIZATION"] = "false"
 for _k in list(os.environ):
     # Strip policy/retry/pi-agent env injected from the live .env (env_file:)
     # — explicit values must not override what the tests are exercising.

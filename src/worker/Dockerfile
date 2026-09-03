@@ -31,5 +31,7 @@ COPY models.py .
 COPY schemas.py .
 COPY llm_providers.py .
 COPY emailer.py .
+COPY ratewindows.py .
+COPY tierrouter.py .
 
 CMD ["python", "-B", "main.py"]

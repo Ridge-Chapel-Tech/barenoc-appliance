@@ -8,7 +8,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 from database import get_db
 from models import Device, User, DeviceJob, is_customer
-from schemas import DeviceCreate, DeviceUpdate, DeviceResponse
+from schemas import DeviceCreate, DeviceUpdate, DeviceResponse, generate_ticket_id
 from auth import get_current_user, get_access_context, require_role
 from crypto import encrypt, decrypt
 from audit import log_event
@@ -114,6 +114,50 @@ def _normalize_channels(value) -> list:
     for c in (value or []):
         if c in CHANNELS and c not in out:
             out.append(c)
+    return out
+
+
+# F8 Windows health/cleanup schedule — per-device, canonical shape.
+_WIN_SCHEDULE_HEALTH_MODES = ("off", "daily", "weekly")
+_WIN_SCHEDULE_CLEANUP_MODES = ("off", "on_request", "low_usage")
+
+
+def _clamp_int(v, lo: int, hi: int, default: int) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return lo if n < lo else (hi if n > hi else n)
+
+
+def _normalize_windows_schedule(value) -> dict:
+    """Validate + canonicalize a per-device Windows health/cleanup schedule
+    dict. Unknown keys are dropped; bad modes/ints fall back to safe defaults
+    (off). Returns the canonical schedule ({} = all off), never None.
+
+    Canonical shape (documented in models.Device.windows_health_schedule):
+      health: off|daily|weekly        (health_hour local, health_day 0=Sun..6)
+      cleanup: off|on_request|low_usage
+      cleanup_window_start/end: local hours for the low-usage window
+      last_health_run / last_cleanup_run: scheduler-managed period keys
+      (local date for daily/low_usage, ISO week for weekly)
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    health = str(value.get("health") or "off").strip().lower()
+    out["health"] = health if health in _WIN_SCHEDULE_HEALTH_MODES else "off"
+    cleanup = str(value.get("cleanup") or "off").strip().lower()
+    out["cleanup"] = cleanup if cleanup in _WIN_SCHEDULE_CLEANUP_MODES else "off"
+    out["health_hour"] = _clamp_int(value.get("health_hour"), 0, 23, 3)
+    out["health_day"] = _clamp_int(value.get("health_day"), 0, 6, 0)
+    out["cleanup_hour"] = _clamp_int(value.get("cleanup_hour"), 0, 23, 3)
+    out["cleanup_window_start"] = _clamp_int(value.get("cleanup_window_start"), 0, 23, 2)
+    out["cleanup_window_end"] = _clamp_int(value.get("cleanup_window_end"), 0, 23, 5)
+    for k in ("last_health_run", "last_cleanup_run"):
+        v = value.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
     return out
 
 
@@ -424,6 +468,7 @@ def create_device(
         mac_address=device_data.mac_address,
         tags=device_data.tags,
         channels=_normalize_channels(device_data.channels),
+        windows_health_schedule=_normalize_windows_schedule(device_data.windows_health_schedule),
         status="pending",
         claimed=device_data.claimed if device_data.claimed is not None else True,
         device_group=group,
@@ -845,6 +890,8 @@ def update_device(
             device.ssh_key_fingerprint = _store_ssh_key(device.name, value)
         elif field == "channels":
             device.channels = _normalize_channels(value)
+        elif field == "windows_health_schedule":
+            device.windows_health_schedule = _normalize_windows_schedule(value)
         elif field == "fingerprint" and isinstance(value, dict):
             _apply_fingerprint_suggestion(device, value)
         else:
@@ -863,6 +910,93 @@ def update_device(
     resp["ssh_configured"] = bool(device.ssh_key_fingerprint)
     resp["channels"] = _device_channels(device)
     return resp
+
+
+@router.put("/{device_id}/windows-schedule")
+def set_windows_schedule(device_id: int, body: dict, db: Session = Depends(get_db),
+                         ctx: dict = Depends(get_access_context)):
+    """Set/clear the per-device Windows health/cleanup schedule (F8).
+
+    Body is the schedule dict (same shape as Device.windows_health_schedule):
+      {"health": "off"|"daily"|"weekly", "health_hour": 3, "health_day": 0,
+       "cleanup": "off"|"on_request"|"low_usage", "cleanup_hour": 3,
+       "cleanup_window_start": 2, "cleanup_window_end": 5}
+    Returns the normalized schedule actually stored (never a passthrough of
+    arbitrary keys)."""
+    device = _get_checked(db, device_id, ctx)
+    sched = _normalize_windows_schedule(body or {})
+    device.windows_health_schedule = sched
+    device.updated_at = datetime.utcnow()
+    db.commit()
+    record(db, event_type="device_config_changed", actor=_actor_name(ctx["user"]),
+           asset=device.name,
+           summary=f"Updated Windows health schedule for {device.name}",
+           detail=f"windows_health_schedule={json.dumps(sched)}",
+           links={"device_id": device.id})
+    return {"device_id": device.id, "windows_health_schedule": sched}
+
+
+@router.post("/{device_id}/windows-health-ticket")
+def create_windows_health_ticket(device_id: int, body: dict,
+                                 db: Session = Depends(get_db),
+                                 ctx: dict = Depends(get_access_context)):
+    """Create a source=auto ticket for a scheduled Windows health/cleanup run
+    (F8) and return its ticket_id so the scheduler can enqueue the job file.
+
+    The device owner is the submitter, so the report lands in their ticket
+    list; source=auto keeps the worker from re-interpreting the ticket.
+    Body: {"kind": "health"|"cleanup"} (default health)."""
+    from models import Ticket
+    from auth import require_any_role
+    require_any_role("technician", "operator", "admin", "agent")(ctx["user"])
+    device = _get_checked(db, device_id, ctx)
+    kind = str(body.get("kind") or "health").strip().lower()
+    if kind not in ("health", "cleanup"):
+        raise HTTPException(status_code=400, detail="kind must be 'health' or 'cleanup'")
+    label = "health check" if kind == "health" else "cleanup"
+    ticket = Ticket(
+        ticket_id=generate_ticket_id(),
+        title=f"Windows {label}: {device.name}",
+        description=(f"Scheduled Windows {label} for {device.name} "
+                     f"({device.ip_address}). The report is posted here "
+                     f"automatically when the run finishes."),
+        priority="P4",
+        status="open",
+        source="auto",
+        submitter_id=device.owner_id,
+        target_device_id=device.id,
+        assigned_to="system",
+    )
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+    log_event(db, "ticket_created", _actor_name(ctx["user"]), {
+        "ticket_id": ticket.ticket_id, "device_id": device.id,
+        "source": "windows-health-schedule", "kind": kind,
+    }, ticket.ticket_id)
+    return {"ticket_id": ticket.ticket_id, "device_id": device.id}
+
+
+@router.patch("/{device_id}/windows-schedule/mark-run")
+def mark_windows_schedule_run(device_id: int, body: dict,
+                              db: Session = Depends(get_db),
+                              ctx: dict = Depends(get_access_context)):
+    """Scheduler-internal: record a health/cleanup run period key (no
+    change-log noise). Body: {"health": "<period key>"} and/or
+    {"cleanup": "<period key>"}. The period key is a local date
+    (daily/low_usage) or ISO week (weekly)."""
+    from auth import require_any_role
+    require_any_role("technician", "operator", "admin", "agent")(ctx["user"])
+    device = _get_checked(db, device_id, ctx)
+    sched = dict(device.windows_health_schedule or {})
+    if isinstance(body.get("health"), str) and body["health"].strip():
+        sched["last_health_run"] = body["health"].strip()
+    if isinstance(body.get("cleanup"), str) and body["cleanup"].strip():
+        sched["last_cleanup_run"] = body["cleanup"].strip()
+    device.windows_health_schedule = _normalize_windows_schedule(sched)
+    device.updated_at = datetime.utcnow()
+    db.commit()
+    return {"device_id": device.id, "windows_health_schedule": device.windows_health_schedule}
 
 
 @router.delete("/{device_id}", status_code=204)

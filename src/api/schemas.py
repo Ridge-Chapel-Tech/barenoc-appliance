@@ -146,6 +146,7 @@ class DeviceCreate(BaseModel):
     ssh_user: Optional[str] = None
     ssh_key: Optional[str] = None
     channels: list = []
+    windows_health_schedule: Optional[dict] = None
 
 
 class DeviceUpdate(BaseModel):
@@ -167,6 +168,7 @@ class DeviceUpdate(BaseModel):
     ssh_user: Optional[str] = None
     ssh_key: Optional[str] = None
     channels: Optional[list] = None
+    windows_health_schedule: Optional[dict] = None
 
 
 class DeviceResponse(BaseModel):
@@ -193,6 +195,7 @@ class DeviceResponse(BaseModel):
     adoption_status: Optional[str] = "none"
     adoption_method: Optional[str] = "none"
     cert_cn: Optional[str] = None
+    windows_health_schedule: Optional[dict] = None
     created_at: datetime
 
     class Config:
