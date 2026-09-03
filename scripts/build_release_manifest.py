@@ -103,14 +103,16 @@ def build_tarball(source: pathlib.Path, ver: str, out: pathlib.Path) -> pathlib.
         for p in sorted(source.iterdir()):
             if p.name in (".git", "__pycache__", "dist", "SESSION_LOG.md"):
                 continue
-            if p.name == "worker":
-                # include the shared modules from src/api/ inside src/worker/
-                # (they are COPYed by the worker's Dockerfile at build time)
-                for m in SHARED_MODULES:
-                    mp = source / "api" / m
-                    if mp.exists():
-                        tf.add(mp, arcname=f"worker/{m}")
             tf.add(p, arcname=p.name, recursive=True)
+            if p.name == "src":
+                # include the shared modules from src/api/ inside src/worker/ —
+                # the worker's Dockerfile COPYs them into its build context, so
+                # the release tar MUST ship them side-by-side (the 09-03
+                # .03.b self-update bug: '/tierrouter.py': not found)
+                for m in SHARED_MODULES:
+                    mp = source / "src" / "api" / m
+                    if mp.exists():
+                        tf.add(mp, arcname=f"src/worker/{m}")
     return tarball
 
 
