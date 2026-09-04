@@ -17,6 +17,17 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.03.d] — 2026-09-03
+
+### Added
+- **Juniper answers device-inventory queries.** "give me a list of all
+  wireless devices on the network" (and wired / cameras / printers / servers /
+  access points / everything) now answers read-only from the known inventory —
+  the UniFi-synced wireless clients + APs with online/offline markers — instead
+  of the help text. Scoped like the devices page: technicians see all devices;
+  a customer sees only their own adopted ones. A list query never opens a
+  ticket.
+
 ## [2026.09.03.c] — 2026-09-03
 
 ### Fixed

@@ -958,3 +958,119 @@ class DeviceBindingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DeviceInventoryTest(unittest.TestCase):
+    """09-03: "give me a list of all wireless devices on the network" is a
+    read-only inventory QUERY — Juniper answers from the known devices instead
+    of the help text, and never opens a ticket."""
+
+    def setUp(self):
+        init_db()
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(PendingAction).delete()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        db.commit()
+
+        admin = User(username="admin", display_name="Admin",
+                     hashed_password="x", role="admin", is_active=True)
+        customer = User(username="home", display_name="Home",
+                        hashed_password="x", role="user", is_active=True)
+        db.add_all([admin, customer])
+        db.commit()
+        self.admin_id = admin.id
+        self.customer_id = customer.id
+        db.close()
+
+        db = SessionLocal()
+        ap = Device(name="Living-room AP", ip_address="192.168.4.20",
+                    mac_address="aa:bb:cc:00:00:01", device_type="ap",
+                    status="online", tags=["unifi-client", "wireless"])
+        phone = Device(name="Dad's iPhone", ip_address="192.168.4.61",
+                       mac_address="aa:bb:cc:00:00:02", device_type="phone",
+                       status="online", tags=["unifi-client", "wireless"],
+                       owner_id=self.customer_id)
+        wired = Device(name="NAS", ip_address="192.168.4.15",
+                       mac_address="aa:bb:cc:00:00:03", device_type="server",
+                       status="online", tags=["unifi-client", "wired"])
+        camera = Device(name="Front Door Cam", ip_address="192.168.4.30",
+                        mac_address="aa:bb:cc:00:00:04", device_type="camera",
+                        status="online", tags=["unifi-client", "wireless"])
+        db.add_all([ap, phone, wired, camera])
+        db.commit()
+        self.ap_id, self.phone_id, self.wired_id, self.camera_id = ap.id, phone.id, wired.id, camera.id
+        db.close()
+
+    def tearDown(self):
+        # Never leave residue for the classes after this one: my Device rows
+        # carry owner_id -> user, and the file's later setUps delete User
+        # without deleting Device first (an FK collision that only appears
+        # when this class runs in the middle of the file).
+        db = SessionLocal()
+        db.query(ChatMessage).delete()
+        db.query(AuditLog).delete()
+        db.query(PendingAction).delete()
+        db.query(Ticket).delete()
+        db.query(Device).delete()
+        db.query(User).delete()
+        db.commit()
+        db.close()
+
+    def _db(self):
+        return SessionLocal()
+
+    def test_wireless_query_lists_aps_and_clients(self):
+        db = self._db()
+        admin = db.query(User).get(self.admin_id)
+        out = juniper.device_inventory(db, admin,
+                                       "give me a list of all wireless devices on the network")
+        db.close()
+        self.assertIn("wireless entries", out)
+        self.assertIn("Living-room AP", out)
+        self.assertIn("Dad's iPhone", out)
+        # wired NAS + camera (wireless client) — camera IS wireless-tagged
+        self.assertIn("Front Door Cam", out)
+        self.assertNotIn("NAS", out.split("access point")[1] if "access point" in out else "")
+
+    def test_scope_customer_sees_only_own(self):
+        db = self._db()
+        customer = db.query(User).get(self.customer_id)
+        out = juniper.device_inventory(db, customer, "list all devices")
+        db.close()
+        self.assertIn("Dad's iPhone", out)   # owns it
+        self.assertNotIn("Living-room AP", out)  # not theirs
+
+    def test_device_list_is_not_intake(self):
+        db = self._db()
+        bot = juniper.get_bot_user(db)
+        if not bot:
+            bot = User(username="juniper", display_name="Juniper",
+                       role="agent", is_bot=True, hashed_password="x")
+            db.add(bot); db.commit()
+        customer = db.query(User).get(self.customer_id)
+        if customer is None:
+            customer = User(username="home", display_name="Home",
+                            hashed_password="x", role="user", is_active=True)
+            db.add(customer); db.commit()
+        m = ChatMessage(from_user_id=customer.id, to_user_id=bot.id,
+                        body="give me a list of all wireless devices on the network")
+        db.add(m); db.commit()
+        before = db.query(Ticket).count()
+        db.refresh(m)
+        sender = db.query(User).get(m.from_user_id)
+        juniper.handle_message(db, bot, m, sender)
+        db.commit()
+        n = db.query(Ticket).count()
+        self.assertEqual(n, before, "a list query must NOT open a ticket")
+        reply = (db.query(ChatMessage)
+                 .filter(ChatMessage.from_user_id == bot.id,
+                         ChatMessage.to_user_id == customer.id)
+                 .order_by(ChatMessage.id.desc()).first())
+        self.assertIsNotNone(reply)
+        self.assertIn("wireless", reply.body)
+        self.assertNotEqual(reply.body, juniper.help_text())
+        db.close()

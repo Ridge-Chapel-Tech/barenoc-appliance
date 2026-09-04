@@ -29,7 +29,7 @@ import logging
 import datetime
 import threading
 
-from models import User, ChatMessage, Ticket, PendingAction, is_tech, is_customer, tech_in_scope
+from models import User, ChatMessage, Ticket, PendingAction, Device, is_tech, is_customer, tech_in_scope
 from schemas import generate_ticket_id
 from worknotes import add_note
 from audit import log_event
@@ -79,6 +79,25 @@ _INTAKE_MARKERS = (
     # Status intents win earlier (step 3 runs before intake), so "any updates
     # on my ticket?" still answers read-only.
     "update", "upgrade",
+    # Part B (09-03): plain-language PROBLEM reports must intake too — the
+    # front desk is a person, not a form. "the wifi is slow" / "thermostat's
+    # stuck" / "laptop won't connect" fell through to the help text (no
+    # ticket). A symptom lexicon catches real problem statements; status
+    # intents still win earlier (step 3), so "how slow is the internet today?"
+    # reads as status only when it asks about the queue/tickets — otherwise a
+    # health-check ticket is the honest outcome.
+    "is slow", "are slow", "so slow", "too slow", "lag", "laggy", "stuck",
+    "frozen", "freezing", "crash", "crashed", "crashing", "dead", "died",
+    "acting up", "stopped working", "stop working", "isn't working",
+    "isnt working", "is down", "went down", "just went out", "power went out",
+    "won't connect", "wont connect", "can't connect", "cant connect",
+    "not connecting", "won't turn on", "wont turn on", "doesn't turn on",
+    "doesnt turn on", "no power", "no internet", "no signal", "no wifi",
+    "keeps dropping", "keeps cutting", "disconnects", "disconnected",
+    "intermittent", "unreliable", "not responding", "unresponsive",
+    "overheating", "too hot", "very hot", "making noise", "loud noise",
+    "humming", "beeping", "error", "fails", "failure", "outage", "unavailable",
+    "need help", "having trouble", "having issues", "having problems",
 )
 
 
@@ -931,6 +950,129 @@ def _handle_summary(db, bot, msg, sender, tkt_id: str) -> ChatMessage:
 
 # ── dispatch ────────────────────────────────────────────────────────────────
 
+# ── device inventory (read-only, role-aware) ──────────────────────────────
+# "give me a list of all wireless devices on the network" is a QUERY, not a
+# ticket — Juniper answers from the known inventory (the same data the
+# devices page shows). Scope mirrors the API: techs see everything; a
+# customer/tenant sees only their OWN adopted devices (owner_id).
+
+_DEVICE_LIST_MARKERS = (
+    "give me a list", "list of", "list the", "list all", "list my",
+    "show me", "show the", "what devices", "what clients",
+    "what's on my network", "whats on my network", "what is on my network",
+    "who's on my network", "whos on my network", "who is on my network",
+    "who's on the network", "whos on the network", "devices on the network",
+    "devices on my network", "connected devices", "my devices", "network devices",
+    "wireless devices", "wifi devices", "wi-fi devices", "wireless clients",
+    "see all the", "tell me what's connected", "tell me whats connected",
+    "what's connected", "whats connected", "what is connected",
+)
+
+_DEVICE_CLASS_WORDS = (
+    ("wireless", "wifi", "wi-fi", "wlan", "over wifi", "on wifi", "wireless devices"),
+    ("wired", "ethernet"),
+    ("camera", "cameras"),
+    ("iot", "smart home", "smart devices"),
+    ("printer", "printers"),
+    ("computer", "computers", "pc", "laptops", "laptop", "workstations", "desktops"),
+    ("server", "servers", "nas"),
+    ("phone", "phones", "tablet", "tablets", "mobile"),
+    ("ap", "access point", "access points", "aps"),
+    ("switch", "switches"),
+    ("router", "gateway"),
+)
+
+
+def _looks_like_device_list(text: str) -> bool:
+    t = " ".join((text or "").lower().split())
+    return any(m in t for m in _DEVICE_LIST_MARKERS)
+
+
+def _device_list_class(text: str) -> "str | None":
+    """The requested class: wireless|wired|camera|iot|printer|computer|… None =
+    'everything I can see'."""
+    t = " ".join((text or "").lower().split())
+    for words in _DEVICE_CLASS_WORDS:
+        if any(w in t for w in words):
+            return words[0]
+    return None
+
+
+def _device_visible(db, user, d) -> bool:
+    """Mirror the API's device scoping: techs see all; customers see their own."""
+    if is_tech(user):
+        return True
+    return bool(d.owner_id) and d.owner_id == user.id
+
+
+def device_inventory(db, user, text: str) -> str:
+    """Read-only inventory answer: device name/type/ip/status for the requested
+    class (wireless/wired/…), scoped to what the sender may see. Never raises.
+    The wireless answer = the UniFi client rows tagged 'wireless' + the APs
+    (a client row IS a wireless endpoint; the APs carry the radio)."""
+    want = _device_list_class(text) or "all"
+    q = db.query(Device)
+    rows = [d for d in q.all() if _device_visible(db, user, d)]
+
+    def _wireless(d):
+        tags = d.tags or []
+        return "wireless" in tags or d.device_type in ("ap",)
+
+    def _pick(d):
+        if want == "all":
+            return True
+        if want in ("wireless", "wifi"):
+            return _wireless(d)
+        if want == "wired":
+            return "wired" in (d.tags or [])
+        if want in ("camera", "iot", "printer", "server", "switch", "router"):
+            return (d.device_type or "").startswith(want.rstrip("s"))
+        if want == "ap":
+            return d.device_type == "ap"
+        if want == "computer":
+            return (d.device_type or "").startswith(("pc", "workstation", "computer", "laptop", "desktop"))
+        if want == "phone":
+            return (d.device_type or "").startswith(("phone", "tablet", "mobile"))
+        return True
+
+    chosen = [d for d in rows if _pick(d)]
+    # wireless listing: APs first (the gear), then the clients — never claim
+    # 'all wireless devices' when only the radios are known
+    if want in ("wireless", "wifi"):
+        chosen.sort(key=lambda d: (d.device_type != "ap", (d.status or "") != "online"))
+    else:
+        chosen.sort(key=lambda d: ((d.status or "") != "online", (d.name or "").lower()))
+
+    cap = 30
+    shown = chosen[:cap]
+    if not chosen:
+        if is_tech(user):
+            return ("I don't see any known devices in that class yet — the inventory "
+                    "fills from UniFi/network scans. Try “all devices”, or ask the "
+                    "tech to run a scan.")
+        return "I don't see any devices of yours in that class yet."
+
+    lines = []
+    if want == "wireless":
+        aps = sum(1 for d in shown if d.device_type == "ap")
+        lines.append(f"I can see {len(chosen)} wireless entries ({aps} access point(s) "
+                     f"and the clients below).")
+    elif want == "all":
+        lines.append(f"I can see {len(chosen)} known devices.")
+    else:
+        lines.append(f"I can see {len(chosen)} {want} device(s).")
+    for d in shown:
+        name = (d.name or d.hostname or d.ip_address or "?")
+        ip = d.ip_address or ""
+        mark = "●" if d.status == "online" else ("○" if d.status == "offline" else "·")
+        lines.append(f"  {mark} {name[:42]} — {(d.device_type or 'device')}{' · ' + ip if ip else ''}")
+    if len(chosen) > cap:
+        lines.append(f"  …and {len(chosen) - cap} more.")
+    lines.append("Say “what devices are wireless” to re-filter — or tell me what's "
+                 "wrong and I'll open a ticket.")
+    return "\n".join(lines)
+
+
 def handle_message(db, bot, msg, sender) -> ChatMessage:
     text = (msg.body or "").strip()
     if not text:
@@ -962,6 +1104,10 @@ def handle_message(db, bot, msg, sender) -> ChatMessage:
     # 3. status / queue (deterministic)
     if looks_like_status(text):
         return reply(db, bot, msg, queue_snapshot(db, sender))
+
+    # 3.5 device inventory (read-only query — "list the wireless devices")
+    if _looks_like_device_list(text):
+        return reply(db, bot, msg, device_inventory(db, sender, text))
 
     # 4. intake (casual request -> a real ticket)
     if looks_like_intake(text):
