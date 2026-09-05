@@ -85,16 +85,33 @@ def classify(prev: str, cur: str) -> str:
     return "patch"
 
 
-# The shared modules the worker image COPYs into its build context. They live
-# in src/api/; the worker's Dockerfile + llm_client import them, so the
-# tarball MUST ship them side-by-side in src/worker/ — the 09-03 self-update
-# bug: .03.b's worker build failed '"/tierrouter.py": not found' because the
-# release tarball lacked them (the box's bootstrap copy step is install-only;
-# self-updates replace worker/ with the tarball's content).
-SHARED_MODULES = ("action_validator.py", "audit.py", "audit_catalog.py", "crypto.py",
-                  "database.py", "models.py", "sanitizer.py", "schemas.py",
-                  "worknotes.py", "queue_status.py", "tone_pool.py",
-                  "llm_providers.py", "emailer.py", "ratewindows.py", "tierrouter.py")
+# The shared modules the worker image COPYs into its build context are the
+# src/worker/Dockerfile `COPY <file>.py .` lines that do NOT exist in
+# src/worker/ but DO exist in src/api/. They are DERIVED from the Dockerfile +
+# the tree (the single source of truth) so the tarball always ships them
+# side-by-side in src/worker/ — no manual list to drift. The 09-03 P0: the
+# first shared-module fix injected the files at a root-level `worker/` arcname
+# that never exists in the `src/` layout, so tierrouter.py + ratewindows.py
+# never landed in src/worker/, the worker build failed '"/tierrouter.py": not
+# found', and every self-update rolled back.
+def _worker_shared_modules(source: pathlib.Path) -> list:
+    """The shared modules the worker image COPYs that live in src/api/ (not
+    src/worker/). This is the exact set the tarball must ship side-by-side."""
+    dockerfile = source / "src" / "worker" / "Dockerfile"
+    mods = []
+    try:
+        lines = dockerfile.read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        m = re.match(r"^COPY\s+([A-Za-z0-9_]+\.py)\s+\.\s*$", line.strip())
+        if not m:
+            continue
+        name = m.group(1)
+        if not (source / "src" / "worker" / name).exists() \
+                and (source / "src" / "api" / name).exists():
+            mods.append(name)
+    return mods
 
 
 def build_tarball(source: pathlib.Path, ver: str, out: pathlib.Path) -> pathlib.Path:
@@ -109,7 +126,7 @@ def build_tarball(source: pathlib.Path, ver: str, out: pathlib.Path) -> pathlib.
                 # the worker's Dockerfile COPYs them into its build context, so
                 # the release tar MUST ship them side-by-side (the 09-03
                 # .03.b self-update bug: '/tierrouter.py': not found)
-                for m in SHARED_MODULES:
+                for m in _worker_shared_modules(source):
                     mp = source / "src" / "api" / m
                     if mp.exists():
                         tf.add(mp, arcname=f"src/worker/{m}")

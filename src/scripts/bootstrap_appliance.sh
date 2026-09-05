@@ -81,13 +81,14 @@ chown -R pi-agent:pi-agent "$B/jobs" "$B/volumes/logs/agent" "$B/pi-work" "$B/ag
 # ships them side-by-side, so first-boot must do the same or the worker build
 # fails with '"/emailer.py": not found').
 echo "==> bootstrap: worker shared modules"
-# ⚠️ KEEP THIS LIST IN SYNC with deploy.sh SHARED_MODULES + barenoc-self-update.sh —
-# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
-for m in action_validator.py audit.py audit_catalog.py crypto.py database.py models.py \
-         sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
-         llm_providers.py emailer.py ratewindows.py tierrouter.py; do
-  [ -f "$B/api/$m" ] && cp -f "$B/api/$m" "$B/worker/$m"
-done
+# Derive the shared modules from the worker Dockerfile (the single source of
+# truth) — a module added to api/ + COPYed in the Dockerfile is always picked
+# up; no manual list to drift (the .30.b self-update bug).
+while IFS= read -r m; do
+  if [ ! -f "$B/worker/$m" ] && [ -f "$B/api/$m" ]; then
+    cp -f "$B/api/$m" "$B/worker/$m"
+  fi
+done < <(sed -n 's/^COPY[[:space:]]\+\([A-Za-z0-9_]*\.py\)[[:space:]]\+\.$/\1/p' "$B/worker/Dockerfile" 2>/dev/null)
 chown -R barenoc:barenoc "$B/worker" 2>/dev/null || true
 
 # ── 2. passwordless sudo for barenoc ───────────────────────────────────────

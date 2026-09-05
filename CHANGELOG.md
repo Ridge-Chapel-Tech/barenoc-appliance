@@ -17,6 +17,65 @@ Categories per release:
 
 ## [Unreleased]
 
+## [2026.09.05.a] — 2026-09-05
+
+### Added
+- **Windows network/DNS health + hardening (F8 expansion).** A new
+  `windows_netdiag` device action over SSH reports NIC link rate (with a
+  non-gigabit warning), runs latency probes (gateway + public resolvers,
+  min/avg/max + loss), and detects the DNS-through-router weak spot (the PC
+  using the router/gateway as its DNS server). With `apply_dns_fix=true` it
+  overrides the router-as-resolver with a non-router resolver (default
+  1.1.1.1 / 1.0.0.1, configurable) — gated by the **admin-vs-standard session
+  pattern**: the report always captures the session context, and the only
+  elevated write (`Set-DnsClientServerAddress`) runs only on an elevated
+  session; a standard session reports + recommends instead. Never rewrites a
+  healthy resolver config. Adds the reusable
+  `docs/runbook/windows_pc_optimization.md` playbook and folds in the dads-pc /
+  PC-MINI reference artifacts (`docs/runbook/reference/dads-pc/`). No partition
+  ops or uninstalls.
+
+### Fixed
+- **Appliance self-update was blocked on every release (P0).** The release
+  tarball omitted the worker's shared modules (they live in `src/api/` but the
+  worker Dockerfile COPYs them from its build context), so `docker compose up
+  --build -d` failed with `"/tierrouter.py": not found`, the OLD container kept
+  serving the old version, and the self-update rolled back — the running tree
+  never moved. The shared-module set is now DERIVED from `src/worker/Dockerfile`
+  in the tarball builder, the self-update script, `deploy.sh`, and
+  `bootstrap_appliance.sh` (one source of truth, no hand-maintained list to
+  drift), and the self-update script backfills any module the tarball forgot.
+  A failed `compose` rebuild is now reported as a rebuild failure (not a
+  misleading health/version mismatch) and the update request is always
+  consumed. Added `scripts/test_self_update.sh` (hermetic regression: tarball
+  completeness + self-update backfill + rebuild-failure reporting) and
+  `scripts/test_self_update_e2e.sh` (end-to-end on a test box: request →
+  `.path` unit → download/verify/apply → real `docker compose up --build -d` →
+  VERSION-verifying health check → rollback restore).
+- **Self-update now fails fast on a bad download/extract.** A downloaded file
+  that isn't a valid release tarball, a tarball with the wrong layout, or a
+  tarball whose `version.py` doesn't match the requested release (including an
+  unreadable/empty `version.py`) used to be silently ignored: the apply step
+  became a no-op, the OLD tree was rebuilt (exit 0), and the version check
+  rolled back with a misleading "health/version mismatch". The script now
+  validates the archive BEFORE touching the tree (gzip/tar structure + the
+  FULL release layout — every mapped dir, not just `src/api`/`src/worker` — +
+  version match, fail-closed), reports the real cause, and consumes the
+  request. A post-apply guard confirms `/opt/barenoc/api/version.py` actually
+  flipped (fail-closed too — an unreadable file is a failure, not a pass).
+- **The self-update download is now hardened + checksum verification fails
+  closed.** The download → checksum → validate sequence now LOOPS until a
+  valid tarball lands: a CDN soft-404 (Hostinger's HTML 200 error page), a
+  truncated write, a transient network error, or a checksum mismatch each
+  trigger a fresh download (5 attempts by default) instead of the single shot
+  that silently no-op'd the apply on 09-03 — `curl --retry` alone can't see an
+  HTML 200, so the archive is re-validated on every attempt. A release that
+  ships a checksums URL must now verify against it — the old `|| true`
+  silently SKIPPED verification whenever the sums download hiccuped, letting a
+  bad tarball sail straight into the apply step. A download/checksum failure
+  that survives every attempt is reported as its real cause and consumed,
+  never applied.
+
 ## [2026.09.03.d] — 2026-09-03
 
 ### Added

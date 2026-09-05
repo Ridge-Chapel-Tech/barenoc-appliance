@@ -144,6 +144,9 @@ def _mock_executor(ticket_text: str, priority: str, verdict: Verdict):
     elif action == "windows_cleanup":
         target = "dads-pc"
         params, reason = {}, "Running the safe Windows cleanup (autostart offenders + temp/recycle)"
+    elif action == "windows_netdiag":
+        target = "dads-pc"
+        params, reason = {}, "Running the Windows network/DNS health report (link rate, latency, DNS-through-router check)"
 
     return LLMResponse(
         action=action, target=target, params=params, reason=reason,

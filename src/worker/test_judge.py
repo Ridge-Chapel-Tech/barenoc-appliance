@@ -274,7 +274,7 @@ class NewReadActionsTest(unittest.TestCase):
 
     def test_windows_actions_in_catalog_and_validator(self):
         from action_validator import validate_action
-        for a in ("windows_diag", "windows_cleanup"):
+        for a in ("windows_diag", "windows_cleanup", "windows_netdiag"):
             self.assertIn(a, judge.ACTION_CATALOG)
             ok, _ = validate_action(a)
             self.assertTrue(ok)

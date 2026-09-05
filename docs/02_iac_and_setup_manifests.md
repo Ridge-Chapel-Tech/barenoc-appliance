@@ -61,8 +61,8 @@ From the dev box, `deploy.sh` is the install/update path:
 
 It (in order): ensures runtime dirs + perms → rsyncs `src/{api,worker,scheduler,
 nginx,scripts}` + `client/` to `/opt/barenoc/` → copies the shared modules
-(`action_validator.py`, `audit.py`, `crypto.py`, `database.py`, `models.py`,
-`sanitizer.py`, `schemas.py`, `worknotes.py`, `llm_providers.py`, `emailer.py`)
+(derived from `src/worker/Dockerfile`'s `COPY` lines — the single source of
+truth; e.g. `sanitizer.py`, `tierrouter.py`, `ratewindows.py`)
 into the worker build context → scp's `src/agent/runner.py` to
 `/opt/barenoc/agent/runner.py` (via `sudo -u pi-agent`) if changed → rebuilds
 the stack (`docker compose up --build -d`) → waits for `/api/v1/health` 200 →

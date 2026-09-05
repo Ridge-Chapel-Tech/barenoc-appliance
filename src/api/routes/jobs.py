@@ -293,6 +293,43 @@ def _format_info_answer(action: str, out: dict) -> "str | None":
             lines.append(f"  ⚠ {len(locked)} temp file(s) in use and left in place")
         if not stopped and not removed and not rec:
             lines.append("  nothing to clean — no offenders matched and temp/recycle were already empty")
+    elif action == "windows_netdiag":
+        host = out.get("hostname") or "the PC"
+        os_name = out.get("os") or "Windows"
+        elev = "elevated (admin)" if out.get("elevated") else "standard (non-admin)"
+        lines.append(f"Network/DNS report for {host} ({os_name}, {elev} session):")
+        for a in (out.get("adapters") or []):
+            lines.append(f"  • NIC {a.get('name','?')} — {a.get('status','?')}, "
+                         f"{a.get('link_speed','?')} ({a.get('media_type','?')})")
+        if out.get("link_warning"):
+            lines.append(f"  ⚠ {out['link_warning']}")
+        gw = out.get("gateway")
+        lines.append(f"  gateway: {gw or 'unknown'}")
+        dns = out.get("dns") or {}
+        servers = dns.get("servers") or []
+        lines.append(f"  DNS servers: {', '.join(servers) if servers else 'none configured'}")
+        if dns.get("via_router"):
+            lines.append("  ⚠ DNS-through-router detected: this PC uses the router as its DNS "
+                         "resolver (single point of failure).")
+            lines.append("    recommended: " + ", ".join(dns.get("recommended") or []))
+        else:
+            lines.append("  ✓ DNS is not pointed at the router.")
+        lat = out.get("latency") or {}
+        for t in (lat.get("targets") or []):
+            if t.get("reachable"):
+                lines.append(f"  • ping {t.get('target','?')}: {t.get('avg_ms','?')} ms avg "
+                             f"(min {t.get('min_ms','?')}, max {t.get('max_ms','?')}, "
+                             f"loss {t.get('loss_pct', 0)}%)")
+            else:
+                lines.append(f"  • ping {t.get('target','?')}: unreachable (loss {t.get('loss_pct', 100)}%)")
+        fix = out.get("dns_fix") or {}
+        if fix.get("applied"):
+            lines.append(f"  ✓ DNS override applied on: {', '.join(fix.get('changed_interfaces') or [])} "
+                         f"→ {', '.join(fix.get('servers_now') or [])}")
+        elif fix.get("requested"):
+            lines.append(f"  ⚠ DNS fix not applied: {fix.get('reason') or 'unknown reason'}")
+        else:
+            lines.append("  (report-only — no DNS change was requested)")
     elif action == "batch":
         res = out.get("results") or []
         total = out.get("total", len(res))

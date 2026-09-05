@@ -241,6 +241,7 @@ ACTION_SCRIPTS = {
     "snmp_sweep": "snmp_sweep.sh",
     "windows_diag": "windows_diag.sh",
     "windows_cleanup": "windows_cleanup.sh",
+    "windows_netdiag": "windows_netdiag.sh",
     # escalate_human is a logical action, not a script
 }
 
@@ -506,15 +507,22 @@ def _build_cmd(action: str, target: str, params: dict) -> list:
             return ["bash", script_path, target, str(params.get("lines", 50)),
                     ssh_user, ssh_key]
         return ["bash", script_path, target, ssh_user, ssh_key]
-    if action in ("windows_diag", "windows_cleanup"):
+    if action in ("windows_diag", "windows_cleanup", "windows_netdiag"):
         # Windows PCs are SSH-only for now: resolve the stored control creds
-        # and pass the (optional, configurable) offender list for cleanup.
+        # and pass the (optional, configurable) action args. netdiag carries
+        # the gated DNS-fix flag + the resolver list; cleanup carries the
+        # offender list.
         ssh_user, ssh_key = _resolve_ssh(target, params)
         argv = ["bash", script_path, target, ssh_user, ssh_key]
         if action == "windows_cleanup":
             offenders = params.get("offenders") or []
             if isinstance(offenders, list):
                 argv.append(",".join(str(o) for o in offenders if str(o).strip()))
+        elif action == "windows_netdiag":
+            argv.append("1" if params.get("apply_dns_fix") else "0")
+            resolvers = params.get("resolvers") or []
+            if isinstance(resolvers, list):
+                argv.append(",".join(str(r) for r in resolvers if str(r).strip()))
         return argv
     return ["bash", script_path, target]
 
@@ -1795,7 +1803,7 @@ def execute_job(job: dict) -> dict:
     # or pi resolved a name to its own IP (SSH actions would reach its shell).
     if action in ("reboot_device", "apply_patch", "collect_logs", "snmp_poll",
                   "ping_test", "fingerprint_device", "windows_diag",
-                  "windows_cleanup") and _self_target(target):
+                  "windows_cleanup", "windows_netdiag") and _self_target(target):
         logger.warning(f"Self-protection blocked target {target} (ticket {ticket_id})")
         return {"success": False, "error": "blocked",
                 "output": {"blocked": "self-protection", "reason": "target is the appliance itself",

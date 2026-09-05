@@ -109,10 +109,12 @@ cost counter.
 ## 7. Deployment notes
 
 `ratewindows.py` + `tierrouter.py` are shared modules (live in `src/api/` and
-are copied into the worker build context). The sync list is maintained in
-**four** places — keep them in sync (the `.30.b` self-update lesson):
+are copied into the worker build context). The set is **derived from
+`src/worker/Dockerfile`'s `COPY` lines** — the single source of truth — so a
+module added to `src/api/` + `COPY`ed in the Dockerfile is picked up with no
+hand-maintained list to drift (the `.30.b`/`.03.b` self-update lessons):
 
-- `deploy.sh` → `SHARED_MODULES`
-- `src/worker/Dockerfile` → `COPY` lines
-- `src/scripts/barenoc-self-update.sh` → the shared-modules loop
-- `src/scripts/bootstrap_appliance.sh` → the shared-modules loop
+- `scripts/build_release_manifest.py` → injects them into the release tarball
+- `deploy.sh` → derives `SHARED_MODULES` from the Dockerfile
+- `src/scripts/barenoc-self-update.sh` → backfills from the Dockerfile
+- `src/scripts/bootstrap_appliance.sh` → backfills from the Dockerfile

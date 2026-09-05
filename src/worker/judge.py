@@ -56,7 +56,7 @@ ACTION_CATALOG = [
     "enroll_device",
     "fingerprint_device", "install_chat_client", "complete_ticket",
     "request_customer_input", "escalate_human",
-    "windows_diag", "windows_cleanup",
+    "windows_diag", "windows_cleanup", "windows_netdiag",
 ]
 
 JUDGE_SYSTEM_PROMPT = """You are the JUDGE in a two-phase network-operations pipeline.

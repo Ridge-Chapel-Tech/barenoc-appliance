@@ -110,10 +110,17 @@ ssh "$VM" "crontab -l 2>/dev/null | grep -q backup_app.sh || (crontab -l 2>/dev/
 ssh "$VM" "crontab -l 2>/dev/null | grep -q offsite_backup.sh || (crontab -l 2>/dev/null; echo '15 * * * * /opt/barenoc/scripts/offsite_backup.sh >> /opt/barenoc/backups/offsite.log 2>&1') | crontab -"
 
 # Shared modules the worker image needs in its build context (see worker/Dockerfile).
-# They live in api/ in the repo; copy into the worker context on the VM.
-# ⚠️ KEEP THIS LIST IN SYNC with barenoc-self-update.sh + bootstrap_appliance.sh —
-# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
-SHARED_MODULES=(action_validator.py audit.py audit_catalog.py crypto.py database.py models.py sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py llm_providers.py emailer.py ratewindows.py tierrouter.py)
+# They live in api/ in the repo; copy into the worker context on the VM. The
+# list is DERIVED from the worker Dockerfile (the single source of truth) so a
+# module added to api/ + COPYed in the Dockerfile is always picked up — no
+# manual list to drift (the .30.b self-update bug: stale lists left shared
+# modules out of the worker build context).
+SHARED_MODULES=()
+while IFS= read -r m; do
+  if [ ! -f "$SRC/worker/$m" ] && [ -f "$SRC/api/$m" ]; then
+    SHARED_MODULES+=("$m")
+  fi
+done < <(sed -n 's/^COPY[[:space:]]\+\([A-Za-z0-9_]*\.py\)[[:space:]]\+\.$/\1/p' "$SRC/worker/Dockerfile" 2>/dev/null)
 
 # Sync each service directory (no --delete: VM may have runtime-only files).
 rsync -rltz --no-o --no-g --exclude=__pycache__ "$SRC/api/"            "$VM:/opt/barenoc/api/"

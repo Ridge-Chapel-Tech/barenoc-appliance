@@ -44,6 +44,7 @@ _run_unittest src/scripts test_web_research
 ( bash scripts/test_apply_updates.sh )
 ( bash scripts/test_trust_root.sh )
 ( bash scripts/test_release_signing.sh )
+( bash scripts/test_self_update.sh )
 ( bash scripts/test_support_ssh.sh )
 
 echo "==> api tests"
@@ -64,7 +65,7 @@ echo "==> runner tests"
 _run_unittest src/agent test_runner
 
 echo "==> bash syntax (scripts + proxmox + agent-go)"
-for f in deploy.sh proxmox/*.sh src/scripts/*.sh src/api/routes/trust_root.sh agent-go/scripts/*.sh scripts/test_check_updates_multi.sh scripts/test_apply_updates.sh scripts/test_trust_root.sh scripts/test_release_signing.sh; do bash -n "$f"; done
+for f in deploy.sh proxmox/*.sh src/scripts/*.sh src/api/routes/trust_root.sh agent-go/scripts/*.sh scripts/test_check_updates_multi.sh scripts/test_apply_updates.sh scripts/test_trust_root.sh scripts/test_release_signing.sh scripts/test_self_update.sh scripts/test_self_update_e2e.sh; do bash -n "$f"; done
 echo "all bash OK"
 
 echo "==> agent-go tests (go build/vet/test)"

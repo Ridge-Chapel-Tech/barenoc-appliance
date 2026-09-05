@@ -42,6 +42,20 @@ UPDATE_HOST_KEY="$(grep -E '^UPDATE_HOST_SSH=' "$BASE/.env" 2>/dev/null | head -
 
 report() { echo "$1" > "$RESULT"; }
 
+# version_from_file — read APP_VERSION from a version.py ('' when unreadable).
+version_from_file() {
+  python3 - "$1" <<'PY' 2>/dev/null
+import re, sys
+try:
+    text = open(sys.argv[1]).read()
+except OSError:
+    print("")
+    raise SystemExit(0)
+m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+print(m.group(1) if m else "")
+PY
+}
+
 # probe_health — read the live health JSON (HTTP code + version). The version
 # is what proves the NEW build is actually serving: a failed rebuild leaves the
 # OLD stack serving 200, which a bare HTTP check would wrongly call "updated"
@@ -60,7 +74,9 @@ except Exception:
 rebuild_stack() {
   cd "$BASE" || return 1
   docker compose up --build -d 2>&1 | tee -a "$BUILD_LOG"
-  echo "==> compose rebuild exit: ${PIPESTATUS[0]:-?}"
+  REBUILD_RC="${PIPESTATUS[0]:-1}"
+  echo "==> compose rebuild exit: $REBUILD_RC"
+  return "$REBUILD_RC"
 }
 
 # refresh_host_self_update — systemd runs /usr/local/bin/barenoc-self-update.sh
@@ -71,6 +87,35 @@ rebuild_stack() {
 refresh_host_self_update() {
   install -m 0755 "$BASE/scripts/barenoc-self-update.sh" /usr/local/bin/barenoc-self-update.sh \
     2>/dev/null || true
+}
+
+# restore_previous_release — put the pre-update tree back, rebuild it, and
+# report the failure. This is the single failure exit for the UPDATE path
+# (a failed compose rebuild OR a health/version mismatch); it also fires the
+# optional qm rollback when a host snapshot was taken. Consumes the request
+# file so the .path unit never re-fires on a stale trigger (the 09-03 P0 left
+# update_request.json behind after the rollback).
+restore_previous_release() {
+  local why="$1"
+  for d in api worker scheduler nginx scripts agent client docker-compose.yml; do
+    rm -rf "$BASE/$d"
+    [ -e "$BASE/.previous/$d" ] && cp -a "$BASE/.previous/$d" "$BASE/$d"
+  done
+  chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
+          "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
+  chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
+  refresh_host_self_update
+  rebuild_stack
+  if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; then
+    ssh -i "$UPDATE_HOST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR "$UPDATE_HOST" \
+        "qm rollback $UPDATE_VMID before-$VERSION 2>/dev/null || true" || true
+  fi
+  rm -f "$REQ"
+  progress 100 "failed" "$why"
+  report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"error\": \"$why\"}"
+  echo "==> $why"
+  exit 1
 }
 
 # ── rollback ───────────────────────────────────────────────────────────────
@@ -113,6 +158,7 @@ TARBALL="$(python3 -c "import json;print(json.load(open('$REQ')).get('tarball','
 CHECKSUMS="$(python3 -c "import json;print(json.load(open('$REQ')).get('checksums',''))" 2>/dev/null || true)"
 SIGNATURE="$(python3 -c "import json;print(json.load(open('$REQ')).get('signature',''))" 2>/dev/null || true)"
 [ -n "$TARBALL" ] || { report '{"ok": false, "action": "update", "error": "no tarball URL in update request"}'; rm -f "$REQ"; exit 1; }
+REQV="$(printf '%s' "$VERSION" | sed 's/^[vV]//')"
 
 # 1. snapshot before (restricted host key — qm snapshot only, optional)
 progress 8 "snapshot" "host snapshot (optional)"
@@ -124,14 +170,42 @@ if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; 
     && echo "snapshot ok" || echo "snapshot failed — continuing without it"
 fi
 
-# 2. download + verify
+# 2. download + verify (retry until a VALID tarball lands). A release publish
+# can race the box's pull — Hostinger's CDN serves an HTML 200 soft-404 while
+# a fresh asset is still propagating — and `curl --retry` alone can't see it
+# (an HTML 200 is not a retryable error, and a truncated write exits 0 too).
+# So the whole download → checksum → validate sequence loops: any bad payload
+# (soft-404, truncated write, transient network error, checksum mismatch)
+# triggers a fresh download, and only a genuinely missing/corrupt artifact
+# survives every attempt to fail the update with its REAL cause. (The 09-03 P0
+# itself was a DIFFERENT bug — the tarball landed + checksummed OK but was
+# missing src/worker/tierrouter.py + ratewindows.py, so the worker build
+# failed; this loop defends against the soft-404/no-op failure class that the
+# original single-shot download could also silently produce.)
 progress 20 "download" "downloading release"
 echo "==> fetching $TARBALL"
-curl -fsSL "$TARBALL" -o "$TMP/app.tar.gz" || { rm -f "$REQ"; progress 100 "failed" "download failed"; report '{"ok": false, "action": "update", "error": "download failed"}'; exit 1; }
-if [ -n "$CHECKSUMS" ]; then
-  curl -fsSL "$CHECKSUMS" -o "$TMP/sums" 2>/dev/null || true
-  if [ -s "$TMP/sums" ]; then
+DL_ATTEMPTS="${UPDATE_DL_ATTEMPTS:-5}"
+case "$DL_ATTEMPTS" in ''|*[!0-9]*) DL_ATTEMPTS=5 ;; esac
+DL_RETRY_DELAY="${UPDATE_DL_RETRY_DELAY:-5}"
+case "$DL_RETRY_DELAY" in ''|*[!0-9]*) DL_RETRY_DELAY=5 ;; esac
+DL_OK=0
+DL_ERR="download failed"
+while [ "$DL_ATTEMPTS" -gt 0 ]; do
+  DL_ATTEMPTS=$((DL_ATTEMPTS - 1))
+
+  curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 10 --max-time 600 \
+    "$TARBALL" -o "$TMP/app.tar.gz" \
+    || { DL_ERR="download failed"; echo "==> $DL_ERR — attempts left: $DL_ATTEMPTS"; sleep "$DL_RETRY_DELAY"; continue; }
+
+  if [ -n "$CHECKSUMS" ]; then
     progress 40 "verify" "verifying checksum"
+    # Fail CLOSED: a release that ships a checksums URL must verify against it.
+    # The old `|| true` skipped verification whenever the sums download
+    # hiccuped, letting a bad tarball sail straight into the apply step (the
+    # same silent no-op class as the soft-404 case). Never proceed unverified.
+    curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 10 --max-time 120 \
+      "$CHECKSUMS" -o "$TMP/sums" \
+      || { DL_ERR="checksum download failed"; sleep "$DL_RETRY_DELAY"; continue; }
     # Name-independent compare: the sums file lists the release asset name
     # (bareNOC-<ver>.tar.gz) but we download to app.tar.gz — sha256sum -c
     # --ignore-missing would verify NOTHING and exit 1 ("no file was
@@ -139,13 +213,51 @@ if [ -n "$CHECKSUMS" ]; then
     EXPECTED="$(awk 'NR==1{print $1}' "$TMP/sums")"
     ACTUAL="$(sha256sum "$TMP/app.tar.gz" | awk '{print $1}')"
     if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
-      rm -f "$REQ"
-      progress 100 "failed" "checksum mismatch"
-      report '{"ok": false, "action": "update", "error": "checksum mismatch"}'
-      exit 1
+      DL_ERR="checksum mismatch"; sleep "$DL_RETRY_DELAY"; continue
     fi
     echo "checksum ok ($ACTUAL)"
   fi
+
+  # 2a. validate the release archive BEFORE applying anything. A bad payload
+  # here (CDN error page, truncated write, wrong layout, wrong version) used
+  # to make the apply step a no-op: the OLD tree was rebuilt (exit 0), the
+  # version check then "failed" with a misleading health/version mismatch, and
+  # the update rolled back — indistinguishable from a real app failure. Now a
+  # bad payload is re-downloaded; one still bad after every attempt fails fast
+  # with the real cause and leaves the running tree untouched.
+  if [ ! -s "$TMP/app.tar.gz" ] || ! tar tzf "$TMP/app.tar.gz" >"$TMP/tar.list" 2>/dev/null; then
+    DL_ERR="download failed — not a valid release tarball"; sleep "$DL_RETRY_DELAY"; continue
+  fi
+  # Require the FULL release layout, not just api + worker. Every entry the
+  # apply step maps below must be present — a tarball missing e.g. src/scheduler
+  # or client/ would otherwise be silently skipped by apply_dir, leaving that
+  # tree stale while the api/version.py guard still passed (a partial update
+  # that reports success).
+  LAYOUT_MISSING=""
+  for req in src/api src/worker src/scheduler src/nginx src/scripts src/agent client src/docker-compose.yml src/api/version.py; do
+    grep -q "^${req}/\?$" "$TMP/tar.list" || LAYOUT_MISSING="$LAYOUT_MISSING $req"
+  done
+  if [ -n "$LAYOUT_MISSING" ]; then
+    DL_ERR="tarball layout invalid (missing:$LAYOUT_MISSING)"; sleep "$DL_RETRY_DELAY"; continue
+  fi
+  tar xzOf "$TMP/app.tar.gz" src/api/version.py > "$TMP/archive_version.py" 2>/dev/null || true
+  TARVER="$(version_from_file "$TMP/archive_version.py")"
+  # Fail CLOSED: the layout check already confirmed src/api/version.py exists
+  # in the archive, so an empty/unreadable version here is a BAD tarball, not
+  # a pass. A version that doesn't match (or can't be read) must never reach
+  # the apply step.
+  if [ "$TARVER" != "$REQV" ]; then
+    DL_ERR="tarball version mismatch (archive '${TARVER:-<unreadable>}', requested $REQV)"; sleep "$DL_RETRY_DELAY"; continue
+  fi
+
+  DL_OK=1
+  break
+done
+if [ "$DL_OK" != "1" ]; then
+  rm -f "$REQ"
+  progress 100 "failed" "$DL_ERR"
+  report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"error\": \"$DL_ERR\"}"
+  exit 1
 fi
 
 # 2b. verify the detached release signature BEFORE applying — breaks the
@@ -206,7 +318,13 @@ done
 # 4. extract + map release tree (src/ layout) onto the flat /opt/barenoc layout
 progress 65 "apply" "applying release"
 echo "==> extracting release"
-tar xzf "$TMP/app.tar.gz" -C "$TMP"
+tar xzf "$TMP/app.tar.gz" -C "$TMP" || {
+  rm -f "$REQ"
+  rm -rf "$BASE/.previous"
+  progress 100 "failed" "extract failed"
+  report '{"ok": false, "action": "update", "error": "extract failed"}'
+  exit 1
+}
 SRC="$TMP/src"
 apply_dir() {
   [ -d "$1" ] || return 0
@@ -228,25 +346,45 @@ chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
         "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
 chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
 
-# shared modules the worker image needs in its build context (mirror deploy.sh)
-# ⚠️ KEEP THIS LIST IN SYNC with deploy.sh SHARED_MODULES + bootstrap_appliance.sh —
-# adding a module to api/ requires updating ALL THREE (the .30.b self-update bug).
-for m in action_validator.py audit.py audit_catalog.py crypto.py database.py models.py \
-         sanitizer.py schemas.py worknotes.py queue_status.py tone_pool.py \
-         llm_providers.py emailer.py ratewindows.py tierrouter.py; do
-  [ -f "$BASE/api/$m" ] && cp "$BASE/api/$m" "$BASE/worker/$m"
-done
+# Guard: the apply MUST have replaced the tree. If /opt/barenoc/api/version.py
+# didn't flip to the requested version, rebuilding would just rebuild the OLD
+# tree and the version check would roll us back with a misleading message.
+APPLIED_VER="$(version_from_file "$BASE/api/version.py")"
+if [ "$APPLIED_VER" != "$REQV" ]; then
+  restore_previous_release "apply failed — /opt/barenoc/api at '${APPLIED_VER:-<unreadable>}' (expected $REQV)"
+fi
+
+# Shared modules the worker image COPYs into its build context (they live in
+# api/ in the repo). Derive the list from the NEWLY-APPLIED worker Dockerfile —
+# the single source of truth — so a module added to api/ + COPYed in the
+# Dockerfile is always picked up with no hand-maintained list to drift. The
+# 09-03 P0: the release tarball shipped tierrouter.py + ratewindows.py at the
+# wrong arcname (root-level worker/, never src/worker/), so they were missing
+# from the worker build context → the worker build failed → every self-update
+# rolled back.
+while IFS= read -r m; do
+  if [ ! -f "$BASE/worker/$m" ] && [ -f "$BASE/api/$m" ]; then
+    cp -f "$BASE/api/$m" "$BASE/worker/$m"
+  fi
+done < <(sed -n 's/^COPY[[:space:]]\+\([A-Za-z0-9_]*\.py\)[[:space:]]\+\.$/\1/p' "$BASE/worker/Dockerfile" 2>/dev/null)
 
 systemctl daemon-reload 2>/dev/null || true
 
-# 5. rebuild + health (VERSION-verifying — 08-20 root cause #1)
+# 5. rebuild + health (VERSION-verifying — 08-20 root cause #1). A FAILED
+# compose rebuild must restore + report AS a rebuild failure (not a misleading
+# "health/version" failure) — the 09-03 P0 showed exactly this: the worker
+# build failed ("/tierrouter.py": not found) but the script reported a
+# health/version mismatch because the old container kept serving 200.
 progress 80 "rebuild" "rebuilding containers"
 echo "==> rebuilding stack (build log: $BUILD_LOG)"
-rebuild_stack
+BUILD_RC=0
+rebuild_stack || BUILD_RC=$?
+if [ "$BUILD_RC" != "0" ]; then
+  restore_previous_release "rebuild failed (exit $BUILD_RC); previous release restored"
+fi
 progress 92 "healthcheck" "waiting for the web UI"
 sleep 8
 probe_health
-REQV="$(printf '%s' "$VERSION" | sed 's/^[vV]//')"
 GOTV="$(printf '%s' "$HEALTH_VERSION" | sed 's/^[vV]//')"
 if [ "$HEALTH_CODE" = "200" ] && [ -n "$REQV" ] && [ "$REQV" = "$GOTV" ]; then
   systemctl restart pi-agent-runner 2>/dev/null || true
@@ -293,23 +431,5 @@ if [ "$HEALTH_CODE" = "200" ] && [ -n "$REQV" ] && [ "$REQV" = "$GOTV" ]; then
   exit 1
 fi
 
-progress 100 "failed" "update failed — health/version check; restoring previous release"
-
-# 6. failure -> restore previous + optional qm rollback
-echo "==> update failed (health $HEALTH_CODE, expected $REQV, got $GOTV) — restoring previous"
-for d in api worker scheduler nginx scripts agent client docker-compose.yml; do
-  rm -rf "$BASE/$d"
-  [ -e "$BASE/.previous/$d" ] && cp -a "$BASE/.previous/$d" "$BASE/$d"
-done
-chown -R barenoc:docker "$BASE/api" "$BASE/worker" "$BASE/scheduler" \
-        "$BASE/nginx" "$BASE/scripts" "$BASE/client" 2>/dev/null
-chown -R pi-agent:pi-agent "$BASE/agent" 2>/dev/null
-refresh_host_self_update
-rebuild_stack
-if [ -n "$UPDATE_HOST" ] && [ -n "$UPDATE_HOST_KEY" ] && [ -n "$UPDATE_VMID" ]; then
-  ssh -i "$UPDATE_HOST_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR "$UPDATE_HOST" \
-      "qm rollback $UPDATE_VMID before-$VERSION 2>/dev/null || true" || true
-fi
-report "{\"ok\": false, \"action\": \"update\", \"version\": \"$VERSION\", \"error\": \"health/version check failed (expected $REQV, got $GOTV); previous release restored\"}"
-exit 1
+# 6. health/version mismatch -> restore previous (reports the failure + exits)
+restore_previous_release "health/version check failed (expected $REQV, got $GOTV); previous release restored"

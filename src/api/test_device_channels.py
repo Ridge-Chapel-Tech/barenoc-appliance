@@ -145,6 +145,24 @@ class WindowsActionsParamsTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("non-empty strings", msg)
 
+    def test_windows_netdiag_needs_no_params(self):
+        self.assertTrue(validate_params("windows_netdiag", {})[0])
+        self.assertTrue(validate_params("windows_netdiag",
+                                        {"apply_dns_fix": True})[0])
+        self.assertTrue(validate_params(
+            "windows_netdiag", {"resolvers": ["1.1.1.1", "1.0.0.1"]})[0])
+
+    def test_windows_netdiag_rejects_non_bool_fix(self):
+        ok, msg = validate_params("windows_netdiag", {"apply_dns_fix": "yes"})
+        self.assertFalse(ok)
+        self.assertIn("boolean", msg)
+
+    def test_windows_netdiag_rejects_non_ip_resolvers(self):
+        ok, msg = validate_params("windows_netdiag",
+                                  {"resolvers": ["1.1.1.1", "not-an-ip"]})
+        self.assertFalse(ok)
+        self.assertIn("IPv4", msg)
+
     def test_windows_channels_require_ssh(self):
         self.assertTrue(validate_channels("windows_diag", "server",
                                           [CHANNEL_SSH, CHANNEL_MONITOR])[0])
@@ -154,6 +172,10 @@ class WindowsActionsParamsTest(unittest.TestCase):
                                           [CHANNEL_SSH])[0])
         self.assertFalse(validate_channels("windows_cleanup", "server",
                                            [CHANNEL_AGENT, CHANNEL_MONITOR])[0])
+        self.assertTrue(validate_channels("windows_netdiag", "server",
+                                          [CHANNEL_SSH])[0])
+        self.assertFalse(validate_channels("windows_netdiag", "server",
+                                           [CHANNEL_MONITOR])[0])
 
 
 class FingerprintSuggestionTest(unittest.TestCase):

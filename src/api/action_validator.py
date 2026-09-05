@@ -40,6 +40,7 @@ class AllowedAction(str, enum.Enum):
     ESCALATE_HUMAN = "escalate_human"
     WINDOWS_DIAG = "windows_diag"          # read-only: Windows PC health report over SSH
     WINDOWS_CLEANUP = "windows_cleanup"    # safe cleanup: autostart offenders + TEMP + recycle (no uninstalls/partition ops)
+    WINDOWS_NETDIAG = "windows_netdiag"    # network/DNS health + hardening: link rate, latency, DNS-through-router fix (gated)
 
 
 # Predefined scripts that map to each action
@@ -72,6 +73,7 @@ ACTION_SCRIPTS = {
     AllowedAction.SNMP_SWEEP: "scripts/snmp_sweep.sh",
     AllowedAction.WINDOWS_DIAG: "scripts/windows_diag.sh",
     AllowedAction.WINDOWS_CLEANUP: "scripts/windows_cleanup.sh",
+    AllowedAction.WINDOWS_NETDIAG: "scripts/windows_netdiag.sh",
     # ESCALATE_HUMAN has no script — it's a logical action
 }
 
@@ -171,6 +173,7 @@ ACTION_REQUIRED_CHANNELS = {
     # type + ssh channel; the Windows agent ships in a later milestone).
     AllowedAction.WINDOWS_DIAG: {CHANNEL_SSH},
     AllowedAction.WINDOWS_CLEANUP: {CHANNEL_SSH},
+    AllowedAction.WINDOWS_NETDIAG: {CHANNEL_SSH},
 }
 
 
@@ -338,6 +341,32 @@ def windows_cleanup_offenders() -> list:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+# Windows netdiag: the non-router resolvers the DNS-through-router fix falls
+# back to (configurable per deployment via WINDOWS_NETDIAG_RESOLVERS env —
+# comma-separated). The netdiag pass only overrides the PC's DNS when it is
+# pointed at the router/gateway; it never rewrites a healthy resolver config.
+DEFAULT_WINDOWS_NETDIAG_RESOLVERS = [
+    "1.1.1.1",
+    "1.0.0.1",
+]
+
+
+def windows_netdiag_resolvers() -> list:
+    """Effective netdiag resolver list: env file -> process env -> defaults.
+    Mirrors windows_cleanup_offenders (hot, same pattern)."""
+    raw = ""
+    try:
+        from llm_providers import read_env_file
+        raw = (read_env_file().get("WINDOWS_NETDIAG_RESOLVERS") or "").strip()
+    except Exception:
+        raw = os.getenv("WINDOWS_NETDIAG_RESOLVERS", "").strip()
+    if not raw:
+        raw = os.getenv("WINDOWS_NETDIAG_RESOLVERS", "").strip()
+    if not raw:
+        return list(DEFAULT_WINDOWS_NETDIAG_RESOLVERS)
+    return [r.strip() for r in raw.split(",") if r.strip()]
+
+
 def patch_allowlist() -> list:
     """Effective patch allowlist: env file -> process env -> defaults. Hot."""
     raw = ""
@@ -455,6 +484,26 @@ def validate_params(action: str, params: dict) -> tuple[bool, str]:
                     return False, "windows_cleanup 'offenders' entries must be non-empty strings"
                 if len(o) > 128:
                     return False, "windows_cleanup offender names must be <= 128 chars"
+        return True, ""
+
+    if action == AllowedAction.WINDOWS_NETDIAG.value:
+        # Network/DNS health + hardening over SSH. Read-only by default; the
+        # DNS-through-router fix is opt-in via apply_dns_fix=true AND still
+        # requires an elevated (admin) session server-side — a standard
+        # session only reports + recommends. No partition ops, no uninstalls,
+        # no adapter surgery — only the DNS server list on active adapters.
+        fix = params.get("apply_dns_fix")
+        if fix is not None and not isinstance(fix, bool):
+            return False, "windows_netdiag 'apply_dns_fix' must be a boolean"
+        resolvers = params.get("resolvers")
+        if resolvers is not None:
+            if not isinstance(resolvers, list) or not resolvers:
+                return False, "windows_netdiag 'resolvers' must be a non-empty list of IPv4 addresses"
+            if len(resolvers) > 4:
+                return False, "windows_netdiag 'resolvers' max 4 addresses"
+            for r in resolvers:
+                if not isinstance(r, str) or not _IP_RE.match(r.strip()):
+                    return False, "windows_netdiag 'resolvers' entries must be IPv4 addresses"
         return True, ""
 
     if action == AllowedAction.TICKET_STATUS.value:

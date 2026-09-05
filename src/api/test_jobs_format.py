@@ -171,6 +171,48 @@ class WindowsFormatTest(unittest.TestCase):
         text = _format_info_answer("windows_cleanup", out)
         self.assertIn("nothing to clean", text)
 
+    def test_windows_netdiag_report(self):
+        out = {
+            "hostname": "DADS-PC", "os": "Windows 11 Pro", "elevated": True,
+            "adapters": [{"name": "Ethernet", "status": "Up",
+                          "link_speed": "100 Mbps", "media_type": "802.3"}],
+            "link_warning": "Non-gigabit link on 'Ethernet' (100 Mbps)",
+            "gateway": "10.0.0.1",
+            "dns": {"servers": ["10.0.0.1"], "via_router": True,
+                    "router_is_only_resolver": True,
+                    "recommended": ["1.1.1.1", "1.0.0.1"]},
+            "latency": {"targets": [
+                {"target": "10.0.0.1", "reachable": True, "sent": 4,
+                 "received": 4, "loss_pct": 0.0, "avg_ms": 1.2,
+                 "min_ms": 1, "max_ms": 2},
+                {"target": "8.8.8.8", "reachable": False, "loss_pct": 100.0},
+            ]},
+            "dns_fix": {"requested": True, "applied": True,
+                        "changed_interfaces": ["Ethernet"],
+                        "servers_now": ["1.1.1.1", "1.0.0.1"]},
+        }
+        text = _format_info_answer("windows_netdiag", out)
+        self.assertIn("Network/DNS report for DADS-PC (Windows 11 Pro, elevated (admin) session)", text)
+        self.assertIn("NIC Ethernet — Up, 100 Mbps", text)
+        self.assertIn("DNS-through-router detected", text)
+        self.assertIn("ping 10.0.0.1: 1.2 ms avg", text)
+        self.assertIn("ping 8.8.8.8: unreachable", text)
+        self.assertIn("DNS override applied on: Ethernet", text)
+
+    def test_windows_netdiag_standard_session_not_applied(self):
+        out = {
+            "hostname": "DADS-PC", "os": "Windows 11 Pro", "elevated": False,
+            "adapters": [], "gateway": "10.0.0.1",
+            "dns": {"servers": ["10.0.0.1"], "via_router": True,
+                    "recommended": ["1.1.1.1"]},
+            "latency": {"targets": []},
+            "dns_fix": {"requested": True, "applied": False,
+                        "reason": "standard (non-admin) SSH session — DNS override needs elevation"},
+        }
+        text = _format_info_answer("windows_netdiag", out)
+        self.assertIn("standard (non-admin)", text)
+        self.assertIn("DNS fix not applied", text)
+
 
 if __name__ == "__main__":
     unittest.main()
